@@ -162,6 +162,97 @@ test('预设服务比插件晚出现也能注册；关掉开关就不注册；�
   c.dispose()
 })
 
+/** 假的游戏 MCP 服务器：initialize 返回“规则 + 攻略 + MCP 说明”，tools/list 两个工具，tools/call 记下参数。 */
+function fakeGameMcp() {
+  const calls = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      // 插件的设置同步也会来 GET/POST /settings，这里只管 MCP
+      if (req.url !== '/mcp') return res.end(JSON.stringify({ revision: 'x' }))
+      const msg = JSON.parse(body)
+      let result
+      if (msg.method === 'initialize')
+        result = { instructions: '## 行动原则\n先看状态。\n\n## 游戏常识\n很长的攻略……\n\n## 通过 MCP 玩的额外说明\n先 get_state。' }
+      else if (msg.method === 'tools/list')
+        result = { tools: [
+          { name: 'get_state', description: '读取当前游戏状态。每次行动前先调用。', inputSchema: { type: 'object', properties: {} } },
+          { name: 'move_to', description: '走到某一格。会自动寻路', inputSchema: { type: 'object', properties: { x: {}, y: {}, run: {} }, required: ['x', 'y'] } },
+        ] }
+      else if (msg.method === 'tools/call') {
+        calls.push(msg.params)
+        result = { content: [{ type: 'text', text: `成功：${msg.params.name} ${JSON.stringify(msg.params.arguments)}` }], isError: false }
+      }
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
+    })
+  })
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, calls, port: server.address().port })))
+}
+
+function fakeToolRegistry() {
+  const tools = new Map()
+  return { tools, register(def) { tools.set(def.name, def); return () => tools.delete(def.name) } }
+}
+
+test('入口工具默认不注册；开启后注册 stardew，卸载时移除', async () => {
+  const reg = fakeToolRegistry()
+  const off = fakeCtx({ tools: reg })
+  plugin.apply(off.ctx, { port: 1 })
+  assert.equal(reg.tools.size, 0)
+  off.dispose()
+
+  const on = fakeCtx({ tools: reg })
+  try {
+    plugin.apply(on.ctx, { port: 1, gatewayEnabled: true })
+    assert.ok(reg.tools.has('stardew'))
+    const def = reg.tools.get('stardew')
+    assert.ok(def.description.length < 400, '常驻说明要短：' + def.description.length)
+    // 找得到 DSH 的 dsh-tools 时，defineTool 会把简写参数转成标准 JSON Schema（参数在 properties 里）；找不到时原样保留
+    const params = def.parameters.properties ?? def.parameters
+    assert.equal(params.args.additionalProperties, true)
+    assert.ok(params.action)
+  } finally {
+    on.dispose()
+  }
+  assert.equal(reg.tools.size, 0)
+})
+
+test('入口工具：help 给规则和动作列表（不含整份攻略），其他 action 转发给游戏', async () => {
+  const { server, calls, port } = await fakeGameMcp()
+  const reg = fakeToolRegistry()
+  const { ctx, dispose } = fakeCtx({ tools: reg })
+  try {
+    plugin.apply(ctx, { port, gatewayEnabled: true })
+    const tool = reg.tools.get('stardew')
+
+    const help = await tool.execute({ action: 'help' }, {})
+    assert.ok(help.includes('## 行动原则') && help.includes('## 通过 MCP 玩的额外说明'))
+    assert.ok(!help.includes('很长的攻略'), 'help 里不应该带攻略全文')
+    assert.ok(help.includes('- move_to(x, y, run?)：走到某一格'))
+    assert.ok(help.includes('- get_state()：读取当前游戏状态'))
+
+    const moved = await tool.execute({ action: 'move_to', args: { x: 64, y: 15 } }, {})
+    assert.equal(moved, '成功：move_to {"x":64,"y":15}')
+    const state = await tool.execute({ action: 'get_state' }, {})
+    assert.equal(calls.at(-1).name, 'get_state')
+    assert.deepEqual(calls.at(-1).arguments, {})
+    assert.ok(state.startsWith('成功：get_state'))
+  } finally {
+    dispose()
+    server.close()
+  }
+})
+
+test('入口工具：游戏没开时给出看得懂的提示', async () => {
+  const reg = fakeToolRegistry()
+  const { ctx, dispose } = fakeCtx({ tools: reg })
+  plugin.apply(ctx, { port: 1, gatewayEnabled: true })
+  const text = await reg.tools.get('stardew').execute({ action: 'get_state' }, {})
+  assert.ok(text.startsWith('失败：连不上游戏'), text)
+  dispose()
+})
+
 test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config && '没找到 schemastery（设置 DSH_HOME 再测）' }, () => {
   const resolved = plugin.Config({})
   assert.equal(resolved.sessionDays, 0)
@@ -170,5 +261,6 @@ test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config 
   assert.equal(resolved.port, 18080)
   assert.equal(resolved.guideFile, 'guide/zh-CN.md')
   assert.equal(resolved.presetEnabled, false, '会话预设默认关闭')
+  assert.equal(resolved.gatewayEnabled, false, '入口工具默认关闭')
   assert.throws(() => plugin.Config({ sessionDays: -1 }))
 })
