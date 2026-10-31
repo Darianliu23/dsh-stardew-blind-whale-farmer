@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>BlindWhaleFarmer</AssemblyName>
+    <RootNamespace>BlindWhaleFarmer</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <NoWarn>$(NoWarn);CS0618</NoWarn>
+    <!-- GamePath / SmapiPath 在仓库根目录的 Directory.Build.props 里 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Stardew Valley"><HintPath>$(GamePath)\Stardew Valley.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="StardewValley.GameData"><HintPath>$(GamePath)\StardewValley.GameData.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="MonoGame.Framework"><HintPath>$(GamePath)\MonoGame.Framework.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="xTile"><HintPath>$(GamePath)\xTile.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="StardewModdingAPI"><HintPath>$(SmapiPath)\StardewModdingAPI.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="guide\*.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

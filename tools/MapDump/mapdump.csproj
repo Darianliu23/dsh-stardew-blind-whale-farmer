@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- GamePath 在仓库根目录的 Directory.Build.props 里；这个工具只读游戏文件，不需要 SMAPI -->
+    <RequireSmapi>false</RequireSmapi>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="MonoGame.Framework"><HintPath>$(GamePath)\MonoGame.Framework.dll</HintPath></Reference>
+    <Reference Include="xTile"><HintPath>$(GamePath)\xTile.dll</HintPath></Reference>
+    <Reference Include="StardewValley.GameData"><HintPath>$(GamePath)\StardewValley.GameData.dll</HintPath></Reference>
+    <!-- 运行时从程序集元数据里读游戏目录（编译时用的那个） -->
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>GamePath</_Parameter1>
+      <_Parameter2>$(GamePath)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

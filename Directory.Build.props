@@ -1,0 +1,23 @@
+<Project>
+  <!--
+    所有项目共用的游戏路径。build.ps1 / test.ps1 会自动找到游戏并用 -p:GamePath=... 传进来；
+    直接用 dotnet build 时，也可以设置环境变量 STARDEW_PATH / SMAPI_PATH，或者装在 Steam 默认位置。
+  -->
+  <PropertyGroup>
+    <GamePath Condition="'$(GamePath)' == '' And '$(STARDEW_PATH)' != ''">$(STARDEW_PATH)</GamePath>
+    <GamePath Condition="'$(GamePath)' == '' And Exists('C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley')">C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley</GamePath>
+    <GamePath Condition="'$(GamePath)' == '' And Exists('$(HOME)/.local/share/Steam/steamapps/common/Stardew Valley')">$(HOME)/.local/share/Steam/steamapps/common/Stardew Valley</GamePath>
+    <GamePath Condition="'$(GamePath)' == '' And Exists('$(HOME)/Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS')">$(HOME)/Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS</GamePath>
+
+    <!-- SMAPI 引用：优先用 SMAPI_PATH，其次游戏目录里已安装的 SMAPI -->
+    <SmapiPath Condition="'$(SmapiPath)' == '' And '$(SMAPI_PATH)' != ''">$(SMAPI_PATH)</SmapiPath>
+    <SmapiPath Condition="'$(SmapiPath)' == ''">$(GamePath)</SmapiPath>
+  </PropertyGroup>
+
+  <Target Name="CheckGamePath" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(GamePath)\Stardew Valley.dll')"
+           Text="找不到星露谷（GamePath='$(GamePath)'）。用 build.ps1 编译（会自动找 Steam/GOG 安装位置），或者设置环境变量 STARDEW_PATH 指向游戏目录。" />
+    <Error Condition="'$(RequireSmapi)' != 'false' And !Exists('$(SmapiPath)\StardewModdingAPI.dll')"
+           Text="找不到 StardewModdingAPI.dll（SmapiPath='$(SmapiPath)'）。请先给游戏安装 SMAPI，或者设置环境变量 SMAPI_PATH 指向含有它的文件夹。" />
+  </Target>
+</Project>
