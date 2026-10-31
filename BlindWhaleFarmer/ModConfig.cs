@@ -64,6 +64,9 @@ namespace BlindWhaleFarmer
 
         public int McpIdleSeconds { get; set; } = 120;
 
+        /// <summary>MCP 客户端超过 McpIdleSeconds 没有调用（AI 停下或断开）时把整个游戏暂停（怪物、时钟都停），按任意键接手或 AI 再次调用时继续。</summary>
+        public bool PauseWhenAiStops { get; set; } = true;
+
         /// <summary>每次游玩最多玩几个游戏日（睡一觉算一天），到了就让 AI 停下汇报。0 = 不限。读档后重新计。</summary>
         public int SessionDays { get; set; } = 0;
 

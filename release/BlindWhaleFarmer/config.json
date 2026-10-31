@@ -21,6 +21,7 @@
   "McpPort": 18080,
   "McpFreezeTime": true,
   "McpIdleSeconds": 120,
+  "PauseWhenAiStops": true,
   "SessionDays": 0,
   "SessionMinutes": 0
 }

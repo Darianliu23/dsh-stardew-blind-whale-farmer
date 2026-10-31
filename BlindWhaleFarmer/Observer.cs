@@ -43,7 +43,7 @@ namespace BlindWhaleFarmer
             sb.AppendLine("## 基本状态");
             string weather = Game1.isRaining ? (Game1.isLightning ? "雷雨" : "下雨") : Game1.isSnowing ? "下雪" : "晴";
             sb.AppendLine($"时间：{Util.Stamp()}（{Game1.shortDayNameFromDayOfSeason(Game1.dayOfMonth)}），天气：{weather}，明天天气：{WeatherName(Game1.weatherForTomorrow)}");
-            sb.AppendLine($"金钱：{player.Money}g  体力：{(int)player.Stamina}/{player.MaxStamina}  生命：{player.health}/{player.maxHealth}  今日运气：{player.DailyLuck:+0.00;-0.00}");
+            sb.AppendLine($"金钱：{player.Money}g  体力：{(int)player.Stamina}/{player.MaxStamina}{(player.exhausted.Value ? "（筋疲力尽：体力≤0 时跑不动，明早只有一半体力）" : "")}  生命：{player.health}/{player.maxHealth}  今日运气：{player.DailyLuck:+0.00;-0.00}");
             sb.AppendLine($"技能等级：耕种{player.FarmingLevel} 采矿{player.MiningLevel} 采集{player.ForagingLevel} 钓鱼{player.FishingLevel} 战斗{player.CombatLevel}");
             Safe(sb, () => AppendCrabPotSummary(sb));
             Safe(sb, () =>

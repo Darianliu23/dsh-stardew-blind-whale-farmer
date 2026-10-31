@@ -219,6 +219,8 @@ namespace BlindWhaleFarmer
         private sealed class FightStats
         {
             public int Kills, Swings, Eaten;
+            /// <summary>找不到路走过去、等了也没过来的怪。</summary>
+            public readonly HashSet<Monster> Unreachable = new();
         }
 
         private static IEnumerable<Monster> LiveMonsters(GameLocation loc) =>
@@ -236,6 +238,9 @@ namespace BlindWhaleFarmer
                 .FirstOrDefault();
         }
 
+        /// <summary>上一次 fight 走不过去的怪：只要它还没贴到身边，提醒里就不再催 AI 去打。</summary>
+        private static HashSet<Monster> KnownUnreachable = new();
+
         /// <summary>身边有会打人的怪时的提醒：状态里和每个动作结果后面都会带上，让 AI 先清怪再干活。</summary>
         public static string ThreatWarning()
         {
@@ -243,7 +248,9 @@ namespace BlindWhaleFarmer
                 return null;
             var near = LiveMonsters(Loc).Where(m => m.DamageToFarmer > 0).ToList();
             var me = Player.TilePoint;
-            var close = near.Where(m => Util.Manhattan(m.TilePoint, me) <= 6).OrderBy(m => Util.Manhattan(m.TilePoint, me)).ToList();
+            var close = near.Where(m => Util.Manhattan(m.TilePoint, me) <= 6)
+                .Where(m => !KnownUnreachable.Contains(m) || Util.Manhattan(m.TilePoint, me) <= 1)
+                .OrderBy(m => Util.Manhattan(m.TilePoint, me)).ToList();
             if (close.Count == 0)
                 return null;
             string list = string.Join("、", close.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"));
@@ -317,6 +324,8 @@ namespace BlindWhaleFarmer
             }
             int start = Game1.ticks;
             var unreachable = new HashSet<Monster>();
+            var everUnreachable = st.Unreachable;
+            var waited = new Dictionary<Monster, int>();
             int unreachableReset = Game1.ticks;
             var walk = new Outcome();
             while (Game1.ticks - start < maxSeconds * 60)
@@ -371,14 +380,19 @@ namespace BlindWhaleFarmer
                 var path = goals.Count > 0 ? Pathfinder.FindPath(Loc, me, goals, 8000) : null;
                 if (path == null || path.Count < 2)
                 {
-                    if (target.isGlider.Value)
+                    // 会飞的怪（蝙蝠等）过一会儿自己会飞过来；地上的怪离得近也多半在朝我们走（被石头挡住的路它可能绕得过来），原地等它几秒
+                    waited.TryGetValue(target, out int w);
+                    if (target.isGlider.Value || (Util.Manhattan(target.TilePoint, me) <= 5 && w < 240))
                     {
-                        // 会飞的怪（蝙蝠等）过一会儿自己会飞过来
+                        waited[target] = w + 15;
                         foreach (var s in WaitTicks(15))
                             yield return s;
                     }
                     else
+                    {
                         unreachable.Add(target);
+                        everUnreachable.Add(target);
+                    }
                     continue;
                 }
                 foreach (var s in WalkPath(path.Take(Math.Min(path.Count, 4)).ToList(), walk))
@@ -405,6 +419,11 @@ namespace BlindWhaleFarmer
                 yield return s;
             int left = LiveMonsters(Loc).Count(m => Util.Manhattan(m.TilePoint, Player.TilePoint) <= radius);
             string msg = $"挥了 {st.Swings} 下，打倒 {st.Kills} 只，吃了 {st.Eaten} 次东西，生命 {Player.health}/{Player.maxHealth}，附近还剩 {left} 只";
+            var blocked = st.Unreachable.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
+            KnownUnreachable = new HashSet<Monster>(blocked);
+            if (blocked.Count > 0)
+                msg += $"。够不着：{string.Join("、", blocked.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"))}"
+                     + " 和你之间没有能走的路（被石头或墙隔开）。它过不来就不用管，继续干别的；挡路的话用 use_tool 拿镐子敲掉中间的石头再 fight";
             yield return o.Ok ? ActionResult.Success(msg) : ActionResult.Fail(o.Message.TrimStart('!') + "。" + msg);
         }
 

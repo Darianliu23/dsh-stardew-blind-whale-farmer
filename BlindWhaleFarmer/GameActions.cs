@@ -1736,8 +1736,13 @@ namespace BlindWhaleFarmer
             if (!Context.IsWorldReady || Game1.eventUp)
                 return null;
             var notes = new List<string>();
-            if (Player.Stamina <= 15)
-                notes.Add($"⚠ 体力只剩 {(int)Player.Stamina}：再用工具会累瘫，降到 -15 会直接晕倒、这一天结束。去吃东西（eat）或 sleep");
+            if (Player.Stamina <= 0)
+                notes.Add($"⚠ 筋疲力尽了（体力 {(int)Player.Stamina}）：跑不动，只能慢走（速度不到平时一半，回家要多花一倍多时间）；降到 -15 会直接晕倒、这一天结束。"
+                          + "吃东西（eat）把体力吃回 0 以上就能跑了；但“筋疲力尽”状态会留到睡觉（诊所的“肌肉回复药”能解除），今晚睡下明早只有一半体力");
+            else if (Player.Stamina <= 15)
+                notes.Add($"⚠ 体力只剩 {(int)Player.Stamina}：降到 0 就会筋疲力尽（跑不动、明早只有一半体力），降到 -15 会直接晕倒、这一天结束。去吃东西（eat）或 sleep");
+            else if (Player.exhausted.Value && !urgentOnly)
+                notes.Add("今天筋疲力尽过：今晚睡下明早只有一半体力（诊所卖的“肌肉回复药”能解除）");
             int now = Game1.timeOfDay;
             if (now >= 1900)
             {

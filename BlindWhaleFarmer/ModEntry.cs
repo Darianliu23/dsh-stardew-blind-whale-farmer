@@ -29,6 +29,9 @@ namespace BlindWhaleFarmer
 
         /// <summary>Game1.isTimePaused 是不是我们打开的（玩家用调试命令自己暂停的不去动）。</summary>
         private bool timeFrozenByUs;
+        /// <summary>Game1.paused 是不是我们打开的：MCP 客户端停下后整个游戏暂停，等玩家按键或 AI 回来。</summary>
+        private bool pausedByUs;
+        private bool mcpWasPlaying;
         /// <summary>AI 在玩时临时关掉的“失去焦点时暂停”原值；null 表示没有改动。</summary>
         private bool? savedPauseWhenOutOfFocus;
         private string transcriptPath;
@@ -197,6 +200,9 @@ namespace BlindWhaleFarmer
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
+            // AI 停下后暂停的游戏：玩家按任意键接手
+            if (pausedByUs)
+                SetIdlePaused(false);
             if (e.Button != Config.ToggleKey || !Context.IsWorldReady)
                 return;
             if (Agent.Running)
@@ -251,6 +257,9 @@ namespace BlindWhaleFarmer
             if (ready)
                 CurrentStamp = Util.Stamp();
 
+            bool mcpPlaying = McpPlaying;
+            UpdateIdlePause(ready, mcpPlaying);
+
             MainThread.Tick(ready);
             if (ready)
                 FishingAssist.Tick(MainThread.IsBusy);
@@ -259,7 +268,6 @@ namespace BlindWhaleFarmer
             if (ready && Agent.Running && !MainThread.IsBusy && e.IsMultipleOf(60) && Session.Ended)
                 Agent.Stop("本次游玩时间到了");
 
-            bool mcpPlaying = McpPlaying;
             // 用 MCP 客户端玩时游戏窗口通常在后台；默认的“失去焦点时暂停”会让 Game1.Update 直接返回，人物走不动
             KeepRunningInBackground(ready && (Agent.Running || mcpPlaying || MainThread.IsBusy));
             if (!ready || (!Agent.Running && !mcpPlaying))
@@ -275,6 +283,29 @@ namespace BlindWhaleFarmer
             bool thinking = Agent.Running ? Config.FreezeTimeWhileThinking && Agent.IsThinking
                                           : Config.McpFreezeTime && mcpPlaying;
             SetTimeFrozen(thinking && !MainThread.IsBusy);
+        }
+
+        /// <summary>
+        /// MCP 客户端停下（超过 McpIdleSeconds 没有调用：模型出错结束了回合、断开、或者想太久）时，用 Game1.paused 把整个游戏停住。
+        /// 只冻结时钟不够：游戏窗口在前台时怪物照样打人，在矿洞里被打晕会丢东西。AI 再次调用或玩家按任意键时继续。
+        /// </summary>
+        private void UpdateIdlePause(bool ready, bool mcpPlaying)
+        {
+            bool stopped = mcpWasPlaying && !mcpPlaying && !Agent.Running;
+            mcpWasPlaying = mcpPlaying;
+            if (pausedByUs && (!ready || mcpPlaying || Agent.Running))
+                SetIdlePaused(false);
+            else if (stopped && ready && Config.PauseWhenAiStops && !Context.IsMultiplayer && !Game1.paused && !MainThread.IsBusy)
+                SetIdlePaused(true);
+        }
+
+        private void SetIdlePaused(bool paused)
+        {
+            Game1.paused = paused;
+            pausedByUs = paused;
+            Hud.SetStatus(paused ? "AI 停下了，游戏已暂停。按任意键接手，或让 AI 继续" : "");
+            if (paused)
+                Monitor.Log($"MCP 客户端 {Config.McpIdleSeconds} 秒没有动作，已暂停游戏（按任意键继续）。", LogLevel.Info);
         }
 
         /// <summary>
