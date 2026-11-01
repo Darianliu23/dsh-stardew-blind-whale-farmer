@@ -28,13 +28,19 @@ function fakeGame() {
 function fakeCtx(services = {}) {
   const logs = []
   const cleanups = []
+  const handlers = new Map()
   return {
     logs,
     ctx: {
       logger: (level, msg) => logs.push(`${level} ${msg}`),
       effect: (fn) => { cleanups.push(fn()) },
       get: (name) => services[name],
+      on: (name, fn) => {
+        handlers.set(name, [...(handlers.get(name) ?? []), fn])
+        return () => handlers.set(name, handlers.get(name).filter((f) => f !== fn))
+      },
     },
+    emit: (name, ...args) => (handlers.get(name) ?? []).forEach((fn) => fn(...args)),
     dispose: () => cleanups.forEach((c) => c?.()),
   }
 }
@@ -253,6 +259,88 @@ test('入口工具：游戏没开时给出看得懂的提示', async () => {
   dispose()
 })
 
+/** 假的会话：followup 记下收到的消息；status 可以改。 */
+function fakeAgents() {
+  const agent = { status: 'idle', inbox: { nextTurn: [] }, sent: [], followup(m) { this.sent.push(m) } }
+  return { agent, service: { get: (id) => (id === 's1' ? agent : undefined) } }
+}
+
+/** 按 DSH 会话日志里的真实事件顺序回放一轮：调游戏工具 → 结果 → 最后一条回复 → 回合结束。 */
+function playTurn(emit, { tool = 'mcp__stardew__water_crops', ok = true, last, reason = 'completed' }) {
+  const session = { id: 's1' }
+  const ev = (type, data) => emit('session/event', session, { type, data })
+  ev('turn/start', { turn: 1 })
+  ev('tool/call', { callId: 'c1', name: tool, arguments: '{}' })
+  ev('tool/result', { message: { role: 'tool', toolCallId: 'c1', isError: !ok, content: [] } })
+  ev('assistant/message', { message: { role: 'assistant', content: last } })
+  ev('turn/end', { reason: { kind: reason } })
+}
+
+// 2026-11-01 DSH 会话日志里真实出现的坏回复
+const BROKEN = [{ type: 'reasoning', text: ' ' }, { type: 'text', text: '</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>' }]
+
+test('自动续玩：玩游戏的会话里模型回复坏了，等空闲后发“接着玩”', async () => {
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    plugin.apply(f.ctx, { port: 1 })
+    agent.status = 'running'
+    playTurn(f.emit, { last: BROKEN })
+    await wait(1700)
+    assert.equal(agent.sent.length, 0, '还在跑的时候不发')
+    agent.status = 'idle'
+    await wait(1600)
+    assert.equal(agent.sent.length, 1)
+    assert.equal(agent.sent[0].role, 'user')
+    assert.equal(agent.sent[0].content[0].text, plugin.AUTO_CONTINUE_TEXT)
+    assert.ok(f.logs.some((l) => l.includes('已自动发')))
+  } finally {
+    f.dispose()
+  }
+})
+
+test('自动续玩：正常说完、没玩游戏、被打断、关掉开关、用户已经发了话时都不发', async () => {
+  const cases = [
+    { config: {}, turn: { last: [{ type: 'text', text: '今天先玩到这里。' }] } },
+    { config: {}, turn: { tool: 'bash', last: BROKEN } },
+    { config: {}, turn: { last: BROKEN, reason: 'aborted' } },
+    { config: { autoContinue: false }, turn: { last: BROKEN } },
+    { config: {}, turn: { last: BROKEN }, userTyped: true },
+  ]
+  for (const c of cases) {
+    const { agent, service } = fakeAgents()
+    if (c.userTyped) agent.inbox.nextTurn.push({ id: 'u' })
+    const f = fakeCtx({ agents: service })
+    try {
+      plugin.apply(f.ctx, { port: 1, ...c.config })
+      playTurn(f.emit, c.turn)
+      await wait(1700)
+      assert.equal(agent.sent.length, 0, JSON.stringify(c))
+    } finally {
+      f.dispose()
+    }
+  }
+})
+
+test('自动续玩：连续坏掉超过上限就停；中间有一次游戏动作成功就重新计数', async () => {
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    plugin.apply(f.ctx, { port: 1, autoContinueMax: 2 })
+    // 每轮的游戏动作都失败：只续 2 次
+    for (let i = 0; i < 3; i++) playTurn(f.emit, { ok: false, last: BROKEN })
+    await wait(1700)
+    assert.equal(agent.sent.length, 2)
+    assert.ok(f.logs.some((l) => l.includes('不再自动续玩')))
+    // 一次成功的游戏动作之后又能续了
+    playTurn(f.emit, { ok: true, last: BROKEN })
+    await wait(1700)
+    assert.equal(agent.sent.length, 3)
+  } finally {
+    f.dispose()
+  }
+})
+
 test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config && '没找到 schemastery（设置 DSH_HOME 再测）' }, () => {
   const resolved = plugin.Config({})
   assert.equal(resolved.sessionDays, 0)
@@ -262,5 +350,6 @@ test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config 
   assert.equal(resolved.guideFile, 'guide/zh-CN.md')
   assert.equal(resolved.presetEnabled, false, '会话预设默认关闭')
   assert.equal(resolved.gatewayEnabled, false, '入口工具默认关闭')
+  assert.equal(resolved.autoContinue, true, '自动续玩默认开启')
   assert.throws(() => plugin.Config({ sessionDays: -1 }))
 })
