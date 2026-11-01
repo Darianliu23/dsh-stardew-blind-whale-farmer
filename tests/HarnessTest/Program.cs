@@ -191,6 +191,7 @@ class Program
 
         using var http = new System.Net.Http.HttpClient();
         string url = $"http://127.0.0.1:{port}/mcp";
+        string lastContentType = null, lastRaw = null;
         async Task<(int code, JsonNode body)> Post(string json, string origin = null)
         {
             var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url)
@@ -202,6 +203,11 @@ class Program
                 req.Headers.Add("Origin", origin);
             var resp = await http.SendAsync(req);
             string text = await resp.Content.ReadAsStringAsync();
+            lastContentType = resp.Content.Headers.ContentType?.MediaType;
+            lastRaw = text;
+            // 工具调用用 SSE 回复：取 data: 行里的 JSON-RPC 消息
+            if (lastContentType == "text/event-stream")
+                text = string.Join("\n", text.Split('\n').Where(l => l.StartsWith("data:")).Select(l => l.Substring(5).Trim()));
             return ((int)resp.StatusCode, string.IsNullOrEmpty(text) ? null : JsonNode.Parse(text));
         }
 
@@ -242,6 +248,11 @@ class Program
         var (cg, guide) = await Post("{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"get_guide\",\"arguments\":{}}}");
         string guideText = guide?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
         Check(cg == 200 && guideText.Contains("第一年春季路线") && guide?["result"]?["isError"]?.GetValue<bool>() == false, "MCP get_guide 返回攻略全文且不算出错");
+        // 长动作超过 5 分钟时 Node 的 fetch 会断开：工具调用必须用 SSE 先发响应头、动作期间发心跳
+        Check(lastContentType == "text/event-stream" && lastRaw.StartsWith(": start") && lastRaw.Contains("event: message"),
+            "MCP 工具调用用 SSE 回复（先发响应头，结果是 message 事件）");
+        var (cj, initAgain) = await Post("{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"ping\"}");
+        Check(cj == 200 && lastContentType == "application/json", "MCP 非工具调用仍然用普通 JSON 回复");
 
         // ── /settings：DSH 插件推设置 ──
         var post = new System.Net.Http.StringContent(

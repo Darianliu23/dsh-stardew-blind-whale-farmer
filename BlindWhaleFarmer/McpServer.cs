@@ -11,7 +11,7 @@ using StardewModdingAPI;
 namespace BlindWhaleFarmer
 {
     /// <summary>
-    /// 本地 MCP 服务器（Streamable HTTP 传输，只用 JSON 响应，不开 SSE）。
+    /// 本地 MCP 服务器（Streamable HTTP 传输；工具调用在客户端接受时用 SSE 回复并定时发心跳，其余用 JSON）。
     /// 让 WorkBuddy、Claude Code、Cursor 等 MCP 客户端直接调用和内置 AI 相同的工具来玩游戏，
     /// 思考由客户端完成，消耗的是客户端自己的额度。只监听 127.0.0.1。
     /// </summary>
@@ -159,6 +159,11 @@ namespace BlindWhaleFarmer
                     }
                     await Write(resp, results.Count > 0 ? 200 : 202, results.Count > 0 ? results : null);
                 }
+                else if (parsed is JsonObject call && call["method"]?.GetValue<string>() == "tools/call"
+                         && (req.Headers["Accept"] ?? "").Contains("text/event-stream"))
+                {
+                    await WriteStreamed(resp, Dispatch(call));
+                }
                 else
                 {
                     var r = await Dispatch(parsed as JsonObject);
@@ -280,6 +285,9 @@ namespace BlindWhaleFarmer
         {
             if (mod.Agent.Running)
                 return "失败：游戏里的内置 AI 正在运行，请先在游戏里按 " + mod.Config.ToggleKey + " 停止它，再通过 MCP 操作";
+            if (mod.PlayerInControl && !InfoTools.Contains(name) && name != "update_notes")
+                return $"失败：玩家按 {mod.Config.TakeOverKey} 接管了游戏，现在由玩家自己操作，你的动作都会被拒绝。"
+                       + $"不要再尝试游戏动作：停下来向玩家汇报刚才在做什么、遇到了什么问题，等玩家在游戏里再按 {mod.Config.TakeOverKey} 交还、并告诉你继续";
 
             string argText = args?.ToJsonString() ?? "{}";
             string result;
@@ -291,6 +299,8 @@ namespace BlindWhaleFarmer
                         Context.IsWorldReady ? mod.Observer.Build() : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
                     // 本次游玩进度和玩家的额外要求放最前面（它们可以在 DSH 设置里随时改，不在连接时的说明里）
                     var head = new List<string>();
+                    if (mod.PlayerInControl)
+                        head.Add($"【玩家接管中】玩家按 {mod.Config.TakeOverKey} 接管了游戏，你的游戏动作都会被拒绝。停下来向玩家汇报，等玩家交还");
                     if (mod.Session?.Status() is string session)
                         head.Add("【" + session + "】");
                     if (!string.IsNullOrWhiteSpace(mod.Config.ExtraInstructions))
@@ -393,6 +403,59 @@ namespace BlindWhaleFarmer
                 },
                 ["session"] = mod.Session?.Status() ?? "不限时长"
             };
+        }
+
+        private const int KeepAliveMs = 15000;
+
+        /// <summary>
+        /// 工具调用用 SSE 回复：先发响应头，动作执行期间每 15 秒发一行注释（": keep-alive"），结束时发结果事件。
+        /// 客户端用 Node 自带的 fetch 时，响应头 5 分钟内不到、或者 5 分钟没收到数据就会报 “fetch failed”，
+        /// 而下矿、钓鱼最长要 15 分钟。客户端中途断开（比如用户按了停止）时，游戏里的动作也停下，不在没人看的情况下继续跑。
+        /// </summary>
+        private async Task WriteStreamed(HttpListenerResponse resp, Task<JsonNode> work)
+        {
+            resp.StatusCode = 200;
+            resp.ContentType = "text/event-stream; charset=utf-8";
+            resp.Headers["Cache-Control"] = "no-cache";
+            resp.SendChunked = true;
+            var output = resp.OutputStream;
+            async Task Send(string text)
+            {
+                var bytes = Encoding.UTF8.GetBytes(text);
+                await output.WriteAsync(bytes, 0, bytes.Length);
+                await output.FlushAsync();
+            }
+
+            try
+            {
+                await Send(": start\n\n");
+                while (await Task.WhenAny(work, Task.Delay(KeepAliveMs)) != work)
+                {
+                    await Send(": keep-alive\n\n");
+                    Interlocked.Exchange(ref lastActivityTicks, DateTime.UtcNow.Ticks);
+                }
+                var result = await work;
+                await Send("event: message\ndata: " + (result ?? Error(null, -32603, "no result")).ToJsonString() + "\n\n");
+            }
+            catch (Exception ex) when (ex is IOException or HttpListenerException or ObjectDisposedException)
+            {
+                if (!work.IsCompleted)
+                {
+                    mod.MainThread?.CancelCurrent("MCP 客户端断开了连接，动作已中止");
+                    mod.Monitor?.Log("MCP 客户端在动作执行中断开了连接，已中止当前动作。", LogLevel.Info);
+                }
+            }
+            finally
+            {
+                try
+                {
+                    resp.Close();
+                }
+                catch
+                {
+                    // 连接已经断了
+                }
+            }
         }
 
         private static async Task Write(HttpListenerResponse resp, int status, JsonNode body)

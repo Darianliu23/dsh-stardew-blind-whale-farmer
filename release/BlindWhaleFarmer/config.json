@@ -6,6 +6,7 @@
   "MaxTokens": 4096,
   "RequestTimeoutSeconds": 120,
   "ToggleKey": "F8",
+  "TakeOverKey": "F7",
   "FreezeTimeWhileThinking": true,
   "MaxActionsPerStep": 6,
   "HistoryLines": 25,

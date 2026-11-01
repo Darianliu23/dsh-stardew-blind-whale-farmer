@@ -32,6 +32,9 @@ namespace BlindWhaleFarmer
         /// <summary>Game1.paused 是不是我们打开的：MCP 客户端停下后整个游戏暂停，等玩家按键或 AI 回来。</summary>
         private bool pausedByUs;
         private bool mcpWasPlaying;
+
+        /// <summary>玩家按了接管键：AI 的游戏动作一律拒绝，不冻结时间、不自动暂停。再按一次交还。</summary>
+        internal volatile bool PlayerInControl;
         /// <summary>AI 在玩时临时关掉的“失去焦点时暂停”原值；null 表示没有改动。</summary>
         private bool? savedPauseWhenOutOfFocus;
         private string transcriptPath;
@@ -203,6 +206,11 @@ namespace BlindWhaleFarmer
             // AI 停下后暂停的游戏：玩家按任意键接手
             if (pausedByUs)
                 SetIdlePaused(false);
+            if (e.Button == Config.TakeOverKey && Context.IsWorldReady)
+            {
+                SetPlayerInControl(!PlayerInControl);
+                return;
+            }
             if (e.Button != Config.ToggleKey || !Context.IsWorldReady)
                 return;
             if (Agent.Running)
@@ -257,7 +265,8 @@ namespace BlindWhaleFarmer
             if (ready)
                 CurrentStamp = Util.Stamp();
 
-            bool mcpPlaying = McpPlaying;
+            // 玩家接管时 AI 可能还在发（会被拒绝的）请求，不算在玩：不冻结时间、不后台运行
+            bool mcpPlaying = McpPlaying && !PlayerInControl;
             UpdateIdlePause(ready, mcpPlaying);
 
             MainThread.Tick(ready);
@@ -295,8 +304,33 @@ namespace BlindWhaleFarmer
             mcpWasPlaying = mcpPlaying;
             if (pausedByUs && (!ready || mcpPlaying || Agent.Running))
                 SetIdlePaused(false);
-            else if (stopped && ready && Config.PauseWhenAiStops && !Context.IsMultiplayer && !Game1.paused && !MainThread.IsBusy)
+            else if (stopped && ready && Config.PauseWhenAiStops && !PlayerInControl && !Context.IsMultiplayer && !Game1.paused && !MainThread.IsBusy)
                 SetIdlePaused(true);
+        }
+
+        /// <summary>
+        /// 接管：中止 AI 正在执行的动作（比如卡住的下矿），停下内置 AI，之后 AI 的游戏动作都会被拒绝，玩家自己操作。
+        /// 交还：AI 下次调用就能继续玩。
+        /// </summary>
+        private void SetPlayerInControl(bool inControl)
+        {
+            PlayerInControl = inControl;
+            mcpWasPlaying = false;
+            if (inControl)
+            {
+                MainThread.CancelCurrent($"玩家按 {Config.TakeOverKey} 接管了游戏，动作已中止");
+                if (Agent.Running)
+                    Agent.Stop($"玩家按 {Config.TakeOverKey} 接管了游戏");
+                SetTimeFrozen(false);
+                Game1.player.CanMove = true;
+                Hud.SetStatus($"你接管了游戏，AI 的动作会被拒绝。再按 {Config.TakeOverKey} 交还给 AI");
+                Monitor.Log($"玩家按 {Config.TakeOverKey} 接管了游戏，已中止 AI 的动作。", LogLevel.Info);
+            }
+            else
+            {
+                Hud.SetStatus("");
+                Monitor.Log($"玩家按 {Config.TakeOverKey} 把游戏交还给 AI。", LogLevel.Info);
+            }
         }
 
         private void SetIdlePaused(bool paused)
@@ -330,7 +364,7 @@ namespace BlindWhaleFarmer
                 return;
             try
             {
-                bool mcp = !Agent.Running && McpPlaying;
+                bool mcp = !Agent.Running && McpPlaying && !PlayerInControl;
                 Hud.Draw(b, Agent.Running || mcp, Agent.IsThinking || (mcp && !MainThread.IsBusy), mcp);
             }
             catch (Exception ex)

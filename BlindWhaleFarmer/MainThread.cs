@@ -54,6 +54,9 @@ namespace BlindWhaleFarmer
         private TaskCompletionSource<string> currentTcs;
         private int currentTicks;
         private int currentMaxTicks;
+        /// <summary>正在跑的动作叫什么、什么时候开始的（“上一个动作还在执行”时告诉 AI）。</summary>
+        private string currentName;
+        private DateTime currentStartedUtc;
         /// <summary>动作开始时的生命值；-1 表示这个动作不因掉血中断。</summary>
         private int currentStartHealth = -1;
 
@@ -99,7 +102,7 @@ namespace BlindWhaleFarmer
         /// preemptWhenStuck：处理界面的动作（dialogue、skip_event 等）在剧情/界面打开时可以打断正在跑的动作——
         /// 那个动作被剧情挡住本来也走不动，不打断的话两边互相等，会卡死。
         /// </summary>
-        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false)
+        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false, string name = null)
         {
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             queue.Enqueue(() =>
@@ -108,13 +111,17 @@ namespace BlindWhaleFarmer
                     Finish("失败：被剧情/界面打断，已中止（先处理剧情或界面，再重新执行）");
                 if (current != null)
                 {
-                    tcs.SetResult("失败：上一个动作还在执行");
+                    int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
+                    string what = currentName != null ? $"（{currentName}，已经执行 {sec / 60} 分 {sec % 60} 秒，最长 {currentMaxTicks / 3600} 分钟）" : "";
+                    tcs.SetResult($"失败：上一个动作{what}还在执行，它结束前其他动作都会被拒绝。可以用 get_state 看看情况，过一会儿再试");
                     return;
                 }
                 try
                 {
                     current = factory().GetEnumerator();
                     currentTcs = tcs;
+                    currentName = name;
+                    currentStartedUtc = DateTime.UtcNow;
                     currentTicks = 0;
                     currentMaxTicks = Math.Max(1, maxSeconds) * 60;
                     currentStartHealth = interruptOnDamage ? Safe(() => StardewValley.Game1.player?.health ?? -1, -1) : -1;
@@ -178,6 +185,19 @@ namespace BlindWhaleFarmer
         {
             if (current != null)
                 Finish("失败：" + reason);
+        }
+
+        /// <summary>从任意线程中止正在跑的动作（在主线程下一帧执行）；那时已经换成别的动作就不动它。</summary>
+        public void CancelCurrent(string reason)
+        {
+            var tcs = currentTcs;
+            if (tcs == null)
+                return;
+            queue.Enqueue(() =>
+            {
+                if (currentTcs == tcs)
+                    Cancel(reason);
+            });
         }
 
         private void Finish(string message)

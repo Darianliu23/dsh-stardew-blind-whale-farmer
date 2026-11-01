@@ -187,8 +187,12 @@ function fakeGameMcp() {
           { name: 'move_to', description: '走到某一格。会自动寻路', inputSchema: { type: 'object', properties: { x: {}, y: {}, run: {} }, required: ['x', 'y'] } },
         ] }
       else if (msg.method === 'tools/call') {
+        // 和真的模组一样：工具调用用 SSE 回复，先发心跳注释，再发结果事件
         calls.push(msg.params)
         result = { content: [{ type: 'text', text: `成功：${msg.params.name} ${JSON.stringify(msg.params.arguments)}` }], isError: false }
+        res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+        res.write(': start\n\n: keep-alive\n\n')
+        return res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result })}\n\n`)
       }
       res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
     })
@@ -248,6 +252,12 @@ test('入口工具：help 给规则和动作列表（不含整份攻略），其
     dispose()
     server.close()
   }
+})
+
+test('SSE 解析：跳过心跳注释，取出结果；没有结果时报错', () => {
+  const ok = plugin.parseSseResult(': start\r\n\r\n: keep-alive\n\nevent: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"x":1}}\n\n')
+  assert.deepEqual(ok.result, { x: 1 })
+  assert.throws(() => plugin.parseSseResult(': start\n\n: keep-alive\n\n'), /没有结果/)
 })
 
 test('入口工具：游戏没开时给出看得懂的提示', async () => {

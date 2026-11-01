@@ -22,6 +22,9 @@ namespace BlindWhaleFarmer
         /// <summary>开关 AI 的快捷键。</summary>
         public SButton ToggleKey { get; set; } = SButton.F8;
 
+        /// <summary>接管键：中止 AI 正在执行的动作、拒绝之后的所有游戏动作，由玩家自己操作；再按一次交还给 AI。</summary>
+        public SButton TakeOverKey { get; set; } = SButton.F7;
+
         /// <summary>等待模型回复时冻结游戏时间，避免思考浪费游戏内时间。</summary>
         public bool FreezeTimeWhileThinking { get; set; } = true;
 

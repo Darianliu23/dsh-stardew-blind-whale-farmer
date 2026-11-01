@@ -257,6 +257,9 @@ namespace BlindWhaleFarmer
             return $"⚠ 附近有 {close.Count} 只怪：{list}，生命 {Player.health}/{Player.maxHealth}。先用 fight 清掉再干别的；生命低又没有回血食物就撤退";
         }
 
+        /// <summary>会给怪加血的怪：暗影萨满每次施法约四成概率给附近血量比例最低的怪（常常是它自己）加 60 血，血少于 30 会逃跑。</summary>
+        private static bool IsHealer(Monster m) => m is ShadowShaman;
+
         /// <summary>伤害最高的近战武器；没有就用镰刀凑合。</summary>
         private static int BestWeapon()
         {
@@ -291,8 +294,48 @@ namespace BlindWhaleFarmer
             return dy < 0 ? 0 : 2;
         }
 
+        /// <summary>
+        /// 站在原地朝哪个方向挥能砍到这只怪；砍不到返回 -1。
+        /// 用游戏自己的 MeleeWeapon.getAreaOfEffect 算判定区（和真正挥砍时 DoDamage 用的同一个函数）：
+        /// 匕首的判定区比剑、锤窄短，有的武器还带“额外范围”（addedAreaOfEffect）往四周撑大；剑挥动时每帧位置不同，取全部帧的并集。
+        /// </summary>
+        private static int ReachDirection(MeleeWeapon weapon, Monster m)
+        {
+            var box = m.GetBoundingBox();
+            int primary = DirToward(Player.StandingPixel, box.Center);
+            int facing = Player.FacingDirection;
+            try
+            {
+                // 先试正对着的方向，再试另一条轴上靠近它的方向（怪在斜角时两边都可能砍得到）
+                int dx = box.Center.X - Player.StandingPixel.X, dy = box.Center.Y - Player.StandingPixel.Y;
+                int secondary = primary is 1 or 3 ? (dy < 0 ? 0 : 2) : (dx > 0 ? 1 : 3);
+                foreach (int dir in new[] { primary, secondary })
+                {
+                    Player.FacingDirection = dir;
+                    var at = Player.GetToolLocation(ignoreClick: true);
+                    Vector2 t1 = Vector2.Zero, t2 = Vector2.Zero;
+                    for (int frame = 0; frame <= 5; frame++)
+                    {
+                        var area = weapon.getAreaOfEffect((int)at.X, (int)at.Y, dir, ref t1, ref t2, Player.GetBoundingBox(), frame);
+                        if (area.Intersects(box))
+                            return dir;
+                    }
+                }
+                return -1;
+            }
+            catch
+            {
+                // 算不出来（比如模组武器重写了判定）：退回到按距离估算
+                return Vector2.Distance(box.Center.ToVector2(), Player.StandingPixel.ToVector2()) <= 90f ? primary : -1;
+            }
+            finally
+            {
+                Player.FacingDirection = facing;
+            }
+        }
+
         /// <summary>朝怪物挥一次武器（和左键挥武器同一套流程）。</summary>
-        private IEnumerable<object> SwingAt(int weaponIdx, Monster m)
+        private IEnumerable<object> SwingAt(int weaponIdx, Monster m, int dir)
         {
             for (int i = 0; i < 60 && (Player.UsingTool || Player.FarmerSprite.isUsingWeapon()); i++)
                 yield return null;
@@ -300,7 +343,7 @@ namespace BlindWhaleFarmer
                 yield break;
             Player.CurrentToolIndex = weaponIdx;
             var center = m.GetBoundingBox().Center;
-            Player.faceDirection(DirToward(Player.StandingPixel, center));
+            Player.faceDirection(dir);
             Player.lastClick = new Vector2(center.X, center.Y);
             Player.completelyStopAnimatingOrDoingAction();
             Player.CanMove = false;
@@ -326,6 +369,7 @@ namespace BlindWhaleFarmer
             var unreachable = new HashSet<Monster>();
             var everUnreachable = st.Unreachable;
             var waited = new Dictionary<Monster, int>();
+            Monster chasing = null;
             int unreachableReset = Game1.ticks;
             var walk = new Outcome();
             while (Game1.ticks - start < maxSeconds * 60)
@@ -355,17 +399,24 @@ namespace BlindWhaleFarmer
                     unreachableReset = Game1.ticks;
                 }
                 var me = Player.TilePoint;
-                var target = LiveMonsters(Loc)
+                // 会加血的怪（暗影萨满）先打：不然它一直给自己和别的怪回血。打残了它会逃跑，所以盯上以后追出 radius 也要追到死
+                if (chasing != null && (chasing.Health <= 0 || !Loc.characters.Contains(chasing) || unreachable.Contains(chasing)
+                                        || Util.Manhattan(chasing.TilePoint, me) > radius + 10))
+                    chasing = null;
+                var target = chasing ?? LiveMonsters(Loc)
                     .Where(m => !unreachable.Contains(m) && Util.Manhattan(m.TilePoint, me) <= radius)
-                    .OrderBy(m => Vector2.Distance(m.GetBoundingBox().Center.ToVector2(), Player.StandingPixel.ToVector2()))
+                    .OrderBy(m => IsHealer(m) ? 0 : 1)
+                    .ThenBy(m => Vector2.Distance(m.GetBoundingBox().Center.ToVector2(), Player.StandingPixel.ToVector2()))
                     .FirstOrDefault();
                 if (target == null)
                     break;
+                if (IsHealer(target))
+                    chasing = target;
 
-                float dist = Vector2.Distance(target.GetBoundingBox().Center.ToVector2(), Player.StandingPixel.ToVector2());
-                if (dist <= 90f)
+                int swingDir = Player.Items[weaponIdx] is MeleeWeapon held ? ReachDirection(held, target) : -1;
+                if (swingDir >= 0)
                 {
-                    foreach (var s in SwingAt(weaponIdx, target))
+                    foreach (var s in SwingAt(weaponIdx, target, swingDir))
                         yield return s;
                     st.Swings++;
                     if (target.Health <= 0 || !Loc.characters.Contains(target))
@@ -378,6 +429,16 @@ namespace BlindWhaleFarmer
                 if (Pathfinder.IsPassable(Loc, target.TilePoint.X, target.TilePoint.Y))
                     goals.Add(target.TilePoint);
                 var path = goals.Count > 0 ? Pathfinder.FindPath(Loc, me, goals, 8000) : null;
+                if ((path == null || path.Count < 2) && Util.Manhattan(target.TilePoint, me) <= 1)
+                {
+                    // 已经贴着它了，判定区却没算到（碰撞框偏一点）：没地方再靠近，直接朝它挥
+                    foreach (var s in SwingAt(weaponIdx, target, DirToward(Player.StandingPixel, target.GetBoundingBox().Center)))
+                        yield return s;
+                    st.Swings++;
+                    if (target.Health <= 0 || !Loc.characters.Contains(target))
+                        st.Kills++;
+                    continue;
+                }
                 if (path == null || path.Count < 2)
                 {
                     // 会飞的怪（蝙蝠等）过一会儿自己会飞过来；地上的怪离得近也多半在朝我们走（被石头挡住的路它可能绕得过来），原地等它几秒
@@ -510,6 +571,7 @@ namespace BlindWhaleFarmer
             }
 
             int guard = 0;
+            int lastHp = Player.health;
             while (descended < levels && guard++ < 400)
             {
                 if (Loc is not MineShaft mine)
@@ -541,9 +603,17 @@ namespace BlindWhaleFarmer
                     break;
                 }
 
-                // 1) 清理靠近的怪（先保命再干活）
-                foreach (var s in FightInner(6, 0.4f, 20, st, o))
+                // 1) 清理靠近的怪（先保命再干活）。上一轮挨了打、身边却没有怪：多半是骷髅扔骨头、暗影萨满放法术这种远程怪，
+                //    只打 6 格以内永远碰不到它，会一直挨打、吃东西、敲不成石头（夏21 第 75、83 层就这样耗了几分钟），所以扩大范围去找它
+                bool sniped = Player.health < lastHp && NearestThreat(2) == null;
+                // 附近有萨满时多给点时间：它会回血、会逃，20 秒常常打不死
+                bool healerNear = LiveMonsters(mine).Any(m => IsHealer(m) && Util.Manhattan(m.TilePoint, Player.TilePoint) <= 10);
+                int swingsBefore = st.Swings;
+                foreach (var s in FightInner(sniped || healerNear ? 16 : 6, 0.4f, sniped || healerNear ? 45 : 20, st, o))
                     yield return s;
+                // 扩大范围也一下没打着（远程怪隔着墙/岩浆，走不过去）：这一轮敲石头时不再因为远处的伤害停手，否则会原地打转
+                bool shooterUnreachable = sniped && st.Swings == swingsBefore;
+                lastHp = Player.health;
                 if (!o.Ok && o.Message.StartsWith("!"))
                 {
                     stop = o.Message.Substring(1);
@@ -589,8 +659,10 @@ namespace BlindWhaleFarmer
                     int hpBefore = Player.health;
                     for (int k = 0; k < 8 && mine.objects.ContainsKey(new Vector2(stone.X, stone.Y)); k++)
                     {
-                        // 敲石头时被打了、或者有怪贴上来：先停手，回到循环开头打怪
-                        if (Player.health < hpBefore || NearestThreat(2) != null)
+                        // 被打了（包括远处飞来的骨头、法术）或者有怪贴上来：先停手，回到循环开头去打它。
+                        // 只有刚才确认打不到那只远程怪时，远处的伤害才不打断（生命低于四成照样停下吃东西）
+                        bool hurt = Player.health < hpBefore && !shooterUnreachable;
+                        if (hurt || NearestThreat(2) != null || Player.health < Player.maxHealth * 0.4f)
                             break;
                         foreach (var s in UseToolOnce(pick, stone, o))
                             yield return s;

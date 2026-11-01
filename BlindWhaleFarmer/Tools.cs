@@ -308,7 +308,7 @@ namespace BlindWhaleFarmer
             }
             // 打怪类动作本来就会挨打；其他动作被怪打了要停下，让 AI 先清怪
             bool interruptOnDamage = !CombatTools.Contains(name) && !InterfaceTools.Contains(name);
-            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage).ConfigureAwait(false);
+            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name).ConfigureAwait(false);
             if (name == "sleep")
                 return result;
             if (result.Contains("背包满了") && name != "store_items" && name != "take_items")
