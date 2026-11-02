@@ -301,6 +301,9 @@ namespace BlindWhaleFarmer
         /// </summary>
         private static int ReachDirection(MeleeWeapon weapon, Monster m)
         {
+            // 判定区盖住了也不一定打得到：隔着石头、墙就打不到（游戏的 isMonsterDamageApplicable）
+            if (!HasDamageLineOfSight(m))
+                return -1;
             var box = m.GetBoundingBox();
             int primary = DirToward(Player.StandingPixel, box.Center);
             int facing = Player.FacingDirection;
@@ -332,6 +335,50 @@ namespace BlindWhaleFarmer
             {
                 Player.FacingDirection = facing;
             }
+        }
+
+        /// <summary>
+        /// 照抄游戏 GameLocation.isMonsterDamageApplicable：怪不贴身（曼哈顿距离 &gt; 1）时，
+        /// 从她的格子一格格走到怪的格子（先横后竖、先竖后横两条路，有一条通就行），
+        /// 中间有不能穿过的物体（石头等）或挡伤害的地形就打不到。会飞的怪和无视遮挡的怪不受影响。
+        /// </summary>
+        private static bool HasDamageLineOfSight(Monster m)
+        {
+            if (m.isGlider.Value || m.ignoreDamageLOS.Value)
+                return true;
+            Point from = Player.TilePoint, to = m.TilePoint;
+            if (Util.Manhattan(from, to) <= 1)
+                return true;
+            bool Clear(bool horizontalBias)
+            {
+                int dx = to.X - from.X, dy = to.Y - from.Y, x = from.X, y = from.Y;
+                while (dx != 0 || dy != 0)
+                {
+                    bool stepX = horizontalBias ? Math.Abs(dx) >= Math.Abs(dy) : Math.Abs(dy) < Math.Abs(dx);
+                    if (stepX) { x += Math.Sign(dx); dx -= Math.Sign(dx); }
+                    else { y += Math.Sign(dy); dy -= Math.Sign(dy); }
+                    if ((Loc.objects.TryGetValue(new Vector2(x, y), out var o) && !o.isPassable()) || Loc.BlocksDamageLOS(x, y))
+                        return false;
+                }
+                return true;
+            }
+            return Clear(true) || Clear(false);
+        }
+
+        /// <summary>她和怪之间（怪在 3 格以内）挡着的、紧挨着她的那块能敲碎的石头；没有返回 null。</summary>
+        private static Point? BlockingStoneNextToMe(Monster m)
+        {
+            Point me = Player.TilePoint, to = m.TilePoint;
+            if (Util.Manhattan(me, to) > 3)
+                return null;
+            foreach (var p in new[] { new Point(me.X + Math.Sign(to.X - me.X), me.Y), new Point(me.X, me.Y + Math.Sign(to.Y - me.Y)) })
+            {
+                if (p == me)
+                    continue;
+                if (Loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var o) && o.IsBreakableStone())
+                    return p;
+            }
+            return null;
         }
 
         /// <summary>朝怪物挥一次武器（和左键挥武器同一套流程）。</summary>
@@ -441,6 +488,20 @@ namespace BlindWhaleFarmer
                 }
                 if (path == null || path.Count < 2)
                 {
+                    // 绕不过去、而且挡在中间的就是她身边的一块石头：用镐子敲掉再打（隔着石头挥剑是打不到的）
+                    if (BlockingStoneNextToMe(target) is Point stone && Util.FindTool<Pickaxe>() is int pick && pick >= 0)
+                    {
+                        for (int k = 0; k < 6 && Loc.objects.ContainsKey(new Vector2(stone.X, stone.Y)); k++)
+                        {
+                            foreach (var s in UseToolOnce(pick, stone, walk))
+                                yield return s;
+                            if (!walk.Ok)
+                                break;
+                        }
+                        walk.Succeed();
+                        if (!Loc.objects.ContainsKey(new Vector2(stone.X, stone.Y)))
+                            continue;
+                    }
                     // 会飞的怪（蝙蝠等）过一会儿自己会飞过来；地上的怪离得近也多半在朝我们走（被石头挡住的路它可能绕得过来），原地等它几秒
                     waited.TryGetValue(target, out int w);
                     if (target.isGlider.Value || (Util.Manhattan(target.TilePoint, me) <= 5 && w < 240))
