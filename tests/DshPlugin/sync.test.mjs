@@ -69,7 +69,7 @@ test('第一次推送设置，之后版本号一样就不重复推', async () =>
   await wait(300)
   assert.equal(state.posts.length, 1)
   assert.deepEqual(state.posts[0].settings, {
-    sessionDays: 2, sessionMinutes: 30, freezeTime: true, idleSeconds: 120, extraInstructions: '专心钓鱼', guideFile: 'guide/攻略.md',
+    sessionDays: 2, sessionMinutes: 30, freezeTime: true, idleSeconds: 120, forageRadius: 1, extraInstructions: '专心钓鱼', guideFile: 'guide/攻略.md',
     guides: {},
   })
   dispose()

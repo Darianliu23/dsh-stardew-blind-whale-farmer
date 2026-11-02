@@ -47,6 +47,9 @@ namespace BlindWhaleFarmer
         /// <summary>自动点掉出货结算界面、无需选择的升级界面。</summary>
         public bool AutoConfirmNightMenus { get; set; } = true;
 
+        /// <summary>走路时顺手采集野生采集物的范围（格，含斜角）。0 = 不顺手采；1 = 只采紧挨着的；更大会离开路线几步去采再回来。最大 10。</summary>
+        public int ForageRadius { get; set; } = 1;
+
         /// <summary>额外写给 AI 的目标/要求，例如“优先赚钱，第一年春天种满防风草”。</summary>
         public string ExtraInstructions { get; set; } = "";
 

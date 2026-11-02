@@ -132,6 +132,7 @@ SMAPI 控制台命令（调试用）：
 | `MapRadiusX` / `MapRadiusY` | 14 / 9 | 文字地图大小 |
 | `ScanRadius` | 16 | 附近物体扫描半径 |
 | `AutoConfirmNightMenus` | `true` | 自动确认出货结算、普通升级界面 |
+| `ForageRadius` | `1` | 走路时顺手采集野菜、贝壳这类野生采集物的范围（格）。`0` 不采，`1` 只采紧挨着路的，更大会离开路线几步去采再回来（最大 10）。DSH 插件设置里也能改 |
 | `ExtraInstructions` | 空 | 写给 AI 的额外目标，例如 `"第一年专心种地赚钱，每天和 Abigail 聊天"` |
 | `GuideFile` | `guide/攻略.md` | 攻略文件（游戏常识和打法路线，见下方“攻略”）。想换打法就复制一份改名，再把这里指过去 |
 | `LogPrompts` | `false` | 把完整提示词写进 transcript，调试用 |

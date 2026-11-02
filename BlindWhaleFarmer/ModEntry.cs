@@ -50,6 +50,7 @@ namespace BlindWhaleFarmer
             Config = helper.ReadConfig<ModConfig>();
             Monitor.Log(Guide.Load(helper.DirectoryPath, Config.GuideFile), LogLevel.Info);
             Guide.SetOverrides(Config.GuideOverrides);
+            GameActions.ForageRadius = Math.Clamp(Config.ForageRadius, 0, 10);
             MainThread = new MainThread(Monitor);
             Observer = new Observer(Config, helper.Reflection);
             Actions = new GameActions(helper.Reflection, Observer);
@@ -157,6 +158,8 @@ namespace BlindWhaleFarmer
                 Config.McpFreezeTime = f.GetValue<bool>();
             if (s["idleSeconds"] is { } idle)
                 Config.McpIdleSeconds = Math.Clamp(idle.GetValue<int>(), 10, 3600);
+            if (s["forageRadius"] is { } fr)
+                GameActions.ForageRadius = Config.ForageRadius = Math.Clamp(fr.GetValue<int>(), 0, 10);
             if (s["extraInstructions"] is { } extra)
                 Config.ExtraInstructions = extra.GetValue<string>() ?? "";
             string guideLog = null;

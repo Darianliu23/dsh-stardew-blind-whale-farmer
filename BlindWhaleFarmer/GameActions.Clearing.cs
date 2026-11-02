@@ -102,29 +102,62 @@ namespace BlindWhaleFarmer
             return msg;
         }
 
+        /// <summary>走路时顺手采集的范围（格，含斜角）。0 = 不采；1 = 只采紧挨着的；更大会离开路线几步去采再回来。由 ModEntry 按配置设置。</summary>
+        public static int ForageRadius = 1;
+
+        /// <summary>正在绕去采东西：这期间的走路不再嵌套触发顺手采集。</summary>
+        private static bool pickingForage;
+
+        /// <summary>这格是不是现在就能顺手采的野生采集物（有村民站着的不算：交互会变成和他说话，手里拿着礼物还会送出去）。</summary>
+        private static bool PickableForage(GameLocation loc, Point p)
+        {
+            if (!loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || !obj.IsSpawnedObject || !obj.isForage()
+                || obj.questItem.Value || !Player.couldInventoryAcceptThisItem(obj))
+                return false;
+            var rect = new Rectangle(p.X * 64, p.Y * 64, 64, 64);
+            return !loc.characters.Any(c => c != null && c.GetBoundingBox().Intersects(rect));
+        }
+
         /// <summary>
-        /// 走路时身边一格（含斜角）有能采的野生采集物（季节野菜、贝壳、洞穴萝卜之类）就顺手采了，和手动按交互键一样
-        /// （会算采集经验、品质）。节日/剧情里不采；有村民站在那格时不采（交互会变成和他说话，手里拿着礼物还会送出去）；
-        /// 背包装不下、别人任务专用的不采。采完转回原来的方向继续走。
+        /// 走路时 ForageRadius 格内（含斜角）有能采的野生采集物（季节野菜、贝壳、洞穴萝卜之类）就顺手采了，和手动按交互键一样
+        /// （会算采集经验、品质）。不挨着的先走过去（来回最多多走 4×半径 步，绕太远的不去），采完回到原来那格接着走。
+        /// 节日/剧情里不采；背包装不下、别人任务专用的不采。
         /// </summary>
         private IEnumerable<object> PickUpForageNearby(GameLocation loc, int walkDir)
         {
-            if (Game1.CurrentEvent != null || Game1.activeClickableMenu != null)
+            int r = ForageRadius;
+            if (r <= 0 || pickingForage || Game1.CurrentEvent != null || Game1.activeClickableMenu != null)
                 yield break;
-            var me = Player.TilePoint;
-            for (int dx = -1; dx <= 1; dx++)
-                for (int dy = -1; dy <= 1; dy++)
+            var home = Player.TilePoint;
+            var targets = new List<Point>();
+            for (int dx = -r; dx <= r; dx++)
+                for (int dy = -r; dy <= r; dy++)
+                    if ((dx != 0 || dy != 0) && PickableForage(loc, new Point(home.X + dx, home.Y + dy)))
+                        targets.Add(new Point(home.X + dx, home.Y + dy));
+            if (targets.Count == 0)
+                yield break;
+
+            pickingForage = true;
+            try
+            {
+                var o = new Outcome();
+                foreach (var p in targets.OrderBy(t => Util.Manhattan(t, home)))
                 {
-                    if (dx == 0 && dy == 0)
+                    if (!PickableForage(loc, p))
                         continue;
-                    var p = new Point(me.X + dx, me.Y + dy);
-                    if (!loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || !obj.IsSpawnedObject || !obj.isForage()
-                        || obj.questItem.Value || !Player.couldInventoryAcceptThisItem(obj))
-                        continue;
-                    var rect = new Rectangle(p.X * 64, p.Y * 64, 64, 64);
-                    if (loc.characters.Any(c => c != null && c.GetBoundingBox().Intersects(rect)))
-                        continue;
-                    string name = obj.DisplayName;
+                    var me = Player.TilePoint;
+                    if (System.Math.Max(System.Math.Abs(p.X - me.X), System.Math.Abs(p.Y - me.Y)) > 1)
+                    {
+                        var stands = Pathfinder.AdjacentStandTiles(loc, p);
+                        var path = stands.Count > 0 ? Pathfinder.FindPath(loc, me, stands, 3000) : null;
+                        if (path == null || path.Count - 1 > 2 * r)
+                            continue;
+                        foreach (var s in WalkPath(path, o))
+                            yield return s;
+                        if (!o.Ok)
+                            break;
+                    }
+                    string name = loc.objects[new Vector2(p.X, p.Y)].DisplayName;
                     Player.Halt();
                     Face(p);
                     loc.checkAction(new xLocation(p.X, p.Y), Game1.viewport, Player);
@@ -135,6 +168,19 @@ namespace BlindWhaleFarmer
                     if (Game1.activeClickableMenu != null || Loc != loc)
                         yield break;
                 }
+                // 回到原来那格：外面的 WalkPath 从这格直线走向下一格
+                if (Player.TilePoint != home && Loc == loc)
+                {
+                    var back = Pathfinder.FindPath(loc, Player.TilePoint, new[] { home }, 3000);
+                    if (back != null)
+                        foreach (var s in WalkPath(back, o))
+                            yield return s;
+                }
+            }
+            finally
+            {
+                pickingForage = false;
+            }
             Player.faceDirection(walkDir);
         }
 

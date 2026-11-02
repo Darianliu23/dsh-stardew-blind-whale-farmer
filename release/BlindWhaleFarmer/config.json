@@ -15,6 +15,7 @@
   "ScanRadius": 16,
   "ShowHud": true,
   "AutoConfirmNightMenus": true,
+  "ForageRadius": 1,
   "ExtraInstructions": "",
   "GuideFile": "guide/攻略.md",
   "LogPrompts": false,
