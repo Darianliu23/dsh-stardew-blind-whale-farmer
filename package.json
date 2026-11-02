@@ -27,6 +27,7 @@
   },
   "files": [
     "lib",
+    "BlindWhaleFarmer/guide",
     "cordis.patch.yml",
     "docs/dsh-plugin.md",
     "README.md",

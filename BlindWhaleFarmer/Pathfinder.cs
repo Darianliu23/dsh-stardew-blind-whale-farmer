@@ -114,8 +114,11 @@ namespace BlindWhaleFarmer
         /// <summary>
         /// 寻找从 start 到任一 goal 的路径（含起点），找不到返回 null。能开的室内门算可走；
         /// throughLockedDoors 时锁着的门也算，只用来解释为什么走不到。
+        /// clearable 给了的话，它认可的格子（杂草、石头这类能清掉的障碍）也算能走，每格多算 clearCost 步，
+        /// 这样能绕就绕，绕不过去才穿过去；走的时候由调用方把路上的障碍清掉。
         /// </summary>
-        public static List<Point> FindPath(GameLocation loc, Point start, ICollection<Point> goals, int maxNodes = 60000, bool throughLockedDoors = false)
+        public static List<Point> FindPath(GameLocation loc, Point start, ICollection<Point> goals, int maxNodes = 60000, bool throughLockedDoors = false,
+            Func<Point, bool> clearable = null, int clearCost = 4)
         {
             if (goals.Count == 0)
                 return null;
@@ -123,11 +126,13 @@ namespace BlindWhaleFarmer
             if (goalSet.Contains(start))
                 return new List<Point> { start };
 
-            var passCache = new Dictionary<Point, bool>();
-            bool Passable(Point p)
+            // 0 = 走不了，1 = 能走，2 = 有障碍但能清掉
+            var passCache = new Dictionary<Point, int>();
+            int Passable(Point p)
             {
-                if (!passCache.TryGetValue(p, out bool v))
-                    passCache[p] = v = StepPassable(loc, p, goalSet, throughLockedDoors);
+                if (!passCache.TryGetValue(p, out int v))
+                    passCache[p] = v = StepPassable(loc, p, goalSet, throughLockedDoors) ? 1
+                        : clearable != null && p.X >= 0 && p.Y >= 0 && p.X < MapWidth(loc) && p.Y < MapHeight(loc) && clearable(p) ? 2 : 0;
                 return v;
             }
 
@@ -165,9 +170,10 @@ namespace BlindWhaleFarmer
                 foreach (var d in Dirs)
                 {
                     var next = new Point(cur.X + d.X, cur.Y + d.Y);
-                    if (!Passable(next))
+                    int pass = Passable(next);
+                    if (pass == 0)
                         continue;
-                    int ng = curG + 1;
+                    int ng = curG + (pass == 2 ? 1 + clearCost : 1);
                     if (gScore.TryGetValue(next, out int old) && old <= ng)
                         continue;
                     gScore[next] = ng;

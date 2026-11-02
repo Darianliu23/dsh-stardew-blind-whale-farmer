@@ -95,7 +95,7 @@ SMAPI 控制台命令（调试用）：
 - 背包里能捐给博物馆的东西、能交给社区中心收集包的材料
 - 附近能不能钓鱼；矿洞层数、下楼梯/竖井/电梯/出口的坐标
 
-## AI 能做什么（43 个工具）
+## AI 能做什么（45 个工具）
 
 | 类别 | 工具 |
 |---|---|
@@ -109,8 +109,8 @@ SMAPI 控制台命令（调试用）：
 | 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
-| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取） |
-| 界面 | `dialogue`、`menu_click`、`close_menu`、`choose_profession`、`skip_event`、`leave_festival` |
+| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子） |
+| 界面 | `dialogue`、`menu_click`、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
 | 时间 | `sleep`（自动回家上床）、`wait` |
 | 记忆 | `update_notes` |
 
@@ -133,7 +133,7 @@ SMAPI 控制台命令（调试用）：
 | `ScanRadius` | 16 | 附近物体扫描半径 |
 | `AutoConfirmNightMenus` | `true` | 自动确认出货结算、普通升级界面 |
 | `ExtraInstructions` | 空 | 写给 AI 的额外目标，例如 `"第一年专心种地赚钱，每天和 Abigail 聊天"` |
-| `GuideFile` | `guide/zh-CN.md` | 攻略文件（游戏常识和打法路线，见下方“攻略”）。想换打法就复制一份改名，再把这里指过去 |
+| `GuideFile` | `guide/攻略.md` | 攻略文件（游戏常识和打法路线，见下方“攻略”）。想换打法就复制一份改名，再把这里指过去 |
 | `LogPrompts` | `false` | 把完整提示词写进 transcript，调试用 |
 | `EnableMcp` | `true` | 开启本机 MCP 服务器（给 WorkBuddy 等客户端用） |
 | `McpPort` | 18080 | MCP 端口，地址 `http://127.0.0.1:端口/mcp` |
@@ -148,9 +148,11 @@ SMAPI 控制台命令（调试用）：
 
 AI 收到的提示分两部分：
 - **操作规则**（写在 `Agent.cs`）：怎么用工具、先处理界面、失败别重复、按时睡觉……跟着工具代码一起改。
-- **攻略**（`guide/zh-CN.md`，纯文本）：游戏常识和第一年的打法路线。启动时读取，不用重新编译；MCP 客户端也能用 `get_guide` 工具随时查。
+- **攻略**（`guide/攻略.md`，纯文本）：游戏常识、装备、花钱规划、农场类型和第一年的打法路线。启动时读取，不用重新编译；MCP 客户端也能用 `get_guide` 工具随时查。
+- **专题**（`guide/` 下其他 `.md`：`钓鱼`、`采矿`、`节日`）：不放进每次连接的说明里，AI 用 `get_guide` 传 `topic` 按需读，省 token。钓鱼专题里各水域的鱼是从游戏数据生成的。
+- 在 DSH 的插件设置页也能直接改这几篇攻略（文本框里默认就是自带的内容），改过的篇目会推给游戏、优先于文件。
 
-想让 AI 换个玩法（比如专心钓鱼、走 Joja 路线），或者翻译成别的语言：把 `guide/zh-CN.md` 复制成新文件（比如 `guide/my.md`）改内容，再把 `config.json` 的 `GuideFile` 指过去。自带的攻略会随模组更新覆盖，自己的文件不会。
+想让 AI 换个玩法（比如专心钓鱼、走 Joja 路线），或者翻译成别的语言：把 `guide/攻略.md` 复制成新文件（比如 `guide/my.md`）改内容，再把 `config.json` 的 `GuideFile` 指过去。自带的攻略会随模组更新覆盖，自己的文件不会。
 
 攻略内容参考了社区的新手攻略，具体数字（营业时间、配方、剧情触发条件等）都对照游戏数据核对过，欢迎提 PR 补充改进。
 
@@ -164,8 +166,8 @@ AI 收到的提示分两部分：
 - **战斗比较朴素**：`fight` / `explore_mine` 的策略是“靠近、挥最好的近战武器、血少就吃”，不会走位躲技能、不用弹弓和炸弹，矿洞深层（40 层以后）和骷髅洞穴会很危险。竖井不会自动跳。
 - 动物：喂干草直接调用游戏的 `feedAllAnimals`（从筒仓扣干草放进食槽，结果和手动放一样，但省掉了来回走到饲料槽取干草）。孵蛋没有专门支持。
 - 建造时位置由程序自动选（农舍附近、不压耕地和树），也可以指定坐标；拆除、移动、换皮肤没有支持。
-- 装修、节日小游戏、特别订单（Special Orders）没有专门支持（可以用 `interact`/`menu_click` 硬来，效果看模型发挥）。
-- **节日**：节日进行中（比如春 13 日 9:00-14:00 的 Town），`travel_to` 不会走进或路过节日地图，因为一进去时间就停住、普通工具都用不了；万一进去了，用 `leave_festival` 离开。状态里会提前提示今天的节日。
+- 装修、节日里的小游戏（找彩蛋、冰钓比赛、展览会小游戏、夏威夷宴会放汤）、特别订单（Special Orders）没有专门支持（可以用 `interact`/`menu_click` 硬来，效果看模型发挥）。
+- **节日**：`festival enter` 入场 → `greet` 挨个打招呼加好感 → `start` 找刘易斯开始主活动，主活动结束游戏会送你回农场。不参加的话，节日进行中 `travel_to` 不会走进或路过节日地图（一进去时间就停住、普通工具都用不了）。节日专题攻略里有每个节日的玩法。
 - **晚上**：19:00 以后状态里会显示“回家上床大约要多少分钟”（按回家路线的距离和走路速度估算）；来不及在 24:00 前躺下或体力快见底时，每个动作结果后面都会附上警告。
 - 寻路只在当前地图内做 A*，跨地图靠出口图做 BFS；个别特殊入口（比如需要钥匙的门、沙漠巴士）可能走不通，会返回失败原因。
 - 只支持单人模式。
@@ -180,7 +182,7 @@ dsh-stardew-blind-whale-farmer/
 │  ├─ ModEntry.cs             入口、快捷键、HUD、控制台命令、时间冻结
 │  ├─ Agent.cs                AI 主循环和操作规则
 │  ├─ Guide.cs                读取攻略文件
-│  ├─ guide/zh-CN.md          攻略（游戏常识和第一年路线）
+│  ├─ guide/攻略.md            攻略（游戏常识和第一年路线）
 │  ├─ McpServer.cs            本机 MCP 服务器（WorkBuddy 等客户端接入）
 │  ├─ DeepSeekClient.cs       OpenAI 兼容接口客户端（重试、超时）
 │  ├─ Tools.cs                所有工具的 JSON Schema 和参数解析

@@ -488,6 +488,28 @@ namespace BlindWhaleFarmer
                         st.Kills++;
                     continue;
                 }
+                if ((path == null || path.Count < 2) && InDungeon)
+                {
+                    // 被杂草、木桶、石头挡住：穿过去的路线上第一个障碍就在身边就清掉它（挥一两下就回来重新判断），
+                    // 不在身边就先走到它跟前
+                    var clearGoals = StandOrClearTiles(target.TilePoint);
+                    var clearPath = clearGoals.Count > 0 ? Pathfinder.FindPath(Loc, me, clearGoals, 8000, clearable: ClearableObstacle) : null;
+                    int block = clearPath?.FindIndex(1, p => ClearableObstacle(p)) ?? -1;
+                    if (block == 1)
+                    {
+                        foreach (var s in ClearObstacle(clearPath[1], walk, maxHits: 2, stopOnThreat: false))
+                            yield return s;
+                        walk.Succeed();
+                        continue;
+                    }
+                    if (block > 1)
+                    {
+                        foreach (var s in WalkPath(clearPath.Take(Math.Min(block, 4)).ToList(), walk))
+                            yield return s;
+                        walk.Succeed();
+                        continue;
+                    }
+                }
                 if (path == null || path.Count < 2)
                 {
                     // 绕不过去、而且挡在中间的就是她身边的一块石头：用镐子敲掉再打（隔着石头挥剑是打不到的）
@@ -627,6 +649,13 @@ namespace BlindWhaleFarmer
             }
             var stands = set.SelectMany(t => Pathfinder.AdjacentStandTiles(Loc, t)).Where(p => !set.Contains(p)).Distinct().ToList();
             var path = stands.Count > 0 ? Pathfinder.FindPath(Loc, me, stands, 8000) : null;
+            if (path == null && InDungeon)
+            {
+                var around = set.SelectMany(StandOrClearTiles).Where(p => !set.Contains(p)).Distinct().ToList();
+                foreach (var s in GoToAnyClearing(around, o, "巨石旁边"))
+                    yield return s;
+                yield break;
+            }
             if (path == null)
             {
                 o.Fail("走不到巨石旁边");

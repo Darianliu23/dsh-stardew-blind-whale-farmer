@@ -29,6 +29,7 @@ namespace BlindWhaleFarmer
 ## 通过 MCP 玩的额外说明
 - 你看不到游戏，每次行动前先调用 get_state 读取当前状态（时间、界面、背包、地图、附近物体等），根据它决定下一步。
 - 不确定该怎么玩时调用 get_guide 读攻略（游戏常识和第一年路线）。如果上面已经有“游戏常识”一节，就不用再读。
+- 攻略还有专题（钓鱼、采矿、节日等），get_guide 传 topic 读：去钓鱼前看看哪片水域有值钱的鱼，下矿前看看要带什么，节日当天看看怎么参加。
 - get_state 最前面的【你的长期笔记】是之前（可能是别的会话）用 update_notes 写下的目标和计划：接着它玩，计划有变化就用 update_notes 更新，换会话也不会丢。
 - 一个工具执行完会返回结果文字；动作执行期间游戏时间照常流逝，你思考时游戏时间是冻结的。
 - 长动作（fish、water_crops、wait 等）可能要几十秒到几分钟，fish 一次建议 casts 不超过 5。
@@ -262,8 +263,17 @@ namespace BlindWhaleFarmer
                 new JsonObject
                 {
                     ["name"] = "get_guide",
-                    ["description"] = "读取攻略：游戏常识（商店、邮件、收集包、钓鱼、矿洞等）和第一年的打法路线。不确定下一步该做什么时调用。不花游戏时间。",
-                    ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+                    ["description"] = "读取攻略。不传 topic 读主攻略（游戏常识、装备、第一年路线）；传专题名读专题"
+                                      + (Guide.Topics.Count > 0 ? $"（{string.Join("、", Guide.Topics)}）" : "")
+                                      + "，比如去钓鱼前读“钓鱼”看哪里有什么鱼，下矿前读“采矿”，节日当天读“节日”。不花游戏时间。",
+                    ["inputSchema"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["topic"] = new JsonObject { ["type"] = "string", ["description"] = "专题名，不传读主攻略" }
+                        }
+                    }
                 }
             };
             // Schema 是共用对象，复制一份再取用（JsonNode 只能有一个父节点）
@@ -315,9 +325,14 @@ namespace BlindWhaleFarmer
                 }
                 else if (name == "get_guide")
                 {
-                    result = string.IsNullOrWhiteSpace(Guide.Text)
-                        ? "没有加载攻略文件（模组目录 guide/ 下的 .md，config.json 的 GuideFile 指定），按基本操作规则玩即可"
-                        : Guide.Text;
+                    string topic = args?["topic"]?.GetValue<string>();
+                    string text = Guide.Get(topic);
+                    string list = Guide.Topics.Count > 0 ? $"可读的专题：{string.Join("、", Guide.Topics)}" : "";
+                    result = text != null
+                        ? text + (string.IsNullOrWhiteSpace(topic) && list != "" ? "\n\n" + list + "（get_guide 传 topic）" : "")
+                        : string.IsNullOrWhiteSpace(topic)
+                            ? "没有加载攻略文件（模组目录 guide/ 下的 .md，config.json 的 GuideFile 指定），按基本操作规则玩即可"
+                            : $"没有叫“{topic}”的专题。{list}";
                 }
                 else
                 {

@@ -45,9 +45,15 @@ namespace BlindWhaleFarmer
                 why = "有界面打开了（" + Game1.activeClickableMenu.GetType().Name + "），请先处理界面";
                 return true;
             }
+            // festival 工具在节日里自由走动、找人说话时不算被剧情挡住
+            if (festivalWalk && FestivalFreeRoam())
+            {
+                why = null;
+                return false;
+            }
             if (Game1.eventUp)
             {
-                why = "正在播放剧情事件";
+                why = Game1.CurrentEvent is { isFestival: true } ? "正在参加节日（节日里用 festival 工具：greet 打招呼、start 开始主活动、leave 离开）" : "正在播放剧情事件";
                 return true;
             }
             if (Game1.isWarping || Game1.fadeToBlack)
@@ -156,6 +162,8 @@ namespace BlindWhaleFarmer
                     Player.FarmerSprite.animate(WalkAnimation(dir), Game1.currentGameTime);
                     yield return null;
                 }
+                foreach (var w in PickUpForageNearby(loc, dir))
+                    yield return w;
             }
             Player.Halt();
             Player.FarmerSprite.StopAnimation();
@@ -249,6 +257,15 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var stands = Pathfinder.AdjacentStandTiles(Loc, target);
+            // 矿洞里被杂草、石头、木桶围住：边走边清
+            if (NeedsClearing(target, stands))
+            {
+                foreach (var x in GoToAnyClearing(StandOrClearTiles(target), o, $"({target.X},{target.Y}) 旁边"))
+                    yield return x;
+                if (o.Ok)
+                    Face(target);
+                yield break;
+            }
             if (prefer.HasValue && stands.Contains(prefer.Value))
             {
                 var path = Pathfinder.FindPath(Loc, me, new[] { prefer.Value });
@@ -419,11 +436,11 @@ namespace BlindWhaleFarmer
                 }
                 // 节日进行中走进节日地图会直接开始节日：时间停住、普通动作都用不了，所以这里先拦下
                 var fest = Knowledge.TodaysFestival();
-                if (fest != null && fest.EnteringStartsFestival
+                if (fest != null && fest.EnteringStartsFestival && !travelIntoFestival
                     && route.Any(e => e.Target.Equals(fest.Location, StringComparison.OrdinalIgnoreCase)))
                 {
-                    o.Fail($"今天是{fest}，现在进 {fest.Location} 会直接进入节日（节日里时间停止，移动/干活的工具都不能用）。"
-                        + $"这条路线要经过 {fest.Location}，请等到 {Util.TimeString(fest.End)} 以后再去，或者先做不经过 {fest.Location} 的事");
+                    o.Fail($"今天是{fest}，现在进 {fest.Location} 会直接进入节日。想参加就用 festival enter；"
+                        + $"不参加的话这条路线要经过 {fest.Location}，请等到 {Util.TimeString(fest.End)} 以后再去，或者先做不经过 {fest.Location} 的事");
                     yield break;
                 }
                 foreach (var s in TakeExit(route[0], o))

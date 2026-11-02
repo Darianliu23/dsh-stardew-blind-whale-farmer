@@ -28,7 +28,7 @@ namespace BlindWhaleFarmer
 
         /// <summary>背包满了时附在结果后面的处理顺序：先存，后出货，别急着卖。</summary>
         private const string BagFullAdvice =
-            "背包满了的处理顺序：① 有箱子就 store_items 存进去（收集包要的东西、矿石、鱼、种子都先存）；"
+            "背包满了的处理顺序：① 用 tidy_backpack 一键整理（低级鱼竿、多余武器、矿石、鱼等存进农场箱子），或者 store_items 存指定的东西；"
             + "② 没箱子就 craft Chest（50 木材）、place_item 放在农场再存；③ 今天就要换钱的作物放进出货箱 ship_items；"
             + "④ 不要为了腾地方马上 sell 掉，尤其是收集包材料和等钓鱼 5 级再卖更值钱的鱼";
 
@@ -98,6 +98,16 @@ namespace BlindWhaleFarmer
                 j => () => a.StoreItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
                 P("items", "string", "要存的物品名，多个用逗号分隔；不传或 all 表示除工具外全部存", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
+
+            Add("festival", "参加节日：enter 走去节日地点并入场（节日开放时间内）；greet 和在场的村民挨个打招呼（节日上说话也加好感）；"
+                + "start 自动玩这个节日的小游戏（找彩蛋、夏威夷宴会放汤、花舞节邀舞伴、冬日星盛宴送神秘礼物、万灵节迷宫宝箱、冰钓比赛、展览会展示柜评比），再找刘易斯开始主活动并等它结束（结束后游戏把你送回农场）；leave 中途离开。节日当天先 get_guide 读“节日”专题。", 360,
+                j => () => a.Festival(Str(j, "action")),
+                P("action", "string", "enter / greet / start / leave", true));
+
+            Add("tidy_backpack", "整理背包：每类工具只留最好的一把（低级鱼竿、多余的武器等存起来），身上留吃的（料理）、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器，"
+                + "其余（矿石、石头木材、宝石、鱼、作物、怪物掉落……）存进农场的箱子，一个满了换下一个。不在农场会先回农场。出门下矿/钓鱼前、背包快满时用。", 300,
+                j => () => a.TidyBackpack(OptStr(j, "keep")),
+                P("keep", "string", "额外要留在身上的物品名，多个用逗号分隔（比如今天要送的礼物、要交的收集包材料）", false));
 
             Add("take_items", "从箱子里取东西回背包。结果会列出箱子里还有什么。", 120,
                 j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
@@ -323,7 +333,7 @@ namespace BlindWhaleFarmer
                     warning = await main.Invoke(() =>
                     {
                         var equipped = GameActions.AutoEquip();
-                        var parts = new[] { equipped != null ? "🎽 " + equipped : null, GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
+                        var parts = new[] { equipped != null ? "🎽 " + equipped : null, GameActions.TakePickedOnTheWay(), GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
                         return parts.Count > 0 ? string.Join("\n", parts) : null;
                     }).ConfigureAwait(false);
             }

@@ -248,14 +248,18 @@ namespace BlindWhaleFarmer
                 o.Fail("!" + why);
                 yield break;
             }
-            if (rodIdx >= Player.Items.Count || Player.Items[rodIdx] is not FishingRod rod)
+            // rodIdx = -1：用手上的鱼竿（冰钓比赛发的竹竿是 TemporaryItem，不在背包里）
+            var rod = rodIdx < 0 ? Player.CurrentTool as FishingRod
+                    : rodIdx < Player.Items.Count ? Player.Items[rodIdx] as FishingRod : null;
+            if (rod == null)
             {
                 o.Fail("!鱼竿不见了");
                 yield break;
             }
 
             SnapToTile(spot.Stand);
-            Player.CurrentToolIndex = rodIdx;
+            if (rodIdx >= 0)
+                Player.CurrentToolIndex = rodIdx;
             Player.faceDirection(spot.Dir);
             var d = DirVec[spot.Dir];
             var landing = new Point(spot.Stand.X + d.X * spot.Distance, spot.Stand.Y + d.Y * spot.Distance);

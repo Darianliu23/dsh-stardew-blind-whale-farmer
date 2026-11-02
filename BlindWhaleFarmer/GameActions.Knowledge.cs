@@ -103,6 +103,11 @@ namespace BlindWhaleFarmer
             string taste = Knowledge.TasteName(npc.getGiftTasteForThisItem(item));
             int pointsBefore = f.Points;
 
+            // 一路上把礼物举在手里送过去（游戏里拿着物品走路会举过头顶），看着像专门去送礼的
+            foreach (var _ in WaitPlayerFree())
+                yield return null;
+            Player.CurrentToolIndex = idx;
+
             var o = new Outcome();
             var npcLoc = npc.currentLocation;
             if (npcLoc != null && npcLoc != Loc)

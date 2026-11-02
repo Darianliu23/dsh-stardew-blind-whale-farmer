@@ -16,7 +16,7 @@
   "ShowHud": true,
   "AutoConfirmNightMenus": true,
   "ExtraInstructions": "",
-  "GuideFile": "guide/zh-CN.md",
+  "GuideFile": "guide/攻略.md",
   "LogPrompts": false,
   "EnableMcp": true,
   "McpPort": 18080,

@@ -50,8 +50,11 @@ namespace BlindWhaleFarmer
         /// <summary>额外写给 AI 的目标/要求，例如“优先赚钱，第一年春天种满防风草”。</summary>
         public string ExtraInstructions { get; set; } = "";
 
-        /// <summary>攻略文件（相对模组目录或绝对路径）。想改打法就复制一份改名后指到这里，更新模组时不会被覆盖；留空用 guide/zh-CN.md。</summary>
+        /// <summary>攻略文件（相对模组目录或绝对路径）。想改打法就复制一份改名后指到这里，更新模组时不会被覆盖；留空用 guide/攻略.md（旧名 guide/zh-CN.md 也会自动换成它）。</summary>
         public string GuideFile { get; set; } = Guide.DefaultFile;
+
+        /// <summary>在 DSH 设置页改过的攻略：篇名（攻略、钓鱼、采矿、节日……）→ 全文。有内容的篇目优先于 guide/ 里的文件。</summary>
+        public System.Collections.Generic.Dictionary<string, string> GuideOverrides { get; set; } = new();
 
         /// <summary>把每次发送给模型的完整提示词写到日志文件，方便调试。</summary>
         public bool LogPrompts { get; set; } = false;

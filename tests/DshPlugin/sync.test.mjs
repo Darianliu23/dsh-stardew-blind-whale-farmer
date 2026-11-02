@@ -69,7 +69,8 @@ test('第一次推送设置，之后版本号一样就不重复推', async () =>
   await wait(300)
   assert.equal(state.posts.length, 1)
   assert.deepEqual(state.posts[0].settings, {
-    sessionDays: 2, sessionMinutes: 30, freezeTime: true, idleSeconds: 120, extraInstructions: '专心钓鱼', guideFile: 'guide/zh-CN.md',
+    sessionDays: 2, sessionMinutes: 30, freezeTime: true, idleSeconds: 120, extraInstructions: '专心钓鱼', guideFile: 'guide/攻略.md',
+    guides: {},
   })
   dispose()
   // 同样的设置再启动一次（相当于 DSH 重启）：游戏已经是这个版本，不再推
@@ -100,6 +101,21 @@ test('游戏重开（忘了版本号）或者改了设置，会重新推', async
   assert.equal(state.posts[2].settings.sessionDays, 5)
   assert.notEqual(state.posts[0].revision, state.posts[2].revision)
   server.close()
+})
+
+test('攻略：设置页默认填好插件自带的攻略；只推玩家改过的篇目', async () => {
+  assert.ok(plugin.BUNDLED_GUIDES.guideMain.includes('游戏常识'), '主攻略要读进来当默认值')
+  const { server, state, port } = await fakeGame()
+  const f = fakeCtx()
+  try {
+    // 没改、清空都不推；改了钓鱼专题才推
+    plugin.apply(f.ctx, { port, guideMain: plugin.BUNDLED_GUIDES.guideMain, guideMining: '', guideFishing: '只钓鲟鱼' })
+    await wait(300)
+    assert.deepEqual(state.posts[0].settings.guides, { 钓鱼: '只钓鲟鱼' })
+  } finally {
+    f.dispose()
+    server.close()
+  }
 })
 
 test('游戏没开时安静地等，不报错', async () => {
@@ -357,7 +373,7 @@ test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config 
   assert.equal(resolved.sessionMinutes, 0)
   assert.equal(resolved.freezeTime, true)
   assert.equal(resolved.port, 18080)
-  assert.equal(resolved.guideFile, 'guide/zh-CN.md')
+  assert.equal(resolved.guideFile, 'guide/攻略.md')
   assert.equal(resolved.presetEnabled, false, '会话预设默认关闭')
   assert.equal(resolved.gatewayEnabled, false, '入口工具默认关闭')
   assert.equal(resolved.autoContinue, true, '自动续玩默认开启')

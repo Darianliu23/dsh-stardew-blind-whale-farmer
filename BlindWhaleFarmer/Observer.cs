@@ -57,13 +57,19 @@ namespace BlindWhaleFarmer
                     sb.AppendLine($"Robin 正在农场施工：{building.buildingType.Value}（还要 {Math.Max(building.daysOfConstructionLeft.Value, building.daysUntilUpgrade.Value)} 天）");
                 if (GameActions.DailyQuestHint() is string quest)
                     sb.AppendLine(quest);
+                sb.AppendLine($"农场类型：{FarmTypeName()}（攻略“农场类型”一节有这种地图的要点）");
+                if (GameActions.SpendingAdvice() is string spend)
+                    sb.AppendLine(spend);
             });
             Safe(sb, () =>
             {
                 var fest = Knowledge.TodaysFestival();
                 if (fest != null && Game1.timeOfDay <= fest.End && !Game1.isFestival())
-                    sb.AppendLine($"今天是{fest}：这段时间走进 {fest.Location} 会直接进入节日（节日里时间停止、普通工具不能用，只能 leave_festival 离开），"
-                        + $"所以 {Util.TimeString(fest.Start)}-{Util.TimeString(fest.End)} 不要去或路过 {fest.Location}（travel_to 会拦下）");
+                    sb.AppendLine($"今天是{fest}：建议参加（节日上打招呼加好感，主活动有奖励）。先 get_guide topic=节日 看这个节日做什么，"
+                        + $"{Util.TimeString(fest.Start)}-{Util.TimeString(fest.End)} 之间用 festival enter 入场 → greet → start。"
+                        + $"节日当天镇上商店都关门；不参加的话这段时间别走 {fest.Location}（travel_to 会拦下）");
+                if (Game1.CurrentEvent is { isFestival: true })
+                    sb.AppendLine("你正在节日里：时间不走，普通工具不能用。用 festival greet 打招呼、festival start 开始主活动、festival leave 离开");
                 if (GameActions.ThreatWarning() is string threat)
                     sb.AppendLine(threat);
                 if (GameActions.BedtimeWarning() is string bed)
@@ -454,6 +460,19 @@ namespace BlindWhaleFarmer
             if (emptyDirt.Count > 0)
                 sb.AppendLine($"空耕地 {emptyDirt.Count} 格（可播种）：{near(emptyDirt)}");
         }
+
+        /// <summary>农场地图类型（Farm.*_layout；7 是 1.6 的草原农场等数据定义的农场，看 GetFarmTypeID）。</summary>
+        public static string FarmTypeName() => Game1.whichFarm switch
+        {
+            Farm.default_layout => "标准农场",
+            Farm.riverlands_layout => "河边农场（水多地少）",
+            Farm.forest_layout => "森林农场（有大树桩和采集品）",
+            Farm.mountains_layout => "山顶农场（有矿石）",
+            Farm.combat_layout => "荒野农场（晚上有怪）",
+            Farm.fourCorners_layout => "四角农场",
+            Farm.beach_layout => "海滩农场（沙地上洒水器不起作用）",
+            _ => Game1.GetFarmTypeID() == "MeadowlandsFarm" ? "草原农场（开局有鸡舍和两只鸡）" : Game1.GetFarmTypeID(),
+        };
 
         public static string ClumpName(ResourceClump rc) => rc.parentSheetIndex.Value switch
         {

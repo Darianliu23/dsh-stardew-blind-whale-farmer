@@ -49,6 +49,7 @@ namespace BlindWhaleFarmer
         {
             Config = helper.ReadConfig<ModConfig>();
             Monitor.Log(Guide.Load(helper.DirectoryPath, Config.GuideFile), LogLevel.Info);
+            Guide.SetOverrides(Config.GuideOverrides);
             MainThread = new MainThread(Monitor);
             Observer = new Observer(Config, helper.Reflection);
             Actions = new GameActions(helper.Reflection, Observer);
@@ -163,6 +164,16 @@ namespace BlindWhaleFarmer
             {
                 Config.GuideFile = string.IsNullOrWhiteSpace(guide) ? Guide.DefaultFile : guide;
                 guideLog = Guide.Load(Helper?.DirectoryPath ?? "", Config.GuideFile);
+            }
+            // 玩家在 DSH 设置页改过的攻略（只发改过的篇目；空对象表示全部用文件里的）
+            if (s["guides"] is System.Text.Json.Nodes.JsonObject guides)
+            {
+                Config.GuideOverrides = guides
+                    .Where(kv => kv.Value != null && !string.IsNullOrWhiteSpace(kv.Value.GetValue<string>()))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value.GetValue<string>());
+                Guide.SetOverrides(Config.GuideOverrides);
+                if (Config.GuideOverrides.Count > 0)
+                    guideLog = (guideLog != null ? guideLog + "；" : "") + $"使用 DSH 里改过的攻略：{string.Join("、", Config.GuideOverrides.Keys)}";
             }
             if (oldDays != Config.SessionDays || oldMinutes != Config.SessionMinutes)
                 Session.Reset();

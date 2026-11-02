@@ -248,6 +248,10 @@ class Program
         var (cg, guide) = await Post("{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"get_guide\",\"arguments\":{}}}");
         string guideText = guide?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
         Check(cg == 200 && guideText.Contains("第一年春季路线") && guide?["result"]?["isError"]?.GetValue<bool>() == false, "MCP get_guide 返回攻略全文且不算出错");
+        // 专题攻略按需读，不在连接说明里
+        var (ct, topic) = await Post("{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"get_guide\",\"arguments\":{\"topic\":\"钓鱼\"}}}");
+        string topicText = topic?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
+        Check(ct == 200 && topicText.Contains("传说鱼") && !instructions.Contains("各水域能钓到的鱼"), "MCP get_guide topic=钓鱼 读专题，专题不占连接说明");
         // 长动作超过 5 分钟时 Node 的 fetch 会断开：工具调用必须用 SSE 先发响应头、动作期间发心跳
         Check(lastContentType == "text/event-stream" && lastRaw.StartsWith(": start") && lastRaw.Contains("event: message"),
             "MCP 工具调用用 SSE 回复（先发响应头，结果是 message 事件）");

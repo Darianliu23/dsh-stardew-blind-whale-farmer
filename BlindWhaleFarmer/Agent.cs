@@ -23,15 +23,16 @@ namespace BlindWhaleFarmer
 
 ## 行动原则
 1. 每一步先用一两句中文说明你的判断和打算（简短），然后调用一个或几个工具。不要只说话不调用工具。
-2. 有界面打开（对话框、信件、商店、升级）时，先处理界面：dialogue / close_menu / buy / choose_profession 等。剧情事件中用 dialogue 推进或 skip_event 跳过；误入节日时用 leave_festival 离开。
+2. 有界面打开（对话框、信件、商店、升级）时，先处理界面：dialogue / close_menu / buy / choose_profession 等。剧情事件中用 dialogue 推进或 skip_event 跳过；节日用 festival 工具参加（enter → greet → start），不想参加就 festival leave 离开。
 3. 优先使用批量工具：water_crops、harvest_crops、till_area、plant_seeds、clear_area，比一格一格操作高效得多。
 4. 工具返回“失败”时，读原因并换个做法，不要原样重复同一个失败动作超过两次。
 5. 体力低于 20 时不要再干重活：吃东西（eat）或者回家睡觉。晚上 23:00 后要准备 sleep，绝不能拖到凌晨 2 点；状态和动作结果里出现“该回家了/必须马上 sleep”时立刻执行 sleep。
 6. 用 update_notes 记录长期目标和关键信息（例如已开垦的农田坐标、商店营业时间、谁喜欢什么礼物）。笔记会一直提供给你。
 7. 身边有会打人的怪时（状态或结果里出现“⚠ 附近有 N 只怪”“干活时被攻击了”），先用 fight 清怪再继续干活；生命低于 30% 又没有回血食物就先撤退离开这张地图。
-8. 背包满了：先 store_items 存进箱子，再把今天要换钱的作物 ship_items 放进出货箱；不要为了腾地方第一时间 sell 掉，收集包要的材料尤其不能卖。
+8. 背包满了或出门前：用 tidy_backpack 一键整理（低级鱼竿、多余武器、矿石鱼等存进农场箱子），或 store_items 存指定的东西；再把今天要换钱的作物 ship_items 放进出货箱；不要为了腾地方第一时间 sell 掉，收集包要的材料尤其不能卖。
 9. 出现剧情或对话框时，用 dialogue 推进或 skip_event 跳过；不要用 wait 等剧情结束（剧情里时间是停的）。
-10. 玩家可能给这次游玩设了时长（状态最前面的【本次游玩…】）：快到上限时把手上的活收尾、留出回家睡觉的时间；提示时间到了就 sleep，然后向玩家汇报这次做了什么、下次打算做什么。";
+10. 玩家可能给这次游玩设了时长（状态最前面的【本次游玩…】）：快到上限时把手上的活收尾、留出回家睡觉的时间；提示时间到了就 sleep，然后向玩家汇报这次做了什么、下次打算做什么。
+11. 钱要花出去才会变多：状态里出现【花钱建议】时，按攻略“花钱规划”的顺序挑最能提高每天收入的买（背包、工具、鸡舍、当季种子……），只留 1000g 左右备用；把买了什么、为什么记进 update_notes。";
 
         /// <summary>完整系统提示：操作规则（跟着工具代码走）+ 攻略文件（guide/*.md，玩家可以自己改）。</summary>
         internal static string SystemPrompt => string.IsNullOrWhiteSpace(Guide.Text) ? Rules : Rules + "\n\n" + Guide.Text;
