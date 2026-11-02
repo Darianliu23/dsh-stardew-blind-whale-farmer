@@ -28,6 +28,27 @@ if (args[0] == "--data")
         Console.WriteLine($"{kv.Key} = {(kv.Value.Length > 300 ? kv.Value.Substring(0, 300) + "…" : kv.Value)}");
     return;
 }
+// --json <资源名> <值类型全名> [键1,键2...]：读 Dictionary<string, 值类型> 资源并输出 JSON（例如 Data/Weapons StardewValley.GameData.Weapons.WeaponData）
+if (args[0] == "--json")
+{
+    var valueType = typeof(StardewValley.GameData.Crops.CropData).Assembly.GetType(args[2], throwOnError: true);
+    var dictType = typeof(System.Collections.Generic.Dictionary<,>).MakeGenericType(typeof(string), valueType);
+    var load = typeof(ContentManager).GetMethod("Load").MakeGenericMethod(dictType);
+    var data = (System.Collections.IDictionary)load.Invoke(cm, new object[] { args[1] });
+    var keys = args.Length > 3 ? args[3].Split(',') : null;
+    var picked = new System.Collections.Generic.Dictionary<string, object>();
+    foreach (System.Collections.DictionaryEntry kv in data)
+        if (keys == null || keys.Contains((string)kv.Key))
+            picked[(string)kv.Key] = kv.Value;
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(picked, new System.Text.Json.JsonSerializerOptions
+    {
+        WriteIndented = true,
+        IncludeFields = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    }));
+    return;
+}
 // --crops：列出所有作物（种子 → 季节、成熟天数、再生天数、产物售价），核对攻略里的数字用
 if (args[0] == "--crops")
 {

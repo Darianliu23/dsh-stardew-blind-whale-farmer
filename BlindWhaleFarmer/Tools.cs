@@ -313,6 +313,7 @@ namespace BlindWhaleFarmer
                 return result;
             if (result.Contains("背包满了") && name != "store_items" && name != "take_items")
                 result += "\n" + BagFullAdvice;
+            // 拿到更好的鞋子、戒指就自动换上（宝箱、商店、任务奖励都可能给）；
             // 身边有怪、深夜、体力见底的提醒也接在动作结果后面：MCP 客户端不一定每步都看 get_state
             string warning = null;
             try
@@ -321,7 +322,8 @@ namespace BlindWhaleFarmer
                 if (StardewModdingAPI.Context.IsWorldReady)
                     warning = await main.Invoke(() =>
                     {
-                        var parts = new[] { GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
+                        var equipped = GameActions.AutoEquip();
+                        var parts = new[] { equipped != null ? "🎽 " + equipped : null, GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
                         return parts.Count > 0 ? string.Join("\n", parts) : null;
                     }).ConfigureAwait(false);
             }

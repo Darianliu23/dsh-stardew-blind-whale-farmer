@@ -115,12 +115,15 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(why);
                 yield break;
             }
-            int rodIdx = Util.FindTool<FishingRod>();
+            // 背包里有几根鱼竿时用最好的那根，能装鱼饵/钓具就顺手装上
+            int rodIdx = BestRodIndex();
             if (rodIdx < 0)
             {
                 yield return ActionResult.Fail("背包里没有鱼竿（第二天早上去海边找威利 Willy 会送你一根，或者在鱼店 FishShop 买）");
                 yield break;
             }
+            var bestRod = (FishingRod)Player.Items[rodIdx];
+            string rodNote = FillRodAttachments(bestRod);
             var loc = Loc;
             if (!loc.canFishHere())
             {
@@ -221,7 +224,8 @@ namespace BlindWhaleFarmer
                 FishingAssist.Active = false;
             }
 
-            string summary = $"在 ({spot.Stand.X},{spot.Stand.Y}) 朝{Util.DirName(spot.Dir)}钓鱼，钓到 {caught.Count} 次";
+            string summary = $"用 {bestRod.DisplayName}" + (rodNote != null ? $"（{rodNote}）" : "")
+                             + $"在 ({spot.Stand.X},{spot.Stand.Y}) 朝{Util.DirName(spot.Dir)}钓鱼，钓到 {caught.Count} 次";
             if (caught.Count > 0)
                 summary += "：" + string.Join("、", caught);
             if (misses > 0)

@@ -5,8 +5,10 @@ using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Inventories;
 using StardewValley.Locations;
+using StardewValley.Menus;
 using StardewValley.Monsters;
 using StardewValley.Objects;
+using StardewValley.TerrainFeatures;
 using StardewValley.Tools;
 using SObject = StardewValley.Object;
 using xLocation = xTile.Dimensions.Location;
@@ -551,6 +553,89 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 下矿洞 ─────────────────────────
 
+        /// <summary>
+        /// 矿洞里还没拿空的宝箱（每 10 层的奖励箱、宝藏房的箱子）。它们放在 overlayObjects 里，
+        /// 但 GameLocation.objects 是叠加了 overlayObjects 的字典，所以从 objects 里就能找到。
+        /// </summary>
+        private static IEnumerable<(Point tile, Chest chest)> MineChests(MineShaft mine) =>
+            mine.objects.Pairs
+                .Where(p => p.Value is Chest c && !c.playerChest.Value && c.GetItemsForPlayer().Count > 0)
+                .Select(p => (new Point((int)p.Key.X, (int)p.Key.Y), (Chest)p.Value))
+                .OrderBy(p => Util.Manhattan(p.Item1, Player.TilePoint));
+
+        /// <summary>
+        /// 开矿洞宝箱：和玩家点击一样走 checkAction。第一下掀开盖子，之后每点一下拿出一样东西（举过头顶展示，
+        /// 背包满时弹出拿取界面）。拿不了（走不到、背包满）时通过 note 说明，调用方就不再反复尝试这个箱子。
+        /// </summary>
+        private IEnumerable<object> OpenMineChest(MineShaft mine, Point tile, List<string> took, Action<string> note)
+        {
+            var o = new Outcome();
+            foreach (var s in GoAdjacent(tile, o))
+                yield return s;
+            if (!o.Ok)
+            {
+                note($"({tile.X},{tile.Y}) 有个宝箱走不过去（{o.Message}），可以敲开周围的石头后用 interact 打开");
+                yield break;
+            }
+            Player.faceDirection(DirToward(Player.TilePoint, tile));
+            for (int click = 0; click < 12; click++)
+            {
+                if (!(mine.objects.TryGetValue(new Vector2(tile.X, tile.Y), out var obj) && obj is Chest chest) || chest.GetItemsForPlayer().Count == 0)
+                    yield break;
+                var before = chest.GetItemsForPlayer().Where(i => i != null).Select(i => i.DisplayName).ToList();
+                mine.checkAction(new xLocation(tile.X, tile.Y), Game1.viewport, Player);
+                // 掀盖子、举起物品的动画
+                for (int t = 0; t < 90 && (Player.freezePause > 0 || Player.isEmoting || Player.FarmerSprite.PauseForSingleAnimation); t++)
+                    yield return null;
+                foreach (var s in WaitTicks(30))
+                    yield return s;
+                var after = chest.GetItemsForPlayer().Where(i => i != null).Select(i => i.DisplayName).ToList();
+                foreach (var name in after)
+                    before.Remove(name);
+                if (Game1.activeClickableMenu is ItemGrabMenu)
+                {
+                    // 背包满了，游戏弹出了拿取界面：先关掉，交给 AI 腾地方
+                    Game1.exitActiveMenu();
+                    note($"({tile.X},{tile.Y}) 的宝箱里还有 {string.Join("、", after)}，背包满了拿不下：腾出位置后 interact 这个箱子");
+                    yield break;
+                }
+                took.AddRange(before);
+                if (Game1.activeClickableMenu is DialogueBox)
+                    Game1.exitActiveMenu();
+            }
+        }
+
+        /// <summary>矿洞里的矿石巨石（2x2，任何镐子都能敲），按离她的距离排序；corner 是左上角。</summary>
+        private static IEnumerable<(Point corner, ResourceClump clump)> MineBoulders(MineShaft mine) =>
+            mine.resourceClumps
+                .Where(c => c.parentSheetIndex.Value is 752 or 754 or 756 or 758)
+                .Select(c => (new Point((int)c.Tile.X, (int)c.Tile.Y), c))
+                .OrderBy(b => Util.Manhattan(b.Item1, Player.TilePoint));
+
+        private static IEnumerable<Point> BoulderTiles(Point corner) =>
+            new[] { corner, new Point(corner.X + 1, corner.Y), new Point(corner.X, corner.Y + 1), new Point(corner.X + 1, corner.Y + 1) };
+
+        /// <summary>走到这几格中任意一格的旁边（巨石占 2x2，哪一面能站就从哪一面敲）。</summary>
+        private IEnumerable<object> GoAdjacentToAny(IEnumerable<Point> tiles, Outcome o)
+        {
+            var set = tiles.ToHashSet();
+            var me = Player.TilePoint;
+            if (set.Any(t => Util.Manhattan(t, me) == 1))
+            {
+                o.Succeed();
+                yield break;
+            }
+            var stands = set.SelectMany(t => Pathfinder.AdjacentStandTiles(Loc, t)).Where(p => !set.Contains(p)).Distinct().ToList();
+            var path = stands.Count > 0 ? Pathfinder.FindPath(Loc, me, stands, 8000) : null;
+            if (path == null)
+            {
+                o.Fail("走不到巨石旁边");
+                yield break;
+            }
+            foreach (var s in WalkPath(path, o))
+                yield return s;
+        }
+
         private static Point? NearestMineTile(GameLocation loc, int tileIndex)
         {
             Point? best = null;
@@ -633,6 +718,11 @@ namespace BlindWhaleFarmer
 
             int guard = 0;
             int lastHp = Player.health;
+            var loot = new List<string>();
+            var chestNotes = new List<string>();
+            var skippedChests = new HashSet<Point>();
+            var skippedBoulders = new HashSet<Point>();
+            int boulders = 0;
             while (descended < levels && guard++ < 400)
             {
                 if (Loc is not MineShaft mine)
@@ -682,7 +772,26 @@ namespace BlindWhaleFarmer
                 }
                 o.Succeed();
 
-                // 2) 有楼梯就下
+                // 2) 有宝箱先开（每 10 层的奖励箱、宝藏房），再找楼梯
+                if (MineChests(mine).Where(c => !skippedChests.Contains(c.tile)).Select(c => (Point?)c.tile).FirstOrDefault() is Point chestTile)
+                {
+                    var took = new List<string>();
+                    string chestNote = null;
+                    foreach (var s in OpenMineChest(mine, chestTile, took, n => chestNote = n))
+                        yield return s;
+                    loot.AddRange(took);
+                    // 点了也没拿到东西（打不开）：记下来，不再反复试
+                    if (chestNote == null && took.Count == 0 && MineChests(mine).Any(c => c.tile == chestTile))
+                        chestNote = $"({chestTile.X},{chestTile.Y}) 的宝箱没打开，可以试试 interact";
+                    if (chestNote != null)
+                    {
+                        skippedChests.Add(chestTile);
+                        chestNotes.Add(chestNote);
+                    }
+                    continue;
+                }
+
+                // 3) 有楼梯就下
                 var ladder = NearestMineTile(mine, 173);
                 if (ladder.HasValue)
                 {
@@ -743,7 +852,45 @@ namespace BlindWhaleFarmer
                 if (hit)
                     continue;
 
-                // 4) 没石头可敲：有些层要把怪全打完楼梯才出现
+                // 4) 小石头都够不着：多半是矿石巨石（2x2）挡了路，任何镐子都能敲碎（游戏里 752/754/756/758 只要求是镐子）
+                bool smashed = false;
+                foreach (var (corner, clump) in MineBoulders(mine).Take(3))
+                {
+                    if (skippedBoulders.Contains(corner))
+                        continue;
+                    var target = BoulderTiles(corner).OrderBy(p => Util.Manhattan(p, Player.TilePoint)).First();
+                    foreach (var s in GoAdjacentToAny(BoulderTiles(corner), o))
+                        yield return s;
+                    if (!o.Ok)
+                    {
+                        o.Succeed();
+                        skippedBoulders.Add(corner);
+                        continue;
+                    }
+                    target = BoulderTiles(corner).OrderBy(p => Util.Manhattan(p, Player.TilePoint)).First();
+                    for (int k = 0; k < 25 && mine.resourceClumps.Contains(clump); k++)
+                    {
+                        if (NearestThreat(2) != null || Player.health < Player.maxHealth * 0.4f || Player.Stamina < 15)
+                            break;
+                        foreach (var s in UseToolOnce(pick, target, o))
+                            yield return s;
+                        if (!o.Ok)
+                            break;
+                    }
+                    o.Succeed();
+                    if (!mine.resourceClumps.Contains(clump))
+                    {
+                        boulders++;
+                        smashed = true;
+                    }
+                    else if (NearestThreat(2) == null && Player.health >= Player.maxHealth * 0.4f && Player.Stamina >= 15)
+                        skippedBoulders.Add(corner); // 敲了 25 下还没碎：别卡在这块上
+                    break;
+                }
+                if (smashed || (MineBoulders(mine).Any(b => !skippedBoulders.Contains(b.corner)) && Player.Stamina >= 15))
+                    continue;
+
+                // 5) 没石头可敲：有些层要把怪全打完楼梯才出现
                 if (LiveMonsters(mine).Any())
                 {
                     foreach (var s in FightInner(60, 0.4f, 60, st, o))
@@ -763,9 +910,15 @@ namespace BlindWhaleFarmer
 
             int now = Loc is MineShaft m2 ? m2.mineLevel : 0;
             string msg = $"从第 {startLvl} 层下到第 {(now > 0 ? now.ToString() : "?")} 层（下了 {descended} 层），敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            if (boulders > 0)
+                msg += $"；敲碎了 {boulders} 块挡路的矿石巨石";
+            if (loot.Count > 0)
+                msg += "；开宝箱拿到：" + string.Join("、", loot);
+            if (chestNotes.Count > 0)
+                msg += "；" + string.Join("；", chestNotes);
             if (stop != null)
                 msg += "；停下原因：" + stop;
-            yield return descended > 0 || rocks > 0 || st.Kills > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
+            yield return descended > 0 || rocks > 0 || st.Kills > 0 || loot.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
         }
     }
 }
