@@ -58,7 +58,7 @@ namespace BlindWhaleFarmer
                 : $"箱子里（{items.Count}/{chest.GetActualCapacity()} 格）：{string.Join("、", items.Select(i => $"{i.DisplayName}x{i.Stack}"))}";
         }
 
-        /// <summary>把背包里的东西存进箱子（工具和武器不存）。和箱子界面里点背包物品一样：chest.addItem，全放进去才从背包移除。</summary>
+        /// <summary>把背包里的东西存进箱子（工具和武器只存点了全名的，比如“训练用鱼竿”）。和箱子界面里点背包物品一样：chest.addItem，全放进去才从背包移除。</summary>
         public IEnumerable<object> StoreItems(string items, int? x, int? y)
         {
             var chest = FindChest(x, y, out var tile, out string error);
@@ -76,9 +76,13 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var filter = ItemFilter(items);
+            // 工具和武器只存点了全名的（“剑”这种模糊的名字会把手上最好的武器也存掉）
+            var toolNames = string.IsNullOrWhiteSpace(items) ? new HashSet<string>()
+                : items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            bool Wanted(Item i) => i is Tool ? toolNames.Contains(i.DisplayName) || toolNames.Contains(i.Name) : filter(i);
             var stored = new List<string>();
             bool full = false;
-            foreach (var item in Player.Items.Where(i => i != null && i is not Tool && filter(i)).ToList())
+            foreach (var item in Player.Items.Where(i => i != null && Wanted(i)).ToList())
             {
                 int before = item.Stack;
                 string name = item.DisplayName;
@@ -98,7 +102,7 @@ namespace BlindWhaleFarmer
             chest.clearNulls();
             if (stored.Count == 0)
             {
-                yield return ActionResult.Fail((full ? "箱子满了，" : "背包里没有符合的东西可存（工具不存），") + ChestSummary(chest));
+                yield return ActionResult.Fail((full ? "箱子满了，" : "背包里没有符合的东西可存（工具要写全名才存），") + ChestSummary(chest));
                 yield break;
             }
             yield return ActionResult.Success($"存进 ({tile.X},{tile.Y}) 的箱子：{string.Join("、", stored)}{(full ? "；箱子满了，剩下的还在背包里" : "")}。{ChestSummary(chest)}");

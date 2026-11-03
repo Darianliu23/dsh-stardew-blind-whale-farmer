@@ -81,10 +81,12 @@ namespace BlindWhaleFarmer
                 // 喂干草：和手动从饲料槽旁取干草放进食槽效果一样，用的是筒仓里的干草
                 int before = CountHay(house);
                 house.feedAllAnimals();
+                // 筒仓不够（或者没有筒仓、干草是在 Marnie 那里买进背包的）：用背包里的干草补满食槽
+                FeedFromBackpack(house);
                 int fed = CountHay(house) - before;
                 if (fed > 0)
                     stats.Hay += fed;
-                else if (CountHay(house) < house.animalsThatLiveHere.Count)
+                if (CountHay(house) < house.animalsThatLiveHere.Count)
                     stats.NoHay = true;
             }
 
@@ -138,7 +140,7 @@ namespace BlindWhaleFarmer
                 if (TooLate > 0)
                     parts.Add($"{TooLate} 只已经睡了（19:00 后摸不了）");
                 if (NoHay)
-                    parts.Add("筒仓干草不够，食槽没喂满（用镰刀割草可以存干草，或在 Marnie 那里买）");
+                    parts.Add("筒仓和背包里的干草都不够，食槽没喂满（用镰刀割草可以存进筒仓，或在 Marnie 那里买干草）");
                 parts.AddRange(Problems.Distinct().Take(4));
                 return string.Join("，", parts);
             }
@@ -146,6 +148,43 @@ namespace BlindWhaleFarmer
 
         private static int CountHay(AnimalHouse house) =>
             house.objects.Values.Count(obj => obj.QualifiedItemId == "(O)178");
+
+        /// <summary>食槽的格子（Back 层有 Trough 属性），从左上往右下。</summary>
+        internal static List<Point> TroughTiles(GameLocation house)
+        {
+            var list = new List<Point>();
+            var back = house.map?.GetLayer("Back");
+            if (back == null)
+                return list;
+            for (int y = 0; y < back.LayerHeight; y++)
+                for (int x = 0; x < back.LayerWidth; x++)
+                    if (house.doesTileHaveProperty(x, y, "Trough", "Back") != null)
+                        list.Add(new Point(x, y));
+            return list;
+        }
+
+        /// <summary>
+        /// 把背包里的干草放进空食槽，最多放到每只动物一份（和 AnimalHouse.checkAction 手拿干草点食槽一样：
+        /// 食槽格上放一个干草物品）。
+        /// </summary>
+        private static void FeedFromBackpack(AnimalHouse house)
+        {
+            int need = house.animalsThatLiveHere.Count - CountHay(house);
+            foreach (var tile in TroughTiles(house))
+            {
+                if (need <= 0)
+                    return;
+                var key = new Vector2(tile.X, tile.Y);
+                if (house.objects.ContainsKey(key))
+                    continue;
+                int idx = Player.Items.IndexOf(Player.Items.FirstOrDefault(i => i?.QualifiedItemId == "(O)178"));
+                if (idx < 0 || Player.Items[idx] is not SObject hay)
+                    return;
+                house.objects.Add(key, (SObject)hay.getOne());
+                Player.Items[idx] = hay.ConsumeStack(1);
+                need--;
+            }
+        }
 
         private IEnumerable<object> CareInLocation(GameLocation loc, CareStats stats)
         {

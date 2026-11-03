@@ -53,7 +53,9 @@ namespace BlindWhaleFarmer
             }
             if (Game1.eventUp)
             {
-                why = Game1.CurrentEvent is { isFestival: true } ? "正在参加节日（节日里用 festival 工具：greet 打招呼、start 开始主活动、leave 离开）" : "正在播放剧情事件";
+                why = Game1.CurrentEvent is { isFestival: true } ? "正在参加节日（节日里用 festival 工具：greet 打招呼、start 开始主活动、leave 离开）"
+                    : Game1.CurrentEvent == null ? StuckEventHint
+                    : "正在播放剧情事件";
                 return true;
             }
             if (Game1.isWarping || Game1.fadeToBlack)
@@ -341,6 +343,34 @@ namespace BlindWhaleFarmer
             foreach (var _ in WaitTicks(4))
                 yield return null;
             o.Succeed();
+        }
+
+        /// <summary>till_area 一格都开不了时，数一数区域里都是些什么格子，告诉 AI 下一步该干什么。</summary>
+        private static string WhyNotTillable(GameLocation loc, int x1, int y1, int x2, int y2)
+        {
+            int notDiggable = 0, tilled = 0, cluttered = 0, blocked = 0;
+            foreach (var p in RectTiles(x1, y1, x2, y2, 80))
+            {
+                var v = new Vector2(p.X, p.Y);
+                if (loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") == null)
+                    notDiggable++;
+                else if (loc.terrainFeatures.TryGetValue(v, out var tf) && tf is HoeDirt)
+                    tilled++;
+                else if (loc.Objects.ContainsKey(v) || loc.terrainFeatures.ContainsKey(v))
+                    cluttered++;
+                else
+                    blocked++;
+            }
+            var parts = new List<string>();
+            if (tilled > 0)
+                parts.Add($"{tilled} 格已经耕过了（可以直接 plant）");
+            if (cluttered > 0)
+                parts.Add($"{cluttered} 格有杂草、石头、树枝或长草（先 clear_area）");
+            if (notDiggable > 0)
+                parts.Add($"{notDiggable} 格是不能开垦的地面（路、水、房子旁边、地图外）");
+            if (blocked > 0)
+                parts.Add($"{blocked} 格被挡住走不过去");
+            return string.Join("，", parts);
         }
 
         private static List<Point> RectTiles(int x1, int y1, int x2, int y2, int cap)
@@ -757,7 +787,27 @@ namespace BlindWhaleFarmer
             else if (npc != null)
                 yield return ActionResult.Fail($"{npc.displayName} 现在没有反应（可能在忙或者不想说话）");
             else
-                yield return ActionResult.Fail($"({target.X},{target.Y}) 没有可以交互的东西");
+                yield return ActionResult.Fail($"({target.X},{target.Y}) " + WhyNothingHappened(target));
+        }
+
+        /// <summary>交互没反应时说清楚为什么：机器还在加工、机器空着、手里拿着干草但点的不是食槽……</summary>
+        private static string WhyNothingHappened(Point target)
+        {
+            if (Loc.objects.TryGetValue(new Vector2(target.X, target.Y), out var obj) && obj.bigCraftable.Value)
+            {
+                if (obj.heldObject.Value != null && obj.MinutesUntilReady > 0)
+                    return $"的{obj.DisplayName}还在加工{obj.heldObject.Value.DisplayName}，还要约 {obj.MinutesUntilReady} 分钟（游戏时间）";
+                if (obj.heldObject.Value == null)
+                    return $"的{obj.DisplayName}是空的：要放材料就用 interact 带上 item（比如熔炉放 5 个矿石，背包里还要有煤炭）";
+            }
+            if (Player.ActiveObject?.QualifiedItemId == "(O)178" && Loc is AnimalHouse)
+            {
+                var troughs = TroughTiles(Loc).Where(p => !Loc.objects.ContainsKey(new Vector2(p.X, p.Y))).ToList();
+                return troughs.Count == 0
+                    ? "不是空食槽，这里的食槽都放满了干草"
+                    : $"不是食槽。这里的空食槽在：{string.Join("、", troughs.Select(p => $"({p.X},{p.Y})"))}（care_animals 会自动用背包里的干草放满）";
+            }
+            return "没有可以交互的东西";
         }
 
         public IEnumerable<object> PlaceItem(string itemSpec, int x, int y)
@@ -806,7 +856,7 @@ namespace BlindWhaleFarmer
                 && Pathfinder.IsPassable(loc, p.X, p.Y)).ToList();
             if (tiles.Count == 0)
             {
-                yield return ActionResult.Fail("区域内没有可以开垦的空地（可能已经耕过，或者有杂物，先用 clear_area 清理）");
+                yield return ActionResult.Fail("区域内没有可以开垦的空地：" + WhyNotTillable(loc, x1, y1, x2, y2));
                 yield break;
             }
             int done = 0;
@@ -1147,7 +1197,14 @@ namespace BlindWhaleFarmer
             jobs.RemoveAll(j => j.tool < 0);
             if (jobs.Count == 0)
             {
-                yield return ActionResult.Success("区域内没有可以清理的东西（大型障碍物 R 需要升级工具）");
+                // 只说区域里真有的：大型障碍物（树桩、原木、大石头）要升级的斧头/镐子，树要 include_trees
+                var left = RectTiles(x1, y1, x2, y2, 400).Select(p => Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).Item1).ToList();
+                var notes = new List<string>();
+                if (left.Contains('R'))
+                    notes.Add("大型障碍物 R（树桩、原木、大石头）要升级过的斧头或镐子");
+                if (left.Contains('T') && !includeTrees)
+                    notes.Add("有树，要砍就加 include_trees");
+                yield return ActionResult.Success("区域内没有可以清理的东西" + (notes.Count > 0 ? "（" + string.Join("；", notes) + "）" : ""));
                 yield break;
             }
             jobs = jobs.Take(60).ToList();
@@ -1279,7 +1336,16 @@ namespace BlindWhaleFarmer
             int idx = Util.FindItemIndex(itemSpec, i => i is SObject o && o.Edibility != -300);
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有可以吃的“{itemSpec}”");
+                // 列出能吃的（格号和回复多少体力），省得一格一格去试
+                var edible = Player.Items
+                    .Select((item, i) => (item, i))
+                    .Where(x => x.item is SObject o && o.Edibility > 0)
+                    .OrderByDescending(x => ((SObject)x.item).staminaRecoveredOnConsumption())
+                    .Take(8)
+                    .Select(x => $"{x.i}:{x.item.DisplayName}（+{((SObject)x.item).staminaRecoveredOnConsumption()} 体力）")
+                    .ToList();
+                yield return ActionResult.Fail($"背包里没有可以吃的“{itemSpec}”。"
+                    + (edible.Count > 0 ? "能吃的：" + string.Join("、", edible) : "背包里没有能吃的东西"));
                 yield break;
             }
             if (Blocked(out string why))
@@ -1611,6 +1677,11 @@ namespace BlindWhaleFarmer
         public IEnumerable<object> SkipEvent()
         {
             var ev = Game1.CurrentEvent;
+            if (Game1.eventUp && ev == null)
+            {
+                yield return ActionResult.Fail(StuckEventHint);
+                yield break;
+            }
             if (!Game1.eventUp || ev == null)
             {
                 yield return ActionResult.Fail("现在没有剧情事件");
@@ -1704,11 +1775,35 @@ namespace BlindWhaleFarmer
                 house.answerDialogueAction("Sleep_Yes", null);
             }
 
+            uint day = Game1.stats.DaysPlayed;
             for (int i = 0; i < 300 && !Game1.newDay && !Player.isInBed.Value && !Game1.fadeToBlack; i++)
                 yield return null;
-            yield return Game1.newDay || Player.isInBed.Value || Game1.fadeToBlack
-                ? ActionResult.Success("上床睡觉了，正在进入新的一天（结算界面会自动确认）")
-                : ActionResult.Fail("没能睡下");
+            if (!Game1.newDay && !Player.isInBed.Value && !Game1.fadeToBlack)
+            {
+                yield return ActionResult.Fail("没能睡下");
+                yield break;
+            }
+
+            // 等到第二天真正开始再返回：以前一睡下就返回，下一个动作常常撞上还没自动确认的出货结算界面
+            // （AutoConfirmNightMenus 要 4 秒才点 OK），白白失败一次。最多等 3 分钟（存档慢的时候）。
+            for (int i = 0; i < 180 * 60; i++)
+            {
+                if (Game1.stats.DaysPlayed != day && !Game1.newDay && !Game1.fadeToBlack && Context.IsWorldReady)
+                {
+                    // 选职业要 AI 自己挑；早上的剧情事件也交给 AI 处理
+                    if (Game1.activeClickableMenu is LevelUpMenu { isProfessionChooser: true })
+                    {
+                        yield return ActionResult.Success($"睡醒了，{Util.Stamp()}。先用 choose_profession 选职业");
+                        yield break;
+                    }
+                    if (Game1.eventUp || (Game1.activeClickableMenu == null && Player.CanMove))
+                        break;
+                }
+                yield return null;
+            }
+            yield return ActionResult.Success(Game1.stats.DaysPlayed == day
+                ? "上床睡觉了，正在进入新的一天（结算界面会自动确认）"
+                : $"睡醒了，{Util.Stamp()}" + (Game1.eventUp ? "，有剧情事件在播放（用 skip_event 跳过，或者 wait 看完）" : "，可以开始新的一天"));
         }
 
         private static int ToMinutes(int time) => time / 100 * 60 + time % 100;
@@ -1789,7 +1884,8 @@ namespace BlindWhaleFarmer
                 if (now >= targetMin || Game1.dayOfMonth != startDay)
                     break;
                 // 剧情/对话期间时间是停的，继续等只会卡死（而且等待占着动作通道，dialogue 也发不进来）：立刻停下交给 AI 处理
-                if (Game1.eventUp || Game1.activeClickableMenu != null)
+                // 剧情标记卡住（没有真的剧情）时不算被打断，接着等，模组几秒内会解开它
+                if ((Game1.eventUp && Game1.CurrentEvent != null) || Game1.activeClickableMenu != null)
                 {
                     yield return ActionResult.Success($"等待被打断（{Util.TimeString(Game1.timeOfDay)}）：出现了剧情或界面，先处理它。\n{observer.DescribeMenu()}");
                     yield break;
@@ -1797,6 +1893,50 @@ namespace BlindWhaleFarmer
                 yield return null;
             }
             yield return ActionResult.Success($"等待结束，现在是 {Util.TimeString(Game1.timeOfDay)}");
+        }
+
+        // ───────────────────────── 剧情标记卡住 ─────────────────────────
+
+        private int stuckEventTicks;
+
+        private const string StuckEventHint = "游戏的剧情标记卡住了（其实没有剧情在播），模组会在几秒内自动解开：wait 1 分钟再试，不用换别的动作";
+
+        /// <summary>
+        /// Game1.eventUp 开着，但当前地图没有剧情、没有界面、也不在切场景/淡入淡出：游戏自己不会再关掉它，
+        /// 所有动作都会被“正在播放剧情事件”挡住，时间也停住（冬8日冰雪节路上在镇子里就卡成这样）。
+        /// 持续 5 秒就记下现场（以便查原因），再用游戏自己结束剧情的 Game1.eventFinished() 收尾。每帧调用。
+        /// </summary>
+        public void RecoverStuckEvent(StardewModdingAPI.IMonitor monitor)
+        {
+            bool stuck = Game1.eventUp && Game1.CurrentEvent == null && Game1.farmEvent == null
+                && Game1.activeClickableMenu == null && Game1.currentMinigame == null
+                && !Game1.isWarping && !Game1.fadeToBlack && !Game1.globalFade && !Game1.newDay
+                && Game1.locationRequest == null;
+            if (!stuck)
+            {
+                stuckEventTicks = 0;
+                return;
+            }
+            if (++stuckEventTicks < 300)
+                return;
+            stuckEventTicks = 0;
+            var withEvent = Game1.locations.Where(l => l.currentEvent != null)
+                .Select(l => $"{l.NameOrUniqueName}:{l.currentEvent.id}{(l.currentEvent.isFestival ? "(节日)" : "")}").ToList();
+            monitor.Log($"剧情标记卡住了：eventUp=true 但 {Loc?.NameOrUniqueName} 没有剧情；位置 {Player.TilePoint}，eventOver={Game1.eventOver}，"
+                + $"有剧情的地图：{(withEvent.Count > 0 ? string.Join("、", withEvent) : "无")}，时间 {Util.Stamp()}。已用 eventFinished 解开。",
+                StardewModdingAPI.LogLevel.Warn);
+            try
+            {
+                Game1.eventFinished();
+            }
+            catch (Exception ex)
+            {
+                // eventFinished 依赖的状态不全时退回最小的解法
+                monitor.Log("eventFinished 失败，直接清掉标记：" + ex.Message, StardewModdingAPI.LogLevel.Warn);
+                Game1.eventUp = false;
+                Player.CanMove = true;
+                Game1.displayHUD = true;
+            }
         }
 
         // ───────────────────────── 夜间自动确认 ─────────────────────────

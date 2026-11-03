@@ -94,7 +94,7 @@ namespace BlindWhaleFarmer
                 j => () => a.ShipItems(Str(j, "item"), OptInt(j, "count")),
                 P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false));
 
-            Add("store_items", "把背包里的东西存进箱子（工具不存），腾出背包。不传坐标就用本地点最近的箱子。", 120,
+            Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就用本地点最近的箱子。", 120,
                 j => () => a.StoreItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
                 P("items", "string", "要存的物品名，多个用逗号分隔；不传或 all 表示除工具外全部存", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
@@ -222,7 +222,7 @@ namespace BlindWhaleFarmer
             Add("upgrade_house", "找 Robin 升级农舍：第一次 10000g+450木材，升级后有厨房（可以 cook）和冰箱。", 240,
                 j => () => a.UpgradeHouse());
 
-            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。", 240,
+            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。", 420,
                 j => () => a.Sleep());
 
             Add("wait", "原地等待若干游戏分钟（10~600），比如等商店开门。", 900,

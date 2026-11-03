@@ -293,6 +293,9 @@ namespace BlindWhaleFarmer
 
             // 用 MCP 客户端玩时游戏窗口通常在后台；默认的“失去焦点时暂停”会让 Game1.Update 直接返回，人物走不动
             KeepRunningInBackground(ready && (Agent.Running || mcpPlaying || MainThread.IsBusy));
+            // 剧情标记卡住（eventUp 还开着、却没有剧情/界面/切场景）时自己解开；只在 AI 玩的时候管，不碰玩家自己玩
+            if (ready && (Agent.Running || mcpPlaying || MainThread.IsBusy))
+                Actions.RecoverStuckEvent(Monitor);
             if (!ready || (!Agent.Running && !mcpPlaying))
             {
                 SetTimeFrozen(false);
