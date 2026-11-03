@@ -51,7 +51,8 @@ function findAll(node, pred, out = []) {
 }
 
 test('lib/client.js 是最新生成的（改了 Config 记得运行 npm run build:client）', () => {
-  assert.equal(readFileSync(clientFile, 'utf8'), buildClient())
+  // Windows 上 git 检出时可能换成 CRLF，只比内容
+  assert.equal(readFileSync(clientFile, 'utf8').replaceAll('\r\n', '\n'), buildClient())
 })
 
 test('package.json 声明了浏览器端模块，DSH 才会加载卡片', () => {
