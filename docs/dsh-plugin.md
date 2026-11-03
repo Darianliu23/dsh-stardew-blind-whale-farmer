@@ -1,6 +1,8 @@
 # dsh-stardew-blind-whale-farmer
 
-在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的「设置 → 插件」里调整 **大肥鱼种白饭 Blind Whale Farmer** 星露谷模组。
+在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）里调整 **大肥鱼种白饭 Blind Whale Farmer** 星露谷模组。
+
+**设置在哪**：DSH 左侧边栏「插件」→ dsh-stardew-blind-whale-farmer → 点组件名旁边的「配置 ›」，打开后按「游玩 / 攻略 / 会话与连接」分组，改完点「保存」，十几秒内推到游戏。装好或升级插件后要重启一次 DSH，配置入口才会出现。（DSH 不会照着插件的配置结构自动画表单，这个配置卡片是插件自带的 `lib/client.js`。）
 
 | 设置 | 默认 | 说明 |
 |---|---|---|
@@ -77,8 +79,10 @@ DSH 的桌面版和网页版用的是不同的 profile（`<DSH_HOME>/profiles/de
 注意用和这个 profile 一致的 pnpm（看 `node_modules/.modules.yaml` 里的 `packageManager`）：桌面版的 profile 是 DSH 桌面版自带的
 pnpm 11 建的（在 `DeepSeek Harness/resources/runtime/primary-runtime/dependencies/pnpm`），用别的大版本 pnpm 会要求重建整个 `node_modules`。
 
-设置页的表单需要 `@deepseek-ai/schemastery`。用 link 装时插件会到 `DSH_HOME` 的 profile 目录和 DSH 程序目录里去找；
-实在找不到也不会加载失败，只是设置页里没有表单，按默认值工作。
+配置结构需要 `@deepseek-ai/schemastery`。用 link 装时插件会到 `DSH_HOME` 的 profile 目录和 DSH 程序目录里去找；
+实在找不到也不会加载失败，只是配置卡片读不到设置，插件按默认值工作。
+
+改了 `lib/index.js` 的 `Config`（加减设置项）以后运行 `npm run build:client` 重新生成配置卡片 `lib/client.js`，测试会检查它是不是最新的。
 
 ## 测试
 

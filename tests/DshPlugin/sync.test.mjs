@@ -367,8 +367,9 @@ test('自动续玩：连续坏掉超过上限就停；中间有一次游戏动�
   }
 })
 
-test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config && '没找到 schemastery（设置 DSH_HOME 再测）' }, () => {
-  const resolved = plugin.Config({})
+test('配置结构和默认值（需要能找到 schemastery）', { skip: !plugin.Config && '没找到 schemastery（设置 DSH_HOME 再测）' }, () => {
+  // 字段是 volatile 的活引用，用 currentConfig 取值
+  const resolved = plugin.currentConfig(plugin.Config({}))
   assert.equal(resolved.sessionDays, 0)
   assert.equal(resolved.sessionMinutes, 0)
   assert.equal(resolved.freezeTime, true)
@@ -378,4 +379,24 @@ test('设置页表单（需要能找到 schemastery）', { skip: !plugin.Config 
   assert.equal(resolved.gatewayEnabled, false, '入口工具默认关闭')
   assert.equal(resolved.autoContinue, true, '自动续玩默认开启')
   assert.throws(() => plugin.Config({ sessionDays: -1 }))
+})
+
+test('设置是 volatile：DSH 交来的是活引用，配置卡片改了值不重启插件，下一轮同步就推新值', { timeout: 40000 }, async () => {
+  const { server, state, port } = await fakeGame()
+  const { ctx, dispose } = fakeCtx()
+  // 和 DSH 一样用 Config 解析：volatile 字段变成 { get() } 活引用
+  const config = plugin.Config({ port, forageRadius: 2 })
+  assert.equal(typeof config.forageRadius.get, 'function')
+  assert.equal(plugin.currentConfig(config).forageRadius, 2)
+  plugin.apply(ctx, config)
+  await wait(300)
+  assert.equal(state.posts.at(-1).settings.forageRadius, 2)
+  // 卡片保存后 DSH 就地改引用里的值（这里直接写，效果一样）
+  const write = Object.getOwnPropertySymbols(config.forageRadius)[0]
+  config.forageRadius[write](5)
+  await wait(15500)
+  assert.equal(state.posts.length, 2)
+  assert.equal(state.posts.at(-1).settings.forageRadius, 5)
+  dispose()
+  server.close()
 })

@@ -91,7 +91,7 @@ namespace BlindWhaleFarmer
                 UpdateMinutes();
                 if (Ended)
                     return $"失败：本次游玩已经结束（{Describe()}）。不要再执行游戏动作，向玩家汇报这次做了什么、下次打算做什么。"
-                        + "玩家可以在 DSH 设置里的 dsh-stardew-blind-whale-farmer（或 config.json）调整时长，重新读档就开始新的一次。";
+                        + "玩家可以在 DSH「插件」页 dsh-stardew-blind-whale-farmer 的配置里（或 config.json）调整时长，重新读档就开始新的一次。";
                 if (minutesUpAtDay >= 0 && tool != "sleep")
                     return $"失败：本次设定的 {config.SessionMinutes} 分钟游玩时间到了。现在请执行 sleep（会自动回家睡觉、存档），然后向玩家汇报这次做了什么。";
             }
