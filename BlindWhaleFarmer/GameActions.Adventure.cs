@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xna.Framework;
 using StardewValley;
+using StardewValley.Enchantments;
 using StardewValley.Inventories;
 using StardewValley.Locations;
 using StardewValley.Menus;
@@ -223,6 +224,8 @@ namespace BlindWhaleFarmer
             public int Kills, Swings, Eaten;
             /// <summary>找不到路走过去、等了也没过来的怪。</summary>
             public readonly HashSet<Monster> Unreachable = new();
+            /// <summary>打了不掉血、这次不再打的怪。</summary>
+            public readonly HashSet<Monster> Immune = new();
         }
 
         private static IEnumerable<Monster> LiveMonsters(GameLocation loc) =>
@@ -235,7 +238,7 @@ namespace BlindWhaleFarmer
                 return null;
             var me = Player.TilePoint;
             return LiveMonsters(Loc)
-                .Where(m => m.DamageToFarmer > 0 && Math.Max(Math.Abs(m.TilePoint.X - me.X), Math.Abs(m.TilePoint.Y - me.Y)) <= radius)
+                .Where(m => m.DamageToFarmer > 0 && !CannotHurt(m) && Math.Max(Math.Abs(m.TilePoint.X - me.X), Math.Abs(m.TilePoint.Y - me.Y)) <= radius)
                 .OrderBy(m => Util.Manhattan(m.TilePoint, me))
                 .FirstOrDefault();
         }
@@ -248,7 +251,7 @@ namespace BlindWhaleFarmer
         {
             if (!StardewModdingAPI.Context.IsWorldReady || Game1.eventUp)
                 return null;
-            var near = LiveMonsters(Loc).Where(m => m.DamageToFarmer > 0).ToList();
+            var near = LiveMonsters(Loc).Where(m => m.DamageToFarmer > 0 && !CannotHurt(m)).ToList();
             var me = Player.TilePoint;
             var close = near.Where(m => Util.Manhattan(m.TilePoint, me) <= 6)
                 .Where(m => !KnownUnreachable.Contains(m) || Util.Manhattan(m.TilePoint, me) <= 1)
@@ -261,6 +264,26 @@ namespace BlindWhaleFarmer
 
         /// <summary>会给怪加血的怪：暗影萨满每次施法约四成概率给附近血量比例最低的怪（常常是它自己）加 60 血，血少于 30 会逃跑。</summary>
         private static bool IsHealer(Monster m) => m is ShadowShaman;
+
+        /// <summary>
+        /// 岩石蟹（长得像石头的怪）缩在壳里、停着不动：这时武器只有 0 伤害（RockCrab.takeDamage），要用镐子敲（敲一下就醒，
+        /// 走动时武器打得动；敲 5 下壳就碎）。竹节虫（isStickBug）不吃镐子，不算。
+        /// </summary>
+        private static bool ShellClosed(Monster m) =>
+            m is RockCrab crab && !crab.isStickBug.Value && !crab.shellGone.Value && crab.Sprite.currentFrame % 4 == 0;
+
+        /// <summary>现在手上的东西打不动的怪：没有镐子时缩壳的岩石蟹；最好的武器没有除虫附魔时的装甲虫。</summary>
+        private static bool CannotHurt(Monster m)
+        {
+            if (ShellClosed(m))
+                return Util.FindTool<Pickaxe>() < 0;
+            if (m is Bug bug && bug.isArmoredBug.Value)
+            {
+                int best = BestWeapon();
+                return best < 0 || Player.Items[best] is not MeleeWeapon w || !w.hasEnchantmentOfType<BugKillerEnchantment>();
+            }
+            return false;
+        }
 
         /// <summary>伤害最高的近战武器；没有就用镰刀凑合。</summary>
         private static int BestWeapon()
@@ -421,6 +444,20 @@ namespace BlindWhaleFarmer
             Monster chasing = null;
             int unreachableReset = Game1.ticks;
             var walk = new Outcome();
+            var noEffect = new Dictionary<Monster, int>();
+            // 连着 8 下砍中也不掉血就别打了（会飞的怪多半只是没砍中，木乃伊倒地时等它起来）
+            void NoteSwing(Monster m, int hpBefore)
+            {
+                if (m.Health < hpBefore || m.isGlider.Value || (m is Mummy mummy && mummy.reviveTimer.Value > 0))
+                {
+                    noEffect.Remove(m);
+                    return;
+                }
+                noEffect.TryGetValue(m, out int n);
+                noEffect[m] = ++n;
+                if (n >= 8)
+                    st.Immune.Add(m);
+            }
             while (Game1.ticks - start < maxSeconds * 60)
             {
                 if (Game1.activeClickableMenu != null || Game1.eventUp || Game1.isWarping || Player.health <= 0)
@@ -453,8 +490,8 @@ namespace BlindWhaleFarmer
                                         || Util.Manhattan(chasing.TilePoint, me) > radius + 10))
                     chasing = null;
                 var target = chasing ?? LiveMonsters(Loc)
-                    .Where(m => !unreachable.Contains(m) && Util.Manhattan(m.TilePoint, me) <= radius)
-                    .OrderBy(m => IsHealer(m) ? 0 : 1)
+                    .Where(m => !unreachable.Contains(m) && !st.Immune.Contains(m) && Util.Manhattan(m.TilePoint, me) <= radius)
+                    .OrderBy(m => IsHealer(m) ? 0 : ShellClosed(m) ? 2 : 1) // 缩壳的岩石蟹不动也不打人，放到最后
                     .ThenBy(m => Vector2.Distance(m.GetBoundingBox().Center.ToVector2(), Player.StandingPixel.ToVector2()))
                     .FirstOrDefault();
                 if (target == null)
@@ -462,30 +499,56 @@ namespace BlindWhaleFarmer
                 if (IsHealer(target))
                     chasing = target;
 
-                int swingDir = Player.Items[weaponIdx] is MeleeWeapon held ? ReachDirection(held, target) : -1;
+                if (CannotHurt(target))
+                {
+                    st.Immune.Add(target);
+                    continue;
+                }
+
+                bool shellClosed = ShellClosed(target);
+                if (shellClosed && Util.Manhattan(target.TilePoint, me) == 1)
+                {
+                    foreach (var s in UseToolOnce(Util.FindTool<Pickaxe>(), target.TilePoint, walk))
+                        yield return s;
+                    st.Swings++;
+                    // 体力见底敲不动了
+                    if (!walk.Ok)
+                        st.Immune.Add(target);
+                    walk.Succeed();
+                    continue;
+                }
+
+                int swingDir = !shellClosed && Player.Items[weaponIdx] is MeleeWeapon held ? ReachDirection(held, target) : -1;
                 if (swingDir >= 0)
                 {
+                    int hpBefore = target.Health;
                     foreach (var s in SwingAt(weaponIdx, target, swingDir))
                         yield return s;
                     st.Swings++;
                     if (target.Health <= 0 || !Loc.characters.Contains(target))
                         st.Kills++;
+                    else
+                        NoteSwing(target, hpBefore);
                     continue;
                 }
 
                 // 靠近：只走几步就重新判断，怪会动
                 var goals = Pathfinder.AdjacentStandTiles(Loc, target.TilePoint);
-                if (Pathfinder.IsPassable(Loc, target.TilePoint.X, target.TilePoint.Y))
+                // 敲壳要站在旁边，不能走到蟹那一格上
+                if (!shellClosed && Pathfinder.IsPassable(Loc, target.TilePoint.X, target.TilePoint.Y))
                     goals.Add(target.TilePoint);
                 var path = goals.Count > 0 ? Pathfinder.FindPath(Loc, me, goals, 8000) : null;
-                if ((path == null || path.Count < 2) && Util.Manhattan(target.TilePoint, me) <= 1)
+                if (!shellClosed && (path == null || path.Count < 2) && Util.Manhattan(target.TilePoint, me) <= 1)
                 {
                     // 已经贴着它了，判定区却没算到（碰撞框偏一点）：没地方再靠近，直接朝它挥
+                    int hpBefore = target.Health;
                     foreach (var s in SwingAt(weaponIdx, target, DirToward(Player.StandingPixel, target.GetBoundingBox().Center)))
                         yield return s;
                     st.Swings++;
                     if (target.Health <= 0 || !Loc.characters.Contains(target))
                         st.Kills++;
+                    else
+                        NoteSwing(target, hpBefore);
                     continue;
                 }
                 if ((path == null || path.Count < 2) && InDungeon)
@@ -566,10 +629,14 @@ namespace BlindWhaleFarmer
             int left = LiveMonsters(Loc).Count(m => Util.Manhattan(m.TilePoint, Player.TilePoint) <= radius);
             string msg = $"挥了 {st.Swings} 下，打倒 {st.Kills} 只，吃了 {st.Eaten} 次东西，生命 {Player.health}/{Player.maxHealth}，附近还剩 {left} 只";
             var blocked = st.Unreachable.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
-            KnownUnreachable = new HashSet<Monster>(blocked);
+            var immune = st.Immune.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
+            KnownUnreachable = new HashSet<Monster>(blocked.Concat(immune));
             if (blocked.Count > 0)
                 msg += $"。够不着：{string.Join("、", blocked.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"))}"
                      + " 和你之间没有能走的路（被石头或墙隔开）。它过不来就不用管，继续干别的；挡路的话用 use_tool 拿镐子敲掉中间的石头再 fight";
+            if (immune.Count > 0)
+                msg += $"。打不动：{string.Join("、", immune.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"))}"
+                     + "（缩壳的岩石蟹要用镐子敲，没镐子或没体力时打不了；装甲虫要带除虫附魔的武器）。先绕开它，继续干别的";
             yield return o.Ok ? ActionResult.Success(msg) : ActionResult.Fail(o.Message.TrimStart('!') + "。" + msg);
         }
 

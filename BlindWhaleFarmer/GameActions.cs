@@ -452,6 +452,16 @@ namespace BlindWhaleFarmer
             string targetName = target.NameOrUniqueName;
             for (int hop = 0; hop < 15; hop++)
             {
+                // 节日开始后地图换成了临时地图，名字是 Temp 而不是节日所在的 Town/Forest/Beach。这时不能再按名字找路：
+                // 临时地图也有出口，走出去节日还留在 Temp 上，eventUp 一直是 true，人就看不见、动不了了
+                if (Game1.CurrentEvent is { isFestival: true })
+                {
+                    if (Knowledge.TodaysFestival() is { } today && today.Location.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                        o.Succeed($"已到达 {targetName}，节日开始了");
+                    else
+                        o.Fail("正在参加节日，走不了。用 festival leave 离开节日后再去");
+                    yield break;
+                }
                 if (Loc.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 {
                     var t = Player.TilePoint;
@@ -1631,10 +1641,17 @@ namespace BlindWhaleFarmer
                     reflection.GetMethod(menu, "okClicked").Invoke();
                     break;
                 default:
+                    // 铁匠正在砸晶球：等砸完，否则开出来的东西就没了
+                    for (int i = 0; i < 300 && menu is GeodeMenu { geodeAnimationTimer: > 0 }; i++)
+                        yield return null;
                     if (menu.readyToClose())
                         menu.exitThisMenu();
                     else
+                    {
+                        // 关不了多半是手上还拿着东西：先放回背包，直接清掉界面东西就丢了
+                        menu.emergencyShutDown();
                         Game1.exitActiveMenu();
+                    }
                     break;
             }
             for (int i = 0; i < 120 && Game1.activeClickableMenu == menu; i++)

@@ -191,7 +191,6 @@ namespace BlindWhaleFarmer
                 notes.Add("冰钓比赛开始了，但手上没有活动发的鱼竿，没法钓");
                 yield break;
             }
-            int maxDist = RodAddedDistance(Player) + 4;
             FishingSpot spot = null;
             var me = Player.TilePoint;
             foreach (int dir in new[] { Player.FacingDirection, 0, 1, 2, 3 }.Distinct())
@@ -215,7 +214,7 @@ namespace BlindWhaleFarmer
                 for (int cast = 0; cast < 40 && ev.festivalTimer > 4000 && ev.playerControlSequenceID == "iceFishing"; cast++)
                 {
                     var o = new Outcome();
-                    foreach (var s in FishOnce(-1, spot, maxDist, o))
+                    foreach (var s in FishOnce(-1, spot, o))
                         yield return s;
                     if (!o.Ok)
                     {

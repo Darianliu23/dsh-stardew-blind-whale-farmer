@@ -56,7 +56,9 @@ namespace BlindWhaleFarmer
 
     internal sealed partial class GameActions
     {
-        private sealed record FishingSpot(Point Stand, int Dir, int Distance);
+        /// <param name="Distance">从站立格到落点的格数。</param>
+        /// <param name="Clear">落点离岸多远（游戏算鱼和品质用的 clearWaterDistance，0~5）。</param>
+        private sealed record FishingSpot(Point Stand, int Dir, int Distance, int Clear = 0);
 
         private static readonly Point[] DirVec = { new(0, -1), new(1, 0), new(0, 1), new(-1, 0) };
 
@@ -66,26 +68,46 @@ namespace BlindWhaleFarmer
         private static bool Fishable(GameLocation loc, int x, int y) =>
             loc.isTileOnMap(x, y) && loc.isTileFishable(x, y);
 
+        /// <summary>满力能抛多远：左右比上下多 1 格（FishingRod 抛竿时左右乘 加成+4，上下乘 加成+3）。</summary>
+        private static int MaxCastDistance(Farmer who, int dir) =>
+            RodAddedDistance(who) + (dir is 1 or 3 ? 4 : 3);
+
+        /// <summary>刚好抛到 distance 格的力度，公式和 FishingRod 里算落点的一样（左右会少飞 8 像素）。</summary>
+        private static float CastPower(Farmer who, int dir, int distance) =>
+            Math.Clamp((distance * 64f + (dir is 1 or 3 ? 8f : 0f)) / (MaxCastDistance(who, dir) * 64f), 0f, 1f);
+
         /// <summary>
-        /// stand 格朝 dir 方向能抛到的最远可钓水面距离（1..maxDist），抛不到返回 0。
+        /// stand 格朝 dir 方向最好的落点：离岸最远，一样远就抛近一点。抛不到返回 null。
+        /// 只看抛多远不行：沿着岸往前抛，或者隔河抛到对岸边上，抛得再远也是贴着岸。
         /// 浮漂是飞过去的，游戏只检查落点（FishingRod 里 isTileFishable(落点)），中间隔着岸边碰撞格、栏杆都没关系。
         /// 注意岸边那圈水面通常叠着 Buildings 碰撞格，isTileFishable 是 false，所以不能要求“面前一格可钓”。
         /// 只要求前两格内有水面，确认真的站在岸边/栈桥边，而不是隔着一片陆地往远处的水里抛。
+        /// 最少飞 2 格（力度再小游戏也按 128 像素算），所以从 2 开始。
         /// </summary>
-        private static int BestCastDistance(GameLocation loc, Point stand, int dir, int maxDist)
+        private static FishingSpot BestCast(GameLocation loc, Point stand, int dir)
         {
             var d = DirVec[dir];
             if (!loc.isWaterTile(stand.X + d.X, stand.Y + d.Y) && !loc.isWaterTile(stand.X + d.X * 2, stand.Y + d.Y * 2))
-                return 0;
-            int best = 0;
-            for (int k = 1; k <= maxDist; k++)
-                if (Fishable(loc, stand.X + d.X * k, stand.Y + d.Y * k))
-                    best = k;
+                return null;
+            FishingSpot best = null;
+            for (int k = 2; k <= MaxCastDistance(Player, dir); k++)
+            {
+                int x = stand.X + d.X * k, y = stand.Y + d.Y * k;
+                if (!Fishable(loc, x, y))
+                    continue;
+                int clear = FishingRod.distanceToLand(x, y, loc);
+                if (best == null || clear > best.Clear)
+                    best = new FishingSpot(stand, dir, k, clear);
+            }
             return best;
         }
 
-        /// <summary>在附近找钓鱼点：能站、面朝水、抛得越远越好（离岸越远鱼越好）。</summary>
-        private static List<FishingSpot> FindFishingSpots(GameLocation loc, Point from, int radius, int maxDist)
+        /// <summary>面前隔了一格陆地才是水：同样远的落点，优先站到紧贴水边的地方。</summary>
+        private static int ShoreGap(GameLocation loc, FishingSpot s) =>
+            loc.isWaterTile(s.Stand.X + DirVec[s.Dir].X, s.Stand.Y + DirVec[s.Dir].Y) ? 0 : 1;
+
+        /// <summary>在附近找钓鱼点：能站、面朝水，落点离岸越远越好（离岸越远鱼越好），其次站得贴水边、离得近。</summary>
+        private static List<FishingSpot> FindFishingSpots(GameLocation loc, Point from, int radius)
         {
             var spots = new List<FishingSpot>();
             int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
@@ -98,14 +120,12 @@ namespace BlindWhaleFarmer
                     var stand = new Point(x, y);
                     for (int dir = 0; dir < 4; dir++)
                     {
-                        int dist = BestCastDistance(loc, stand, dir, maxDist);
-                        if (dist > 0)
-                            spots.Add(new FishingSpot(stand, dir, dist));
+                        if (BestCast(loc, stand, dir) is { } cast)
+                            spots.Add(cast);
                     }
                 }
             }
-            // 抛得远优先，其次离得近
-            return spots.OrderByDescending(s => s.Distance).ThenBy(s => Util.Manhattan(s.Stand, from)).ToList();
+            return spots.OrderByDescending(s => s.Clear).ThenBy(s => ShoreGap(loc, s)).ThenBy(s => Util.Manhattan(s.Stand, from)).ToList();
         }
 
         public IEnumerable<object> Fish(int casts, int? x, int? y, string direction)
@@ -131,7 +151,6 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             casts = Math.Clamp(casts, 1, 20);
-            int maxDist = RodAddedDistance(Player) + 4;
 
             // ── 选钓鱼点 ──
             FishingSpot spot = null;
@@ -141,9 +160,8 @@ namespace BlindWhaleFarmer
                 IEnumerable<int> dirs = string.IsNullOrEmpty(direction) ? Enumerable.Range(0, 4) : new[] { Util.ParseDir(direction) };
                 foreach (int dir in dirs.Where(d => d >= 0))
                 {
-                    int dist = BestCastDistance(loc, stand, dir, maxDist);
-                    if (dist > 0 && (spot == null || dist > spot.Distance))
-                        spot = new FishingSpot(stand, dir, dist);
+                    if (BestCast(loc, stand, dir) is { } cast && (spot == null || cast.Clear > spot.Clear))
+                        spot = cast;
                 }
                 if (spot == null)
                 {
@@ -155,14 +173,14 @@ namespace BlindWhaleFarmer
             var o = new Outcome();
             if (spot == null)
             {
-                var spots = FindFishingSpots(loc, Player.TilePoint, 30, maxDist);
+                var spots = FindFishingSpots(loc, Player.TilePoint, 30);
                 if (spots.Count == 0)
                 {
                     yield return ActionResult.Fail("附近 30 格内找不到能钓鱼的岸边，换个有水的地方（Beach、Mountain 的湖、Town/Forest 的河）");
                     yield break;
                 }
-                // 从抛得最远的一档开始，每档做一次多目标寻路，取最近的走得到的点
-                foreach (var level in spots.GroupBy(s => s.Distance).OrderByDescending(g => g.Key))
+                // 从落点离岸最远的一档开始，每档做一次多目标寻路，取最近的走得到的点（紧贴水边的先试）
+                foreach (var level in spots.GroupBy(s => (s.Clear, Gap: ShoreGap(loc, s))).OrderByDescending(g => g.Key.Clear).ThenBy(g => g.Key.Gap))
                 {
                     var byStand = level.GroupBy(s => s.Stand).ToDictionary(g => g.Key, g => g.First());
                     var path = Pathfinder.FindPath(loc, Player.TilePoint, byStand.Keys.ToList());
@@ -206,7 +224,7 @@ namespace BlindWhaleFarmer
                         break;
                     }
                     var one = new Outcome();
-                    foreach (var s in FishOnce(rodIdx, spot, maxDist, one))
+                    foreach (var s in FishOnce(rodIdx, spot, one))
                         yield return s;
                     if (one.Ok)
                         caught.Add(one.Message);
@@ -225,7 +243,7 @@ namespace BlindWhaleFarmer
             }
 
             string summary = $"用 {bestRod.DisplayName}" + (rodNote != null ? $"（{rodNote}）" : "")
-                             + $"在 ({spot.Stand.X},{spot.Stand.Y}) 朝{Util.DirName(spot.Dir)}钓鱼，钓到 {caught.Count} 次";
+                             + $"在 ({spot.Stand.X},{spot.Stand.Y}) 朝{Util.DirName(spot.Dir)}抛 {spot.Distance} 格（落点离岸 {spot.Clear} 格，最多算 5）钓鱼，钓到 {caught.Count} 次";
             if (caught.Count > 0)
                 summary += "：" + string.Join("、", caught);
             if (misses > 0)
@@ -239,7 +257,7 @@ namespace BlindWhaleFarmer
         /// <summary>
         /// 抛一次竿直到结束。o.Ok=钓到（Message 为物品名）；失败时 Message 以 "!" 开头表示应停止整个钓鱼动作。
         /// </summary>
-        private IEnumerable<object> FishOnce(int rodIdx, FishingSpot spot, int maxDist, Outcome o)
+        private IEnumerable<object> FishOnce(int rodIdx, FishingSpot spot, Outcome o)
         {
             foreach (var _ in WaitPlayerFree())
                 yield return null;
@@ -267,7 +285,7 @@ namespace BlindWhaleFarmer
 
             // 抛竿：beginUsing 进入蓄力；真实鼠标是松开的，下一帧游戏就会出竿，所以这里直接设定力度
             Player.BeginUsingTool();
-            rod.castingPower = Math.Clamp((spot.Distance * 64f + 8f) / (maxDist * 64f), 0f, 1f);
+            rod.castingPower = CastPower(Player, spot.Dir, spot.Distance);
 
             // 等浮漂落水
             int t = 0;

@@ -104,7 +104,7 @@ SMAPI 控制台命令（调试用）：
 | 批量农活 | `till_area`、`plant_seeds`、`water_crops`（水壶空了自动去灌水）、`harvest_crops`、`clear_area` |
 | 钓鱼 | `fish`（自动找岸边、按钓鱼等级算抛竿力度、等咬钩、提竿、自动玩钓鱼小游戏、收宝箱，一次最多连钓 20 竿） |
 | 动物 | `care_animals`（自动进每个鸡舍/畜棚：捡蛋和羊毛、清空自动采集器、食槽放干草、摸动物、挤奶/剪毛；可开关动物门） |
-| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托） |
+| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托） |
 | 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，可坐电梯直达） |
 | 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |

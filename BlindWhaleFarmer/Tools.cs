@@ -104,7 +104,7 @@ namespace BlindWhaleFarmer
                 j => () => a.Festival(Str(j, "action")),
                 P("action", "string", "enter / greet / start / leave", true));
 
-            Add("tidy_backpack", "整理背包：每类工具只留最好的一把（低级鱼竿、多余的武器等存起来），身上留吃的（料理）、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器，"
+            Add("tidy_backpack", "整理背包：每类工具只留最好的一把（低级鱼竿、多余的武器等存起来），身上留吃的（料理；不够两样时再留回血最多的普通食物）、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器，"
                 + "其余（矿石、石头木材、宝石、鱼、作物、怪物掉落……）存进农场的箱子，一个满了换下一个。不在农场会先回农场。出门下矿/钓鱼前、背包快满时用。", 300,
                 j => () => a.TidyBackpack(OptStr(j, "keep")),
                 P("keep", "string", "额外要留在身上的物品名，多个用逗号分隔（比如今天要送的礼物、要交的收集包材料）", false));
@@ -204,6 +204,11 @@ namespace BlindWhaleFarmer
             Add("upgrade_tool", "找铁匠 Clint（Blacksmith）升级工具（花钱+矿锭，2 天后取，期间工具不能用），或者领取已经升级好的工具（tool 可省略）。建议在下雨天升级水壶。", 240,
                 j => () => a.UpgradeTool(OptStr(j, "tool")),
                 P("tool", "string", "要升级的工具：axe/pickaxe/hoe/watering_can；领取时可省略", false));
+
+            Add("crack_geodes", "找铁匠 Clint（Blacksmith，9:00-16:00）砸晶球，每个 25g，返回开出了什么。会自己走过去，不用打开界面。", 240,
+                j => () => a.CrackGeodes(OptStr(j, "item"), OptInt(j, "count")),
+                P("item", "string", "只砸哪种（如 冰封晶球），可省略=全部", false),
+                P("count", "integer", "最多砸几个，可省略=全部", false));
 
             Add("quest_board", "去镇上皮埃尔店门口的告示板查看今天的委托任务；accept=true 接受（2 天内完成，有报酬和好感）。", 180,
                 j => () => a.QuestBoard(OptBool(j, "accept") ?? false),

@@ -52,6 +52,107 @@ namespace BlindWhaleFarmer
             }
         }
 
+        // ───────────────────────── 砸晶球 ─────────────────────────
+
+        /// <summary>
+        /// 找 Clint 砸晶球：和玩家在 GeodeMenu 里拿起晶球、放到铁砧上一样（每个 25g，铁砧的动画结束后东西进背包）。
+        /// </summary>
+        public IEnumerable<object> CrackGeodes(string itemSpec, int? count)
+        {
+            var filter = ItemFilter(itemSpec);
+            var geodes = Player.Items.Where(i => i != null && Utility.IsGeode(i) && filter(i)).ToList();
+            if (geodes.Count == 0)
+            {
+                yield return ActionResult.Fail("背包里没有" + (string.IsNullOrWhiteSpace(itemSpec) ? "晶球" : $"符合“{itemSpec}”的晶球"));
+                yield break;
+            }
+
+            var o = new Outcome();
+            if (Game1.activeClickableMenu is not GeodeMenu)
+            {
+                if (Blocked(out string why))
+                {
+                    yield return ActionResult.Fail(why);
+                    yield break;
+                }
+                foreach (var s in GoToShopkeeper("Blacksmith", "Clint", "Blacksmith", o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail(o.Message);
+                    yield break;
+                }
+                Game1.activeClickableMenu = new GeodeMenu();
+            }
+            var menu = (GeodeMenu)Game1.activeClickableMenu;
+
+            int left = Math.Max(count ?? int.MaxValue, 1), cost = 0;
+            var found = new List<string>();
+            string stop = null;
+            foreach (var geode in geodes)
+            {
+                while (left > 0 && stop == null && Player.Items.Contains(geode) && geode.Stack > 0)
+                {
+                    if (Player.Money < 25)
+                    {
+                        stop = "钱不够了（每个 25g）";
+                        break;
+                    }
+                    // 拿起来放到铁砧上。剩下的马上放回原来的格子，开出来的东西才不会占了它
+                    int slot = Player.Items.IndexOf(geode);
+                    Player.Items[slot] = null;
+                    menu.heldItem = geode;
+                    var spot = menu.geodeSpot.bounds.Center;
+                    menu.receiveLeftClick(spot.X, spot.Y);
+                    bool started = menu.geodeAnimationTimer > 0;
+                    Player.Items[slot] = menu.heldItem;
+                    menu.heldItem = null;
+                    if (!started)
+                    {
+                        stop = "背包满了，开出来的东西没地方放，先空出一格";
+                        break;
+                    }
+                    cost += 25;
+                    left--;
+
+                    Item treasure = null;
+                    for (int t = 0; t < 400 && menu.geodeAnimationTimer > 0; t++)
+                    {
+                        treasure = menu.geodeTreasure ?? treasure;
+                        yield return null;
+                    }
+                    if (treasure != null)
+                        found.Add(treasure.Stack > 1 ? $"{treasure.DisplayName}x{treasure.Stack}" : treasure.DisplayName);
+                }
+            }
+
+            if (Game1.activeClickableMenu == menu)
+            {
+                if (menu.readyToClose())
+                    menu.exitThisMenu();
+                else
+                {
+                    menu.emergencyShutDown();
+                    Game1.exitActiveMenu();
+                }
+            }
+            for (int i = 0; i < 120 && Game1.activeClickableMenu == menu; i++)
+                yield return null;
+
+            if (cost == 0)
+            {
+                yield return ActionResult.Fail(stop ?? "一个也没砸开");
+                yield break;
+            }
+            string msg = $"砸开 {cost / 25} 个晶球，花了 {cost}g，现在有 {Player.Money}g，开出来：{(found.Count > 0 ? string.Join("、", found) : "（没看到结果，查一下背包）")}，都在背包里";
+            int remaining = Player.Items.Where(i => i != null && Utility.IsGeode(i)).Sum(i => i.Stack);
+            if (remaining > 0)
+                msg += $"；背包里还有 {remaining} 个晶球";
+            if (stop != null)
+                msg += "；停下原因：" + stop;
+            yield return ActionResult.Success(msg);
+        }
+
         // ───────────────────────── 工具升级 ─────────────────────────
 
         public static string ToolUpgradeStatus()

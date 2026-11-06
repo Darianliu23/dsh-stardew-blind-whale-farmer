@@ -15,7 +15,8 @@ namespace BlindWhaleFarmer
 
         /// <summary>
         /// 整理背包时要留在身上的：每类工具只留最好的一把（鱼竿按 RodScore、武器按伤害、其他工具按升级等级），
-        /// 吃的、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器/洒水器/箱子，以及玩家点名要留的。其余都存进箱子。
+        /// 吃的（料理；不够两样时补上回血最多的普通食物，鱼排在后面）、种子、肥料、鱼饵钓具、炸弹、任务物品、
+        /// 要摆放的机器/洒水器/箱子，以及玩家点名要留的。其余都存进箱子。
         /// </summary>
         private static HashSet<Item> ItemsToKeep(Func<Item, bool> keepAlso)
         {
@@ -51,6 +52,13 @@ namespace BlindWhaleFarmer
                 if (usefulOnHand || i is Ring or Boots || keepAlso(i))
                     keep.Add(i);
             }
+            // 没带够回血的就下矿，打到一半只能撤退
+            bool Heals(Item i) => i is SObject f && f.Edibility > 0 && f.healthRecoveredOnConsumption() > 0;
+            var extraFood = items.Where(i => Heals(i) && !keep.Contains(i))
+                .OrderBy(i => ((SObject)i).Category == SObject.FishCategory ? 1 : 0)
+                .ThenByDescending(i => ((SObject)i).healthRecoveredOnConsumption())
+                .Take(Math.Max(0, 2 - keep.Count(Heals)));
+            keep.UnionWith(extraFood.ToList());
             return keep;
         }
 

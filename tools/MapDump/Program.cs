@@ -196,6 +196,47 @@ if (fi >= 0)
         }
     }
     Console.WriteLine($"从 ({sx},{sy}) {radius} 格内：旧规则 {oldCount} 个钓点，新规则 {newCount} 个{(bestNew is { } b ? $"，例如站 ({b.Item1},{b.Item2}) 抛 {b.Item3} 格" : "")}");
+
+    // 落点离岸多远（同 FishingRod.distanceToLand）：一圈圈往外找第一个不是水的格子，地图外不算陆地
+    int Clear(int tx, int ty)
+    {
+        for (int r = 1; r <= 5; r++)
+            for (int x = tx - r; x <= tx + r; x++)
+                for (int y = ty - r; y <= ty + r; y++)
+                    if (Math.Max(Math.Abs(x - tx), Math.Abs(y - ty)) == r && OnMap(x, y) && !Water(x, y))
+                        return r - 1;
+        return 5;
+    }
+    // maxDist 是左右的满力距离，上下少 1 格；力度再小也至少飞 2 格
+    var spots = new System.Collections.Generic.List<(int x, int y, int dx, int dy, int k, int clear, int gap, int far)>();
+    foreach (var (x, y) in reach)
+    {
+        if (Math.Abs(x - sx) > radius || Math.Abs(y - sy) > radius) continue;
+        foreach (var (dx, dy) in new[] { (0, 1), (1, 0), (0, -1), (-1, 0) })
+        {
+            if (!Water(x + dx, y + dy) && !Water(x + 2 * dx, y + 2 * dy)) continue;
+            int reachK = dx != 0 ? maxDist : maxDist - 1;
+            int best = -1, bestK = 0, far = 0;
+            for (int k = 2; k <= reachK; k++)
+            {
+                if (!Fishable(x + k * dx, y + k * dy)) continue;
+                far = k;
+                int c = Clear(x + k * dx, y + k * dy);
+                if (c > best) { best = c; bestK = k; }
+            }
+            if (bestK > 0) spots.Add((x, y, dx, dy, bestK, best, Water(x + dx, y + dy) ? 0 : 1, far));
+        }
+    }
+    string Show((int x, int y, int dx, int dy, int k, int clear, int gap, int far) s, int k, int clear) =>
+        $"站 ({s.x},{s.y}) 朝 ({s.dx},{s.dy}) 抛 {k} 格，落点离岸 {clear}，和水隔 {s.gap} 格";
+    if (spots.Count > 0)
+    {
+        int Near((int x, int y, int dx, int dy, int k, int clear, int gap, int far) s) => Math.Abs(s.x - sx) + Math.Abs(s.y - sy);
+        var oldPick = spots.OrderByDescending(s => s.far).ThenBy(Near).First();
+        var newPick = spots.OrderByDescending(s => s.clear).ThenBy(s => s.gap).ThenBy(Near).First();
+        Console.WriteLine("旧选法（抛得最远）：" + Show(oldPick, oldPick.far, Clear(oldPick.x + oldPick.far * oldPick.dx, oldPick.y + oldPick.far * oldPick.dy)));
+        Console.WriteLine("新选法（离岸最远）：" + Show(newPick, newPick.k, newPick.clear));
+    }
 }
 Console.WriteLine("Map properties: " + string.Join("; ", map.Properties.Select(kv => $"{kv.Key}={kv.Value}")).Substring(0, Math.Min(2000, string.Join("; ", map.Properties.Select(kv => $"{kv.Key}={kv.Value}")).Length)));
 

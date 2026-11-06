@@ -770,6 +770,10 @@ namespace BlindWhaleFarmer
                         sb.AppendLine("（用 dialogue 不带参数继续/关闭对话）");
                     break;
 
+                case GeodeMenu:
+                    sb.AppendLine("铁匠砸晶球的界面。不用点这里，直接用 crack_geodes 砸，开出什么会告诉你；不砸就 close_menu。");
+                    break;
+
                 case ShopMenu shop:
                     sb.AppendLine($"商店界面（{shop.ShopId}）。你的钱：{Game1.player.Money}g。用 buy 购买、sell 出售、close_menu 离开。商品：");
                     int i2 = 0;
