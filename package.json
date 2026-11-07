@@ -1,6 +1,6 @@
 {
   "name": "dsh-stardew-blind-whale-farmer",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "大肥鱼种白饭（Blind Whale Farmer）星露谷模组的 DSH 插件：在 DSH 插件页的配置里调整每次游玩的游戏日 / 分钟上限、思考时冻结时间、给 AI 的额外要求和攻略文件，自动推送到游戏；可选创建一个只让选中会话加载游戏工具的会话预设，或在所有会话里提供一个精简的 stardew 入口工具。",
   "license": "MIT",
   "author": "Darian (https://github.com/Darianliu23)",

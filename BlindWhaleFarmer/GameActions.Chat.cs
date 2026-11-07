@@ -39,7 +39,7 @@ namespace BlindWhaleFarmer
 
         private static string ModeAdvice() => Mode switch
         {
-            ModeSolo => "按你自己的计划玩，别人说话回一句就行，不用放下手里的事",
+            ModeSolo => "按你自己的计划玩，不用放下手里的事。别人说话回一句，来不来帮忙看你自己的心情",
             ModeCommand => "主要听指令：有人吩咐就做，做完用 say 汇报，然后用 follow 或 wait_chat 等下一句，不要自己找事做",
             _ => "有人吩咐就先做，做完用 say 汇报，然后接着按自己的计划玩",
         };
