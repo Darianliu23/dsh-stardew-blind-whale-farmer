@@ -238,7 +238,7 @@ namespace BlindWhaleFarmer
                 return null;
             var me = Player.TilePoint;
             return LiveMonsters(Loc)
-                .Where(m => m.DamageToFarmer > 0 && !CannotHurt(m) && Math.Max(Math.Abs(m.TilePoint.X - me.X), Math.Abs(m.TilePoint.Y - me.Y)) <= radius)
+                .Where(m => m.DamageToFarmer > 0 && !CannotHurt(m) && !(ShellClosed(m) && KnownUnreachable.Contains(m)) && Math.Max(Math.Abs(m.TilePoint.X - me.X), Math.Abs(m.TilePoint.Y - me.Y)) <= radius)
                 .OrderBy(m => Util.Manhattan(m.TilePoint, me))
                 .FirstOrDefault();
         }
@@ -254,13 +254,17 @@ namespace BlindWhaleFarmer
             var near = LiveMonsters(Loc).Where(m => m.DamageToFarmer > 0 && !CannotHurt(m)).ToList();
             var me = Player.TilePoint;
             var close = near.Where(m => Util.Manhattan(m.TilePoint, me) <= 6)
-                .Where(m => !KnownUnreachable.Contains(m) || Util.Manhattan(m.TilePoint, me) <= 1)
+                // 打不着的怪贴到身边会打人，照样提醒；缩壳的岩石蟹不动也不打人，fight 敲不动（没体力）以后就别再催
+                .Where(m => !KnownUnreachable.Contains(m) || (Util.Manhattan(m.TilePoint, me) <= 1 && !ShellClosed(m)))
                 .OrderBy(m => Util.Manhattan(m.TilePoint, me)).ToList();
             if (close.Count == 0)
                 return null;
-            string list = string.Join("、", close.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"));
+            string list = string.Join("、", close.Take(4).Select(m => $"{MonsterName(m)}({m.TilePoint.X},{m.TilePoint.Y})"));
             return $"⚠ 附近有 {close.Count} 只怪：{list}，生命 {Player.health}/{Player.maxHealth}。先用 fight 清掉再干别的；生命低又没有回血食物就撤退";
         }
+
+        /// <summary>怪物的中文名。联机时农场工人这边的怪是主机同步过来的，displayName 没翻译，只剩英文内部名，所以按名字查数据。</summary>
+        internal static string MonsterName(Monster m) => Monster.GetDisplayName(m.Name);
 
         /// <summary>会给怪加血的怪：暗影萨满每次施法约四成概率给附近血量比例最低的怪（常常是它自己）加 60 血，血少于 30 会逃跑。</summary>
         private static bool IsHealer(Monster m) => m is ShadowShaman;
@@ -632,10 +636,10 @@ namespace BlindWhaleFarmer
             var immune = st.Immune.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
             KnownUnreachable = new HashSet<Monster>(blocked.Concat(immune));
             if (blocked.Count > 0)
-                msg += $"。够不着：{string.Join("、", blocked.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"))}"
+                msg += $"。够不着：{string.Join("、", blocked.Take(4).Select(m => $"{MonsterName(m)}({m.TilePoint.X},{m.TilePoint.Y})"))}"
                      + " 和你之间没有能走的路（被石头或墙隔开）。它过不来就不用管，继续干别的；挡路的话用 use_tool 拿镐子敲掉中间的石头再 fight";
             if (immune.Count > 0)
-                msg += $"。打不动：{string.Join("、", immune.Take(4).Select(m => $"{m.displayName}({m.TilePoint.X},{m.TilePoint.Y})"))}"
+                msg += $"。打不动：{string.Join("、", immune.Take(4).Select(m => $"{MonsterName(m)}({m.TilePoint.X},{m.TilePoint.Y})"))}"
                      + "（缩壳的岩石蟹要用镐子敲，没镐子或没体力时打不了；装甲虫要带除虫附魔的武器）。先绕开它，继续干别的";
             yield return o.Ok ? ActionResult.Success(msg) : ActionResult.Fail(o.Message.TrimStart('!') + "。" + msg);
         }
@@ -681,11 +685,15 @@ namespace BlindWhaleFarmer
                 var after = chest.GetItemsForPlayer().Where(i => i != null).Select(i => i.DisplayName).ToList();
                 foreach (var name in after)
                     before.Remove(name);
-                if (Game1.activeClickableMenu is ItemGrabMenu)
+                if (Game1.activeClickableMenu is ItemGrabMenu grab)
                 {
-                    // 背包满了，游戏弹出了拿取界面：先关掉，交给 AI 腾地方
+                    // 背包满了：游戏已经把这件从箱子里拿出来放进拿取界面，关掉界面它就掉在脚边
+                    var dropped = grab.ItemsToGrabMenu.actualInventory.Where(i => i != null).Select(i => i.DisplayName).ToList();
                     Game1.exitActiveMenu();
-                    note($"({tile.X},{tile.Y}) 的宝箱里还有 {string.Join("、", after)}，背包满了拿不下：腾出位置后 interact 这个箱子");
+                    var left = mine.objects.TryGetValue(new Vector2(tile.X, tile.Y), out var rest) && rest is Chest restChest
+                        ? restChest.GetItemsForPlayer().Where(i => i != null).Select(i => i.DisplayName).ToList() : new List<string>();
+                    note($"背包满了，宝箱里的 {string.Join("、", dropped)} 掉在你脚边 ({Player.TilePoint.X},{Player.TilePoint.Y}) 附近的地上：扔掉或用掉一样东西腾出位置，再走过去就会捡起来"
+                         + (left.Count > 0 ? $"。箱子里还剩 {string.Join("、", left)}，腾出位置后 interact ({tile.X},{tile.Y})" : ""));
                     yield break;
                 }
                 took.AddRange(before);

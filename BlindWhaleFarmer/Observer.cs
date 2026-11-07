@@ -379,7 +379,7 @@ namespace BlindWhaleFarmer
                             extra += " 背包礼物[" + string.Join(" ", parts) + "]";
                     }
                 }
-                sb.AppendLine($"- {npc.displayName}（{npc.Name}）在 ({t.X},{t.Y}){extra}");
+                sb.AppendLine($"- {(npc is Monster mon ? GameActions.MonsterName(mon) : npc.displayName)}（{npc.Name}）在 ({t.X},{t.Y}){extra}");
                 if (++count >= 20)
                     break;
             }
@@ -618,7 +618,7 @@ namespace BlindWhaleFarmer
                 var p = new Point((int)f.TileLocation.X, (int)f.TileLocation.Y);
                 if (Math.Abs(p.X - pt.X) > r || Math.Abs(p.Y - pt.Y) > r)
                     continue;
-                Add("家具 " + f.DisplayName, "", p);
+                Add("家具 " + f.DisplayName, f is TV ? "interact 看电视" : "", p);
             }
             int debris = loc.debris.Count(d => d.item != null || d.itemId.Value != null);
             if (debris > 0)
@@ -818,7 +818,7 @@ namespace BlindWhaleFarmer
                     {
                         var left = reflection.GetField<List<string>>(lvl, "leftProfessionDescription", false)?.GetValue();
                         var right = reflection.GetField<List<string>>(lvl, "rightProfessionDescription", false)?.GetValue();
-                        sb.AppendLine("升级了，需要选择职业（用 choose_profession，left 或 right）：");
+                        sb.AppendLine("升级了，需要选择职业（用 choose_profession，left 或 right；按你的玩法或玩家的要求选，攻略“职业”一节有各职业的作用）：");
                         sb.AppendLine("  left: " + (left != null ? string.Join(" ", left) : "?"));
                         sb.AppendLine("  right: " + (right != null ? string.Join(" ", right) : "?"));
                     }

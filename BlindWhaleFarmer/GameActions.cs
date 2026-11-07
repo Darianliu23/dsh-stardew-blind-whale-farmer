@@ -824,6 +824,23 @@ namespace BlindWhaleFarmer
 
             // NPC 会走动，最多追 4 次
             Point target = npc?.TilePoint ?? new Point(x.Value, y.Value);
+            // 家具常常占好几格（电视 2x2），传的那一格四周可能都是墙：换成家具上旁边能站人、离得最近的一格
+            if (npc == null)
+            {
+                var piece = Loc.furniture.FirstOrDefault(f => f.furniture_type.Value != 12 && f.GetBoundingBox().Contains(target.X * 64, target.Y * 64));
+                if (piece != null)
+                {
+                    var bb = piece.GetBoundingBox();
+                    var me = Player.TilePoint;
+                    var tiles = new List<Point>();
+                    for (int tx = bb.Left / 64; tx <= (bb.Right - 1) / 64; tx++)
+                        for (int ty = bb.Top / 64; ty <= (bb.Bottom - 1) / 64; ty++)
+                            tiles.Add(new Point(tx, ty));
+                    var reachable = tiles.Where(t => Pathfinder.AdjacentStandTiles(Loc, t).Count > 0).OrderBy(t => Util.Manhattan(t, me)).ToList();
+                    if (reachable.Count > 0 && !reachable.Contains(target))
+                        target = reachable[0];
+                }
+            }
             for (int attempt = 0; attempt < 4; attempt++)
             {
                 if (npc != null)
@@ -884,7 +901,12 @@ namespace BlindWhaleFarmer
             {
                 var who = Loc.isCharacterAtTile(v);
                 ok = who != null && who.checkAction(Player, Loc);
-                if (!ok)
+                // 游戏里家具只有按右键才打开（电视选台、坐椅子），左键是把桌上的东西拿走；
+                // checkAction 认不出这是右键，所以家具在这里直接按右键处理
+                var furniture = ok ? null : Loc.furniture.FirstOrDefault(f => f.furniture_type.Value != 12 && f.GetBoundingBox().Contains(target.X * 64, target.Y * 64));
+                if (furniture != null)
+                    ok = (Player.ActiveObject != null && furniture.performObjectDropInAction(Player.ActiveObject, false, Player)) || furniture.checkForAction(Player);
+                if (!ok && furniture == null)
                     ok = Loc.checkAction(new xLocation(target.X, target.Y), Game1.viewport, Player);
                 if (!ok && Loc.terrainFeatures.TryGetValue(v, out var tf))
                     ok = tf.performUseAction(v);
