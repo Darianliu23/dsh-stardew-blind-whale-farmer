@@ -69,7 +69,11 @@ namespace BlindWhaleFarmer
                         + $"{Util.TimeString(fest.Start)}-{Util.TimeString(fest.End)} 之间用 festival enter 入场 → greet → start。"
                         + $"节日当天镇上商店都关门；不参加的话这段时间别走 {fest.Location}（travel_to 会拦下）");
                 if (Game1.CurrentEvent is { isFestival: true })
-                    sb.AppendLine("你正在节日里：时间不走，普通工具不能用。用 festival greet 打招呼、festival start 开始主活动、festival leave 离开");
+                    sb.AppendLine(GameActions.FestivalMainRunning(Game1.CurrentEvent)
+                        ? "【节日主活动已经开始了】马上用 festival start 加入（会自动过对白、捡彩蛋或钓鱼），大家要一起看完，别 festival leave"
+                        : Game1.IsMasterGame
+                            ? "你正在节日里：时间不走，普通工具不能用。用 festival greet 打招呼、festival start 开始主活动、festival leave 离开"
+                            : "你正在节日里：时间不走，普通工具不能用。用 festival greet 打招呼；主活动只有主机能开始，用 festival start 做好准备并等主机开始；festival leave 离开");
                 if (GameActions.ThreatWarning() is string threat)
                     sb.AppendLine(threat);
                 if (GameActions.BedtimeWarning() is string bed)
@@ -77,6 +81,16 @@ namespace BlindWhaleFarmer
             });
             if (player.mailbox.Count > 0)
                 sb.AppendLine($"邮箱里有 {player.mailbox.Count} 封未读信件：邮箱在 Farm 的 ({player.getMailboxPosition().X},{player.getMailboxPosition().Y})，interact 这个坐标阅读。信里常有任务、物品，有的剧情要先读信才会触发（比如威利送鱼竿）");
+
+            Safe(sb, () =>
+            {
+                if (GameActions.RomanceLine() is string romance)
+                    sb.AppendLine(romance);
+                if (GameActions.OtherPlayersLine() is string others)
+                    sb.AppendLine(others);
+                if (GameActions.TakeChat() is string chat)
+                    sb.AppendLine(chat);
+            });
 
             sb.AppendLine();
             sb.AppendLine("## 当前界面");
@@ -742,7 +756,9 @@ namespace BlindWhaleFarmer
         public string DescribeMenu()
         {
             var sb = new StringBuilder();
-            if (Game1.eventUp && Game1.CurrentEvent is { isFestival: true })
+            if (Game1.eventUp && GameActions.FestivalMainRunning(Game1.CurrentEvent))
+                sb.AppendLine("节日主活动进行中：用 festival start 接着参加（会自动过对白、捡彩蛋或钓鱼）。");
+            else if (Game1.eventUp && Game1.CurrentEvent is { isFestival: true })
                 sb.AppendLine("你在节日里：时间停止，移动和干活的工具都不能用。用 leave_festival 离开节日回去继续干活（对话框打开时先用 dialogue 说完）。");
             else if (Game1.eventUp && Game1.CurrentEvent != null)
                 sb.AppendLine($"正在播放剧情/节日事件{(Game1.CurrentEvent.skippable ? "（可以用 skip_event 跳过）" : "")}。剧情中出现对话时用 dialogue 推进。");
@@ -768,6 +784,14 @@ namespace BlindWhaleFarmer
                     }
                     else
                         sb.AppendLine("（用 dialogue 不带参数继续/关闭对话）");
+                    break;
+
+                case ReadyCheckDialog ready:
+                    sb.AppendLine(GameActions.ReadyCheckHint(ready));
+                    break;
+
+                case NamingMenu:
+                    sb.AppendLine("要起名字（孩子或者刚出生的动物）：用 set_name 传一个名字");
                     break;
 
                 case GeodeMenu:

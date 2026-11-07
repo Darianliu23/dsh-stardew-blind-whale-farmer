@@ -128,6 +128,8 @@ namespace BlindWhaleFarmer
             return spots.OrderByDescending(s => s.Clear).ThenBy(s => ShoreGap(loc, s)).ThenBy(s => Util.Manhattan(s.Stand, from)).ToList();
         }
 
+        private const string BagFullForFishing = "背包满了，再钓拿不下的会掉在地上。先把鱼和用不上的东西放进出货箱（ship_items），或者整理（tidy_backpack），空出位置再钓。体力够时别为了腾位置吃鱼";
+
         public IEnumerable<object> Fish(int casts, int? x, int? y, string direction)
         {
             if (Blocked(out string why))
@@ -140,6 +142,12 @@ namespace BlindWhaleFarmer
             if (rodIdx < 0)
             {
                 yield return ActionResult.Fail("背包里没有鱼竿（第二天早上去海边找威利 Willy 会送你一根，或者在鱼店 FishShop 买）");
+                yield break;
+            }
+            // 背包满时游戏会弹物品界面，拿不下的只能丢在地上，鱼就白钓了
+            if (Player.freeSpotsInInventory() == 0)
+            {
+                yield return ActionResult.Fail(BagFullForFishing);
                 yield break;
             }
             var bestRod = (FishingRod)Player.Items[rodIdx];
@@ -213,6 +221,16 @@ namespace BlindWhaleFarmer
                 FishingAssist.Active = true;
                 for (int c = 0; c < casts; c++)
                 {
+                    if (ChatWantsAttention())
+                    {
+                        stopReason = "有人说话了，先停下来";
+                        break;
+                    }
+                    if (Player.freeSpotsInInventory() == 0)
+                    {
+                        stopReason = BagFullForFishing;
+                        break;
+                    }
                     if (Player.Stamina <= 10f)
                     {
                         stopReason = "体力不足，停止钓鱼";
@@ -385,11 +403,12 @@ namespace BlindWhaleFarmer
             }
 
             // 宝箱或背包满时会弹出物品界面，能拿的都拿走，拿不下的丢在地上
+            var dropped = new List<string>();
             for (int i = 0; i < 240; i++)
             {
                 if (Game1.activeClickableMenu is ItemGrabMenu grab)
                 {
-                    GrabAll(grab);
+                    dropped = GrabAll(grab);
                     break;
                 }
                 if (!rod.showingTreasure && !rod.fishCaught && Player.CanMove && !Player.UsingTool)
@@ -403,13 +422,16 @@ namespace BlindWhaleFarmer
             // 有小游戏时看进度条是否满；没有小游戏（垃圾等）看有没有“举起物品”
             bool success = sawBar ? lastProgress >= 0.9f : sawCaught;
             if (success)
-                o.Succeed(fishName + (sawBar && perfect ? "(完美)" : ""));
+                o.Succeed(fishName + (sawBar && perfect ? "(完美)" : "")
+                    + (dropped.Count > 0 ? $"（背包满，{string.Join("、", dropped)} 掉在脚边了，空出位置再走过去能捡回来）" : ""));
             else
                 o.Fail(sawBar ? $"{fishName} 跑掉了" : "提竿失败");
         }
 
-        private static void GrabAll(ItemGrabMenu grab)
+        /// <summary>拿走物品界面里的东西，返回拿不下、丢在地上的物品名。</summary>
+        private static List<string> GrabAll(ItemGrabMenu grab)
         {
+            var dropped = new List<string>();
             var items = grab.ItemsToGrabMenu?.actualInventory;
             if (items != null)
             {
@@ -419,7 +441,10 @@ namespace BlindWhaleFarmer
                     items.Remove(item);
                     var left = Player.addItemToInventory(item);
                     if (left != null)
+                    {
+                        dropped.Add(left.DisplayName);
                         Game1.createItemDebris(left, Player.getStandingPosition(), Player.FacingDirection);
+                    }
                     // 和手动拿走一样触发界面的回调（社区中心奖励靠它标记“已领取”）
                     grab.behaviorOnItemGrab?.Invoke(item, Player);
                 }
@@ -429,6 +454,7 @@ namespace BlindWhaleFarmer
             if (Game1.activeClickableMenu is ItemGrabMenu reopened && reopened != grab
                 && !(reopened.ItemsToGrabMenu?.actualInventory.Any(i => i != null) ?? false))
                 reopened.exitThisMenu(playSound: false);
+            return dropped;
         }
     }
 }

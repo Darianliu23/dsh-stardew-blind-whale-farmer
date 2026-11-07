@@ -156,16 +156,23 @@ namespace BlindWhaleFarmer
             _ => "区域" + area
         };
 
+        internal const string FarmhandCommunityCenterNote =
+            "社区中心还没开放：开门的剧情只有主机能触发（第 5 天起的晴天 8:00-13:00，主机从巴士站走进小镇）。你怎么走都触发不了，门也打不开，别在这上面花时间：用 say 跟主机说一声，然后接着干别的";
+
         /// <summary>社区中心当前状态：不可用时返回原因，否则返回 null。</summary>
         public static string CommunityCenterUnavailable()
         {
-            if (Game1.player.mailReceived.Contains("JojaMember"))
-                return "你选择了 Joja 路线，社区中心收集包不再可用";
-            if (!Game1.player.mailReceived.Contains("ccDoorUnlock"))
-                // 事件 611439 的条件：j 4（玩满 4 天，即第 5 天起）/ t 800 1300 / w sunny / a 0 54（从巴士站那边进镇的落脚点）
+            // 开门和路线都记在主机身上（游戏 WarpCommunityCenter 看的也是 MasterPlayer），联机时农场工人自己的记录里没有
+            var master = Game1.MasterPlayer;
+            if (master.mailReceived.Contains("JojaMember"))
+                return "已经选了 Joja 路线，社区中心收集包不再可用";
+            if (!master.mailReceived.Contains("ccDoorUnlock") && !Game1.IsMasterGame)
+                return FarmhandCommunityCenterNote;
+            if (!master.mailReceived.Contains("ccDoorUnlock"))
+                // 事件 611439 的条件：j 4（玩满 4 天，即第 5 天起）/ t 800 1300 / w sunny / a 0 54（从巴士站那边进镇的落脚点）/ H（只有主机）
                 return "社区中心还没开放：第 5 天起的晴天 8:00-13:00，从巴士站（BusStop）走进小镇（Town）就会触发镇长带你去社区中心的剧情"
                     + "（从农场 travel_to Town 正好经过巴士站；从海滩、森林等其他方向进镇不会触发）";
-            if (Game1.player.hasCompletedCommunityCenter())
+            if (master.hasCompletedCommunityCenter())
                 return "社区中心已经全部修复完成";
             return null;
         }

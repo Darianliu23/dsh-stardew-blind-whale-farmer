@@ -24,13 +24,16 @@ namespace BlindWhaleFarmer
         private readonly Dictionary<string, Spec> specs = new();
 
         /// <summary>处理界面/剧情的工具：剧情或界面打开时可以打断卡住的长动作（见 MainThread.RunAction）。</summary>
-        private static readonly HashSet<string> InterfaceTools = new() { "dialogue", "skip_event", "close_menu", "menu_click", "leave_festival", "choose_profession" };
+        private static readonly HashSet<string> InterfaceTools = new() { "dialogue", "skip_event", "close_menu", "menu_click", "leave_festival", "choose_profession", "set_name" };
 
         /// <summary>背包满了时附在结果后面的处理顺序：先存，后出货，别急着卖。</summary>
         private const string BagFullAdvice =
             "背包满了的处理顺序：① 用 tidy_backpack 一键整理（低级鱼竿、多余武器、矿石、鱼等存进农场箱子），或者 store_items 存指定的东西；"
             + "② 没箱子就 craft Chest（50 木材）、place_item 放在农场再存；③ 今天就要换钱的作物放进出货箱 ship_items；"
             + "④ 不要为了腾地方马上 sell 掉，尤其是收集包材料和等钓鱼 5 级再卖更值钱的鱼";
+
+        /// <summary>有人说话也不从外面打断的工具：本身就在等人或者很短；钓鱼半路断了鱼竿还在水里，它自己在两竿之间停。</summary>
+        private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide" };
 
         /// <summary>打怪类工具：本来就会挨打，不因掉血中断。</summary>
         private static readonly HashSet<string> CombatTools = new() { "fight", "explore_mine" };
@@ -48,8 +51,9 @@ namespace BlindWhaleFarmer
                 P("x", "integer", "目标 x"), P("y", "integer", "目标 y"));
 
             Add("travel_to", "自动走到另一个地点（会自动经过多个地图、开门）。地点用英文内部名，如 Farm、FarmHouse、Town、SeedShop(皮埃尔杂货店)、Blacksmith(铁匠)、ScienceHouse(木匠)、Saloon、Beach、FishShop、Mountain、Forest、BusStop、Mine、JojaMart、ManorHouse(镇长家)、CommunityCenter。", 180,
-                j => () => a.TravelTo(Str(j, "location")),
-                P("location", "string", "目标地点内部名"));
+                j => () => a.TravelTo(Str(j, "location"), OptBool(j, "detour") == true),
+                P("location", "string", "目标地点内部名"),
+                P("detour", "boolean", "近路被挡住时绕路走。默认不绕，会先告诉你挡在哪、绕路怎么走，让你选开路还是绕路", false));
 
             Add("use_tool", "走到目标格旁边并对它使用工具。工具可写：axe/hoe/pickaxe/watering_can/scythe/weapon，或背包序号。可以砍树、敲石头、锄地、浇水、给水壶灌水（对水面使用水壶）、打怪。目标被清除后会自动停止。", 120,
                 j => () => a.UseTool(Str(j, "tool"), Int(j, "x"), Int(j, "y"), OptInt(j, "times") ?? 1),
@@ -100,9 +104,9 @@ namespace BlindWhaleFarmer
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
 
             Add("festival", "参加节日：enter 走去节日地点并入场（节日开放时间内）；greet 和在场的村民挨个打招呼（节日上说话也加好感）；"
-                + "start 自动玩这个节日的小游戏（找彩蛋、夏威夷宴会放汤、花舞节邀舞伴、冬日星盛宴送神秘礼物、万灵节迷宫宝箱、冰钓比赛、展览会展示柜评比），再找刘易斯开始主活动并等它结束（结束后游戏把你送回农场）；leave 中途离开。节日当天先 get_guide 读“节日”专题。", 360,
+                + "start 自动玩这个节日的小游戏（找彩蛋、夏威夷宴会放汤、花舞节邀舞伴、冬日星盛宴送神秘礼物、万灵节迷宫宝箱、冰钓比赛、展览会展示柜评比），再找刘易斯开始主活动并等它结束（结束后游戏把你送回农场）；leave 中途离开。节日当天先 get_guide 读“节日”专题。联机时只有主机能开始主活动：你是农场工人时 start 会先做好准备、说一声，等主机开始后自动参加（已经开始了就直接加入）；展览会的共用展示柜要问过主机再用 grange 摆。", 620,
                 j => () => a.Festival(Str(j, "action")),
-                P("action", "string", "enter / greet / start / leave", true));
+                P("action", "string", "enter / greet / start / leave / grange", true));
 
             Add("tidy_backpack", "整理背包：每类工具只留最好的一把（低级鱼竿、多余的武器等存起来），身上留吃的（料理；不够两样时再留回血最多的普通食物）、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器，"
                 + "其余（矿石、石头木材、宝石、鱼、作物、怪物掉落……）存进农场的箱子，一个满了换下一个。不在农场会先回农场。出门下矿/钓鱼前、背包快满时用。", 300,
@@ -152,7 +156,7 @@ namespace BlindWhaleFarmer
             Add("skip_event", "跳过当前可以跳过的剧情事件。", 20,
                 j => () => a.SkipEvent());
 
-            Add("leave_festival", "离开正在参加的节日（复活节、花舞节等）。节日里时间停止、普通的移动/干活工具都不能用；离开后游戏会把你送回去（时间按游戏规则推进）。", 60,
+            Add("leave_festival", "离开正在参加的节日（复活节、花舞节等）。节日里时间停止、普通的移动/干活工具都不能用；离开后游戏会把你送回去（时间按游戏规则推进）。", 320,
                 j => () => a.LeaveFestival());
 
             Add("fish", "钓鱼：自动在附近找岸边、抛竿、等咬钩、提竿并完成钓鱼小游戏，连钓多次。需要背包里有鱼竿。每次抛竿约消耗 8 体力、几十分钟游戏时间。也可以指定站立坐标和朝向。", 900,
@@ -169,7 +173,7 @@ namespace BlindWhaleFarmer
                 j => () => a.GiftInfo(Str(j, "npc")),
                 P("npc", "string", "村民名字（英文或中文）"));
 
-            Add("give_gift", "给村民送礼：村民不在当前地点会自动找过去。每人每天 1 次、每周 2 次（生日不限）；生日送最爱的礼物效果 8 倍。送之前最好用 gift_info 确认他喜欢。", 240,
+            Add("give_gift", "给村民送礼：村民不在当前地点会自动找过去。每人每天 1 次、每周 2 次（生日不限）；生日送最爱的礼物效果 8 倍。送之前最好用 gift_info 确认他喜欢。送花束开始恋爱、送美人鱼吊坠求婚也用它，这两样不受次数限制。", 240,
                 j => () => a.GiveGift(Str(j, "npc"), Str(j, "item")),
                 P("npc", "string", "村民名字"), P("item", "string", "礼物（物品名称或背包序号）"));
 
@@ -233,6 +237,29 @@ namespace BlindWhaleFarmer
             Add("wait", "原地等待若干游戏分钟（10~600），比如等商店开门。", 900,
                 j => () => a.Wait(OptInt(j, "minutes") ?? 60),
                 P("minutes", "integer", "游戏内分钟数"));
+
+            Add("say", "联机时在游戏聊天里说一句话，其他玩家能看到。只有联机时能用。", 10,
+                j => () => a.Say(Str(j, "text")),
+                P("text", "string", "要说的话（300 字以内）"));
+
+            Add("set_name", "给孩子或者刚出生的动物起名（弹出起名界面时用）。", 20,
+                j => () => a.SetName(Str(j, "name")),
+                P("name", "string", "名字（1~12 个字）"));
+
+            Add("set_mode", "切换联机模式：别的玩家让你换模式时用，会在聊天里说一声。solo 自己玩、command 主要听指令、hybrid 指令做完接着自己玩。别人没要求就不要自己换。只有联机时能用。", 10,
+                j => () => a.SetMode(Str(j, "mode")),
+                P("mode", "string", "solo、command 或 hybrid"));
+
+            Add("wait_chat", "联机时等别人说话：有人说话就立刻返回，最多等 seconds 秒（5~300）。闲着等吩咐时用。", 320,
+                j => () => a.WaitChat(OptInt(j, "seconds") ?? 60),
+                P("seconds", "integer", "最多等几秒，默认 60", false));
+
+            Add("follow", "联机时跟着别的玩家走，换地图也会跟过去，有人说话、出现剧情或界面就停下。只有联机时能用。", 620,
+                j => () => a.Follow(OptInt(j, "seconds") ?? 120),
+                P("seconds", "integer", "跟多少秒（10~600），默认 120", false));
+
+            Add("propose", "联机时拿结婚戒指向别的玩家求婚：自动走到对方旁边，对方的窗口里会弹问题，等对方回答（最多 2 分钟）。背包里要有结婚戒指。先用 say 说一声。只有联机时能用。", 180,
+                j => () => a.Propose());
 
             Schema = BuildSchema();
             Schema.Add(Fn("update_notes", "覆盖写入你的长期笔记（会在每一步提示给你）：写下当前目标、计划、重要发现（商店位置、NPC喜好、已开垦区域坐标等）。保持简洁，200字以内。",
@@ -323,7 +350,7 @@ namespace BlindWhaleFarmer
             }
             // 打怪类动作本来就会挨打；其他动作被怪打了要停下，让 AI 先清怪
             bool interruptOnDamage = !CombatTools.Contains(name) && !InterfaceTools.Contains(name);
-            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name).ConfigureAwait(false);
+            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name, !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name)).ConfigureAwait(false);
             if (name == "sleep")
                 return result;
             if (result.Contains("背包满了") && name != "store_items" && name != "take_items")
@@ -338,7 +365,10 @@ namespace BlindWhaleFarmer
                     warning = await main.Invoke(() =>
                     {
                         var equipped = GameActions.AutoEquip();
-                        var parts = new[] { equipped != null ? "🎽 " + equipped : null, GameActions.TakePickedOnTheWay(), GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
+                        // 这次结果里有新的话就先不催，等下一步
+                        string chat = GameActions.TakeChat();
+                        string replyReminder = chat == null && name != "get_guide" ? GameActions.TakeReplyReminder() : null;
+                        var parts = new[] { equipped != null ? "🎽 " + equipped : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
                         return parts.Count > 0 ? string.Join("\n", parts) : null;
                     }).ConfigureAwait(false);
             }

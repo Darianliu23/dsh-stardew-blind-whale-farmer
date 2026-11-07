@@ -40,6 +40,11 @@ namespace BlindWhaleFarmer
             // 暂停/背包菜单（E、Esc 打开的 GameMenu）对 AI 干活没用，被谁按出来的都直接关掉继续
             if (Game1.activeClickableMenu is GameMenu pause && pause.readyToClose())
                 pause.exitThisMenu(playSound: false);
+            if (Game1.activeClickableMenu is ReadyCheckDialog ready)
+            {
+                why = ReadyCheckHint(ready);
+                return true;
+            }
             if (Game1.activeClickableMenu != null)
             {
                 why = "有界面打开了（" + Game1.activeClickableMenu.GetType().Name + "），请先处理界面";
@@ -65,6 +70,27 @@ namespace BlindWhaleFarmer
             }
             why = null;
             return false;
+        }
+
+        /// <summary>联机时游戏在等所有玩家（睡觉、进出节日、开始主活动）。</summary>
+        internal static string ReadyCheckHint(ReadyCheckDialog ready)
+        {
+            string what = ready.checkName switch
+            {
+                "sleep" => "已经上床了，要所有玩家都上床才会到第二天。想接着等就再 sleep",
+                "festivalStart" => "要所有玩家都走到节日才会开始。想接着等就再 festival enter",
+                "festivalEnd" => "要所有玩家都同意才能离开节日。想接着等就再 festival leave",
+                _ when ready.checkName.StartsWith("weddingEnd") => "婚礼放完了，要所有玩家都看完才结束，不用做别的，过一会儿再看状态",
+                _ => "正在等其他玩家准备好",
+            };
+            return what + (ready.isCancelable() ? "；不等了就 close_menu 取消，然后可以继续干活" : "；现在不能取消");
+        }
+
+        /// <summary>联机时“等所有人”的对话框开着就等，最多 maxSeconds 秒。</summary>
+        private static IEnumerable<object> WaitForPlayers(int maxSeconds)
+        {
+            for (int i = 0; i < maxSeconds * 60 && Game1.activeClickableMenu is ReadyCheckDialog; i++)
+                yield return null;
         }
 
         private static IEnumerable<object> WaitTicks(int n)
@@ -422,6 +448,9 @@ namespace BlindWhaleFarmer
             if (string.IsNullOrWhiteSpace(name))
                 return null;
             name = name.Trim();
+            // 联机时农场工人的家是自己的小屋，FarmHouse 是主机的房子
+            if (name.Equals("FarmHouse", StringComparison.OrdinalIgnoreCase) && !Game1.IsMasterGame && Utility.getHomeOfFarmer(Game1.player) is { } cabin)
+                return cabin;
             var loc = Game1.getLocationFromName(name);
             if (loc != null)
                 return loc;
@@ -433,24 +462,29 @@ namespace BlindWhaleFarmer
             return null;
         }
 
-        public IEnumerable<object> TravelTo(string name)
+        public IEnumerable<object> TravelTo(string name, bool detour = false)
         {
             var o = new Outcome();
-            foreach (var s in TravelInner(name, o))
+            foreach (var s in TravelInner(name, o, askBeforeDetour: !detour))
                 yield return s;
             yield return o.Ok ? ActionResult.Success(o.Message) : ActionResult.Fail(o.Message);
         }
 
-        private IEnumerable<object> TravelInner(string name, Outcome o)
+        /// <param name="askBeforeDetour">近路被挡时停下来让 AI 选开路还是绕路（travel_to 用）。默认直接绕：回家睡觉、去节日这些顺路的走法没工夫停下来选。</param>
+        private IEnumerable<object> TravelInner(string name, Outcome o, bool exactName = false, bool askBeforeDetour = false)
         {
-            var target = ResolveLocation(name);
+            // exactName：name 已经是游戏里的地点名（比如跟着主机进他的 FarmHouse），不要再换成自己的小屋
+            var target = exactName ? Game1.getLocationFromName(name) : ResolveLocation(name);
             if (target == null)
             {
                 o.Fail($"不认识地点“{name}”，请使用英文内部名，例如 Farm、FarmHouse、Town、SeedShop、Beach、Mountain、Forest、BusStop");
                 yield break;
             }
             string targetName = target.NameOrUniqueName;
-            for (int hop = 0; hop < 15; hop++)
+            // 地图上被石头、树挡住的出口：这次不走了，换一条路线（比如农场南门堵了就经过小镇去森林）
+            var blockedExits = new HashSet<string>();
+            string blockedWhy = null;
+            for (int hop = 0; hop < 25; hop++)
             {
                 // 节日开始后地图换成了临时地图，名字是 Temp 而不是节日所在的 Town/Forest/Beach。这时不能再按名字找路：
                 // 临时地图也有出口，走出去节日还留在 Temp 上，eventUp 一直是 true，人就看不见、动不了了
@@ -465,13 +499,22 @@ namespace BlindWhaleFarmer
                 if (Loc.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 {
                     var t = Player.TilePoint;
-                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})");
+                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : ""));
                     yield break;
                 }
-                var route = Exits.PlanRoute(Loc, targetName);
+                // 矿洞每层都是临时地图，地图上没有出口，只能从入口梯子出去
+                if (Loc is MineShaft mine)
+                {
+                    foreach (var s in LeaveMine(mine, o))
+                        yield return s;
+                    if (!o.Ok)
+                        yield break;
+                    continue;
+                }
+                var route = Exits.PlanRoute(Loc, targetName, blockedExits);
                 if (route == null || route.Count == 0)
                 {
-                    o.Fail($"找不到从 {Loc.NameOrUniqueName} 到 {targetName} 的路线");
+                    o.Fail(blockedWhy != null ? $"{blockedWhy}；试过的其他路线也走不通" : $"找不到从 {Loc.NameOrUniqueName} 到 {targetName} 的路线");
                     yield break;
                 }
                 // 节日进行中走进节日地图会直接开始节日：时间停住、普通动作都用不了，所以这里先拦下
@@ -483,12 +526,64 @@ namespace BlindWhaleFarmer
                         + $"不参加的话这条路线要经过 {fest.Location}，请等到 {Util.TimeString(fest.End)} 以后再去，或者先做不经过 {fest.Location} 的事");
                     yield break;
                 }
+                string exitFrom = Loc.NameOrUniqueName;
                 foreach (var s in TakeExit(route[0], o))
                     yield return s;
+                if (!o.Ok && o.Message.StartsWith("找不到通往") && Loc.NameOrUniqueName == exitFrom)
+                {
+                    blockedExits.Add(Exits.ExitKey(exitFrom, route[0]));
+                    blockedWhy = o.Message;
+                    if (askBeforeDetour)
+                    {
+                        var other = Exits.PlanRoute(Loc, targetName, blockedExits);
+                        o.Fail(blockedWhy + "。你来选：① 开路：用 clear_area 清掉挡路的东西（砍树砸石要花体力和时间，但这条路以后都能走）"
+                            + (other is { Count: > 0 }
+                                ? $"；② 绕路：travel_to 加 detour=true，这次经过 {string.Join("→", other.Select(e => e.Target))}（不花体力但路远，下次还得绕）。看看今天的体力和时间，这条路常走就开路"
+                                : "。这里没有别的路线可以绕"));
+                        yield break;
+                    }
+                    o.Succeed();
+                    continue;
+                }
                 if (!o.Ok)
                     yield break;
             }
             o.Fail("路线太长，没有走到");
+        }
+
+        /// <summary>走到这一层的入口梯子，选“离开矿井”（回到矿洞入口或骷髅洞穴入口）。</summary>
+        private IEnumerable<object> LeaveMine(MineShaft mine, Outcome o)
+        {
+            var below = mine.tileBeneathLadder;
+            var ladder = new Point((int)below.X, (int)below.Y - 1);
+            foreach (var s in GoAdjacent(ladder, o))
+                yield return s;
+            if (!o.Ok)
+            {
+                o.Fail($"走不到矿洞第 {mine.mineLevel} 层的出口梯子 ({ladder.X},{ladder.Y})：{o.Message}");
+                yield break;
+            }
+            mine.checkAction(new xLocation(ladder.X, ladder.Y), Game1.viewport, Player);
+            foreach (var s in WaitTicks(10))
+                yield return s;
+            int leave = Game1.activeClickableMenu is DialogueBox { isQuestion: true } db
+                ? Array.FindIndex(db.responses, r => r.responseKey == "Leave") : -1;
+            if (leave < 0)
+            {
+                o.Fail($"矿洞第 {mine.mineLevel} 层的出口梯子 ({ladder.X},{ladder.Y}) 没有反应。当前界面：{observer.DescribeMenu()}");
+                yield break;
+            }
+            foreach (var s in Dialogue(leave))
+                if (s is not ActionResult)
+                    yield return s;
+            for (int t = 0; t < 600 && Loc is MineShaft; t++)
+                yield return null;
+            foreach (var s in WaitSceneSettled())
+                yield return s;
+            if (Loc is MineShaft)
+                o.Fail("选了离开矿井，但是没有出去");
+            else
+                o.Succeed();
         }
 
         private IEnumerable<object> TakeExit(Exit e, Outcome o)
@@ -514,7 +609,7 @@ namespace BlindWhaleFarmer
                         for (int i = 0; i < 40 && Game1.currentLocation == from && !Game1.isWarping && Game1.locationRequest == null; i++)
                             yield return null;
                     }
-                    if (Game1.currentLocation == from && !Game1.isWarping && Game1.locationRequest == null)
+                    if (Game1.currentLocation == from && !Game1.isWarping && Game1.locationRequest == null && Game1.activeClickableMenu is not ReadyCheckDialog)
                         Game1.warpFarmer(e.Target, e.TargetTile.X, e.TargetTile.Y, Player.FacingDirection);
                     break;
                 }
@@ -536,6 +631,18 @@ namespace BlindWhaleFarmer
                     if (!e.Building.doAction(new Vector2(e.Tile.X, e.Tile.Y), Player))
                         Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
                     break;
+                }
+            }
+
+            // 联机时走进节日地图不会马上传送：游戏先等所有玩家都到（确认后才传送）
+            if (Game1.activeClickableMenu is ReadyCheckDialog ready)
+            {
+                foreach (var s in WaitForPlayers(300))
+                    yield return s;
+                if (Game1.activeClickableMenu == ready)
+                {
+                    o.Fail($"等了 5 分钟，其他玩家还没到，已经在 {from.NameOrUniqueName} 门口停下。{ReadyCheckHint(ready)}");
+                    yield break;
                 }
             }
 
@@ -1552,11 +1659,40 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 界面 ─────────────────────────
 
+        /// <summary>给孩子、刚出生的动物起名：和手动输入后按回车一样。</summary>
+        public IEnumerable<object> SetName(string name)
+        {
+            if (Game1.activeClickableMenu is not NamingMenu naming)
+            {
+                yield return ActionResult.Fail("现在没有要起名的界面");
+                yield break;
+            }
+            name = (name ?? "").Trim();
+            if (name.Length == 0 || name.Length > 12)
+            {
+                yield return ActionResult.Fail("名字要 1~12 个字");
+                yield break;
+            }
+            naming.textBox.Text = name;
+            naming.textBoxEnter(naming.textBox);
+            foreach (var s in WaitTicks(20))
+                yield return s;
+            yield return ActionResult.Success("起好名字了：" + name + "。当前界面：" + observer.DescribeMenu());
+        }
+
         public IEnumerable<object> Dialogue(int? choice)
         {
+            // 剧情放到一半常有几秒没有对话框（比如婚礼，又不能跳过），等一下下一句，别让 AI 空转
+            for (int i = 0; i < 8 * 60 && Game1.activeClickableMenu == null && Game1.eventUp && Game1.CurrentEvent is { isFestival: false }; i++)
+                yield return null;
+            if (Game1.activeClickableMenu is ReadyCheckDialog ready)
+            {
+                yield return ActionResult.Fail(ReadyCheckHint(ready));
+                yield break;
+            }
             if (Game1.activeClickableMenu is not DialogueBox db)
             {
-                yield return ActionResult.Fail("现在没有对话框");
+                yield return ActionResult.Fail(Game1.eventUp && Game1.CurrentEvent is { isFestival: false } ? "剧情还在放，现在没有对话框，过一会儿再推进" : "现在没有对话框");
                 yield break;
             }
             if (choice.HasValue && (!db.isQuestion || choice.Value < 0 || choice.Value >= db.responses.Length))
@@ -1640,6 +1776,9 @@ namespace BlindWhaleFarmer
                 case ShippingMenu:
                     reflection.GetMethod(menu, "okClicked").Invoke();
                     break;
+                case ReadyCheckDialog ready when !ready.isCancelable():
+                    yield return ActionResult.Fail(ReadyCheckHint(ready));
+                    yield break;
                 default:
                     // 铁匠正在砸晶球：等砸完，否则开出来的东西就没了
                     for (int i = 0; i < 300 && menu is GeodeMenu { geodeAnimationTimer: > 0 }; i++)
@@ -1724,6 +1863,11 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("现在不在节日里");
                 yield break;
             }
+            if (FestivalMainRunning(ev))
+            {
+                yield return ActionResult.Fail("主活动进行中，离不开节日：用 festival start 接着参加，结束后游戏会送你回去。大家要一起看完，别人也在等你");
+                yield break;
+            }
             // 正在进行节日主活动（比如找彩蛋、跳舞）时不能走，和手动一样要等它结束
             if (Game1.activeClickableMenu is DialogueBox)
             {
@@ -1737,7 +1881,18 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("现在没法离开节日（可能正在进行节日活动）");
                 yield break;
             }
-            if (Game1.activeClickableMenu is ConfirmationDialog confirm)
+            // 联机时是“等所有人同意”的对话框（也是 ConfirmationDialog，不能替大家确认）
+            if (Game1.activeClickableMenu is ReadyCheckDialog ready)
+            {
+                foreach (var s in WaitForPlayers(300))
+                    yield return s;
+                if (Game1.activeClickableMenu == ready)
+                {
+                    yield return ActionResult.Fail("等了 5 分钟，其他玩家还不想离开节日。" + ReadyCheckHint(ready));
+                    yield break;
+                }
+            }
+            else if (Game1.activeClickableMenu is ConfirmationDialog confirm)
                 confirm.confirm();
             for (int i = 0; i < 900 && (Game1.eventUp || Game1.isWarping || Game1.fadeToBlack || Loc == festLoc); i++)
                 yield return null;
@@ -1753,17 +1908,77 @@ namespace BlindWhaleFarmer
         public IEnumerable<object> Sleep()
         {
             var o = new Outcome();
-            if (Loc is not FarmHouse)
+            // 联机时已经躺下在等别人的话，接着等就行
+            if (Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" })
             {
-                foreach (var s in TravelInner("FarmHouse", o))
+                foreach (var s in GetIntoBed(o))
                     yield return s;
                 if (!o.Ok)
                 {
-                    yield return ActionResult.Fail("回不了家：" + o.Message);
+                    yield return ActionResult.Fail(o.Message);
                     yield break;
                 }
             }
-            var house = (FarmHouse)Loc;
+
+            // 等到第二天真正开始再返回：以前一睡下就返回，下一个动作常常撞上还没自动确认的出货结算界面
+            // （AutoConfirmNightMenus 要 4 秒才点 OK），白白失败一次。最多等 3 分钟（存档慢的时候）；
+            // 联机时还要等其他玩家上床，等到快到工具的时间上限为止。
+            uint day = Game1.stats.DaysPlayed;
+            int maxSeconds = Context.IsMultiplayer ? 400 : 180;
+            for (int i = 0; i < maxSeconds * 60; i++)
+            {
+                if (Game1.activeClickableMenu is NamingMenu)
+                {
+                    yield return ActionResult.Success("夜里有新生命要起名（孩子或者刚出生的动物）。用 set_name 起个名字，起完不用再 sleep");
+                    yield break;
+                }
+                if (Game1.farmEvent != null && Game1.activeClickableMenu is DialogueBox nightBox)
+                {
+                    if (nightBox.isQuestion)
+                    {
+                        yield return ActionResult.Success("夜里有问题要回答，回答完不用再 sleep：\n" + observer.DescribeMenu());
+                        yield break;
+                    }
+                    foreach (var s in ClickThroughDialogue(YesChoice, 120))
+                        yield return s;
+                }
+                if (Game1.stats.DaysPlayed != day && !Game1.newDay && !Game1.fadeToBlack && Context.IsWorldReady)
+                {
+                    // 选职业要 AI 自己挑；早上的剧情事件也交给 AI 处理
+                    if (Game1.activeClickableMenu is LevelUpMenu { isProfessionChooser: true })
+                    {
+                        yield return ActionResult.Success($"睡醒了，{Util.Stamp()}。先用 choose_profession 选职业");
+                        yield break;
+                    }
+                    if (Game1.eventUp || (Game1.activeClickableMenu == null && Player.CanMove))
+                        break;
+                }
+                yield return null;
+            }
+            if (Game1.activeClickableMenu is ReadyCheckDialog waiting)
+            {
+                yield return ActionResult.Success("还在等：" + ReadyCheckHint(waiting));
+                yield break;
+            }
+            yield return ActionResult.Success(Game1.stats.DaysPlayed == day
+                ? "上床睡觉了，正在进入新的一天（结算界面会自动确认）"
+                : $"睡醒了，{Util.Stamp()}" + (Game1.eventUp ? "，有剧情事件在播放（用 skip_event 跳过，或者 wait 看完）" : "，可以开始新的一天"));
+        }
+
+        /// <summary>走回自己家（联机时农场工人是自己的小屋）上床。</summary>
+        private IEnumerable<object> GetIntoBed(Outcome o)
+        {
+            var house = Utility.getHomeOfFarmer(Player);
+            if (Loc != house)
+            {
+                foreach (var s in TravelInner(house.NameOrUniqueName, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    o.Fail("回不了家：" + o.Message);
+                    yield break;
+                }
+            }
             var bed = house.GetPlayerBedSpot();
             var path = Pathfinder.FindPath(house, Player.TilePoint, new[] { bed });
             if (path != null)
@@ -1792,35 +2007,14 @@ namespace BlindWhaleFarmer
                 house.answerDialogueAction("Sleep_Yes", null);
             }
 
-            uint day = Game1.stats.DaysPlayed;
-            for (int i = 0; i < 300 && !Game1.newDay && !Player.isInBed.Value && !Game1.fadeToBlack; i++)
+            for (int i = 0; i < 300 && !Game1.newDay && !Player.isInBed.Value && !Game1.fadeToBlack && Game1.activeClickableMenu is not ReadyCheckDialog; i++)
                 yield return null;
-            if (!Game1.newDay && !Player.isInBed.Value && !Game1.fadeToBlack)
+            if (!Game1.newDay && !Player.isInBed.Value && !Game1.fadeToBlack && Game1.activeClickableMenu is not ReadyCheckDialog)
             {
-                yield return ActionResult.Fail("没能睡下");
+                o.Fail("没能睡下");
                 yield break;
             }
-
-            // 等到第二天真正开始再返回：以前一睡下就返回，下一个动作常常撞上还没自动确认的出货结算界面
-            // （AutoConfirmNightMenus 要 4 秒才点 OK），白白失败一次。最多等 3 分钟（存档慢的时候）。
-            for (int i = 0; i < 180 * 60; i++)
-            {
-                if (Game1.stats.DaysPlayed != day && !Game1.newDay && !Game1.fadeToBlack && Context.IsWorldReady)
-                {
-                    // 选职业要 AI 自己挑；早上的剧情事件也交给 AI 处理
-                    if (Game1.activeClickableMenu is LevelUpMenu { isProfessionChooser: true })
-                    {
-                        yield return ActionResult.Success($"睡醒了，{Util.Stamp()}。先用 choose_profession 选职业");
-                        yield break;
-                    }
-                    if (Game1.eventUp || (Game1.activeClickableMenu == null && Player.CanMove))
-                        break;
-                }
-                yield return null;
-            }
-            yield return ActionResult.Success(Game1.stats.DaysPlayed == day
-                ? "上床睡觉了，正在进入新的一天（结算界面会自动确认）"
-                : $"睡醒了，{Util.Stamp()}" + (Game1.eventUp ? "，有剧情事件在播放（用 skip_event 跳过，或者 wait 看完）" : "，可以开始新的一天"));
+            o.Succeed();
         }
 
         private static int ToMinutes(int time) => time / 100 * 60 + time % 100;

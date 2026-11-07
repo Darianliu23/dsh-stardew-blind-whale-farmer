@@ -91,6 +91,9 @@ namespace BlindWhaleFarmer
             {
                 if (Player.Items[i] is not Ring r)
                     continue;
+                // 结婚戒指要留着求婚，戴上也没有效果
+                if (r.QualifiedItemId == "(O)801")
+                    continue;
                 var slot = Player.leftRing.Value == null ? Player.leftRing
                          : Player.rightRing.Value == null ? Player.rightRing
                          : RingScore(Player.leftRing.Value) <= RingScore(Player.rightRing.Value) ? Player.leftRing : Player.rightRing;

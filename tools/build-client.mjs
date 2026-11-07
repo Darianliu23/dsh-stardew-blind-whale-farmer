@@ -20,6 +20,7 @@ const LABELS = {
   freezeTime: ['play', '思考时冻结时间'],
   idleSeconds: ['play', '空闲多少秒算不玩了'],
   forageRadius: ['play', '顺手采集范围（格）'],
+  companionMode: ['play', '联机时怎么安排自己'],
   extraInstructions: ['play', '额外要求'],
   guideFile: ['guide', '攻略文件'],
   ...Object.fromEntries(GUIDE_FIELDS.map(([key, file]) => [key, ['guide', `攻略·${file}`]])),
@@ -48,6 +49,7 @@ export function buildFields() {
     const meta = schema.meta ?? {}
     const kind = schema.type === 'boolean' ? 'boolean'
       : schema.type === 'number' ? 'number'
+      : schema.type === 'union' ? 'select'
       : meta.role === 'textarea' ? 'textarea' : 'string'
     return {
       key,
@@ -56,6 +58,7 @@ export function buildFields() {
       kind,
       ...meta.min !== undefined ? { min: meta.min } : {},
       ...meta.max !== undefined ? { max: meta.max } : {},
+      ...kind === 'select' ? { options: schema.list.map((o) => ({ value: o.value, label: o.meta?.description ?? o.value })) } : {},
       description: String(meta.description ?? ''),
     }
   })
@@ -108,6 +111,10 @@ window.__ModuleLoader__.load({
 \t\t\t\t\tvalue: value === undefined || value === null ? "" : String(value),
 \t\t\t\t\tonChange: (e) => onChange(e.target.value === "" ? undefined : Number(e.target.value)),
 \t\t\t\t});
+\t\t\t}
+\t\t\tif (field.kind === "select") {
+\t\t\t\treturn h("select", { disabled, value: value === undefined || value === null ? "" : value, style: input, onChange: (e) => onChange(e.target.value) },
+\t\t\t\t\tfield.options.map((o) => h("option", { key: o.value, value: o.value }, o.label)));
 \t\t\t}
 \t\t\tif (field.kind === "textarea") {
 \t\t\t\tconst text = typeof value === "string" ? value : "";

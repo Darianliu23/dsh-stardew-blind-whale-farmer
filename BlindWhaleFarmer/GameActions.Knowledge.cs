@@ -87,18 +87,28 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"还没认识 {npc.displayName}，先用 interact 和他聊一次天");
                 yield break;
             }
-            if (f.GiftsToday > 0)
+            var item = Player.Items[idx];
+            // 花束和美人鱼吊坠不算普通礼物：不受送礼次数限制，也不会增加次数
+            bool bouquet = item.QualifiedItemId == "(O)458", pendant = item.QualifiedItemId == "(O)460";
+            if (bouquet || pendant)
+            {
+                if (RomanceRefusal(npc, f, pendant) is string refusal)
+                {
+                    yield return ActionResult.Fail(refusal);
+                    yield break;
+                }
+            }
+            else if (f.GiftsToday > 0)
             {
                 yield return ActionResult.Fail($"今天已经给 {npc.displayName} 送过礼了，每人每天只能送一次");
                 yield break;
             }
-            if (f.GiftsThisWeek >= 2 && !npc.isBirthday() && !f.IsMarried())
+            else if (f.GiftsThisWeek >= 2 && !npc.isBirthday() && !f.IsMarried())
             {
                 yield return ActionResult.Fail($"这周已经给 {npc.displayName} 送了 2 次，下周一再送（生日当天不受限制）");
                 yield break;
             }
 
-            var item = Player.Items[idx];
             string itemName = item.DisplayName;
             string taste = Knowledge.TasteName(npc.getGiftTasteForThisItem(item));
             int pointsBefore = f.Points;
@@ -132,12 +142,103 @@ namespace BlindWhaleFarmer
                 }
                 yield return s;
             }
+            if (bouquet || pendant)
+            {
+                if (bouquet && f.IsDating())
+                    yield return ActionResult.Success($"{npc.displayName} 收下了花束，你们开始恋爱了（好感上限升到 10 心）。{final?.Message}");
+                else if (pendant && f.IsEngaged())
+                    yield return ActionResult.Success($"{npc.displayName} 答应了求婚！{f.WeddingDate.TotalDays - Game1.Date.TotalDays} 天后早上举行婚礼。{final?.Message}");
+                else
+                    yield return ActionResult.Fail($"{npc.displayName} 没有收下{itemName}。{final?.Message}");
+                yield break;
+            }
             int gained = f.Points - pointsBefore;
             bool given = f.GiftsToday > 0;
             if (given)
                 yield return ActionResult.Success($"送给 {npc.displayName} 一个 {itemName}（他{taste}），好感 {(gained >= 0 ? "+" : "")}{gained}。{final?.Message}");
             else
                 yield return ActionResult.Fail($"没送出去（{taste}）。{final?.Message}");
+        }
+
+        /// <summary>送花束或吊坠前先按游戏的条件查一遍（吊坠不到 10 心就送会掉好感）。能送返回 null。</summary>
+        private string RomanceRefusal(NPC npc, Friendship f, bool pendant)
+        {
+            if (!npc.datable.Value)
+                return $"{npc.displayName} 不能恋爱结婚";
+            if (npc.isMarriedOrEngaged() && Player.spouse != npc.Name)
+                return $"{npc.displayName} 已经有对象了";
+            if (f.IsDivorced())
+                return $"{npc.displayName} 和你离过婚，不会接受";
+            if (!pendant)
+            {
+                if (f.IsDating())
+                    return $"你们已经在恋爱了，不用再送花束";
+                if (Player.isMarriedOrRoommates() || Player.isEngaged())
+                    return "你已经订婚或结婚了，再送花束配偶会不高兴";
+                return f.Points < 2000 ? $"{npc.displayName} 现在 {f.Points / 250} 心，要 8 心才收花束" : null;
+            }
+            if (Player.isMarriedOrRoommates() || Player.isEngaged())
+                return "你已经订婚或结婚了";
+            if (f.Points < 2500)
+                return $"{npc.displayName} 现在 {f.Points / 250} 心，要 10 心才能求婚（先送花束恋爱，上限才到 10 心），不到就送会掉好感";
+            return Player.houseUpgradeLevel.Value < 1 ? "求婚要先升级你的房子（upgrade_house）" : null;
+        }
+
+        /// <summary>恋爱对象到 10 心了：还差哪一步才能求婚。</summary>
+        private static string ProposalHint(string name)
+        {
+            var me = Game1.player;
+            if (me.Items.Any(i => i?.QualifiedItemId == "(O)460"))
+                return me.houseUpgradeLevel.Value < 1
+                    ? $"{name} 已经 10 心了，手上有吊坠，先升级房子（upgrade_house）才能求婚"
+                    : $"{name} 已经 10 心了，想求婚就用 give_gift 送美人鱼吊坠";
+            return $"{name} 已经 10 心了，想求婚要先买美人鱼吊坠（5000g）："
+                + (Game1.isRaining && Game1.timeOfDay < 1900 ? "今天下雨，老水手在 Beach (80,5)" : "下雨天 19:00 前去 Beach (80,5) 找老水手")
+                + (me.houseUpgradeLevel.Value < 1 ? "；还要升级房子（upgrade_house）" : "")
+                + "（详见 get_guide 结婚）";
+        }
+
+        /// <summary>状态里显示的恋爱、婚约和下一步（都没有返回 null）。</summary>
+        public static string RomanceLine()
+        {
+            var parts = new List<string>();
+            string hint = null;
+            bool taken = Game1.player.isMarriedOrRoommates() || Game1.player.isEngaged();
+            foreach (var pair in Game1.player.friendshipData.Pairs)
+            {
+                var fr = pair.Value;
+                // 村民有二十多个，每次读状态都要跑：够得上才去找人
+                if (!fr.IsDating() && (fr.Points < 2000 || taken))
+                    continue;
+                var npc = Game1.getCharacterFromName(pair.Key);
+                string name = npc?.displayName ?? pair.Key;
+                if (fr.IsMarried())
+                    parts.Add($"配偶：{name}");
+                else if (fr.IsEngaged())
+                    parts.Add($"已和 {name} 订婚，{fr.WeddingDate.TotalDays - Game1.Date.TotalDays} 天后早上举行婚礼（到时自动开始，用 dialogue 推进）");
+                else if (fr.IsDating())
+                {
+                    parts.Add($"恋爱中：{name}（{fr.Points / 250} 心）");
+                    if (fr.Points >= 2500)
+                        hint = ProposalHint(name);
+                }
+                else if (hint == null && npc is { datable.Value: true } && !npc.isMarriedOrEngaged() && !fr.IsDivorced())
+                    hint = $"{name} 已经 8 心了，想恋爱的话去皮埃尔杂货店买花束（200g），用 give_gift 送（详见 get_guide 结婚）";
+            }
+            if (hint != null)
+                parts.Add(hint);
+            // 和其他玩家的关系记在 team 上，不在 friendshipData 里
+            foreach (var other in Game1.getOnlineFarmers().Where(p => !p.IsLocalPlayer))
+            {
+                var f = Game1.player.team.GetFriendship(Game1.player.UniqueMultiplayerID, other.UniqueMultiplayerID);
+                if (f == null)
+                    continue;
+                if (f.IsMarried())
+                    parts.Add($"配偶：{other.Name}（玩家）");
+                else if (f.IsEngaged())
+                    parts.Add($"已和 {other.Name}（玩家）订婚，{f.WeddingDate.TotalDays - Game1.Date.TotalDays} 天后早上举行婚礼（到时自动开始，用 dialogue 推进）");
+            }
+            return parts.Count > 0 ? string.Join("；", parts) : null;
         }
 
         // ───────────────────────── 博物馆 ─────────────────────────

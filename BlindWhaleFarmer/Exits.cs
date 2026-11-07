@@ -180,7 +180,11 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>从当前地点到目标地点的一串出口（BFS，最多 12 跳）。</summary>
-        public static List<Exit> PlanRoute(GameLocation from, string targetName)
+        /// <summary>一个出口的标识：Get 每次可能给新对象，不能直接比较对象。</summary>
+        public static string ExitKey(string fromName, Exit e) => $"{fromName}>{e.Target}@{e.Tile.X},{e.Tile.Y}";
+
+        /// <param name="avoid">这次走不通的出口（ExitKey），规划时绕开。</param>
+        public static List<Exit> PlanRoute(GameLocation from, string targetName, ISet<string> avoid = null)
         {
             if (from.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 return new List<Exit>();
@@ -201,6 +205,8 @@ namespace BlindWhaleFarmer
                 // 好感不够进不去的门（比如玛鲁房间的侧门）不走，同一个目标通常还有正门
                 foreach (var e in Get(loc).Where(e => e.FriendshipOk(loc)))
                 {
+                    if (avoid != null && avoid.Contains(ExitKey(name, e)))
+                        continue;
                     if (prev.ContainsKey(e.Target))
                         continue;
                     prev[e.Target] = (name, e);

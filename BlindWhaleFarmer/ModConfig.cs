@@ -22,6 +22,12 @@ namespace BlindWhaleFarmer
         /// <summary>开关 AI 的快捷键。</summary>
         public SButton ToggleKey { get; set; } = SButton.F8;
 
+        /// <summary>联机时弹出中文输入框的键（游戏聊天框里看不到输入法的候选词）。</summary>
+        public SButton ChatInputKey { get; set; } = SButton.F6;
+
+        /// <summary>联机时 AI 怎么安排自己：solo 自己玩、command 主要听指令、hybrid 指令做完接着自己玩。</summary>
+        public string CompanionMode { get; set; } = GameActions.ModeHybrid;
+
         /// <summary>接管键：中止 AI 正在执行的动作、拒绝之后的所有游戏动作，由玩家自己操作；再按一次交还给 AI。</summary>
         public SButton TakeOverKey { get; set; } = SButton.F7;
 

@@ -97,12 +97,14 @@ namespace BlindWhaleFarmer
             return tcs.Task;
         }
 
+        private bool currentInterruptOnChat;
+
         /// <summary>
         /// 在主线程上逐帧运行一个动作协程，返回其结果文字。
         /// preemptWhenStuck：处理界面的动作（dialogue、skip_event 等）在剧情/界面打开时可以打断正在跑的动作——
         /// 那个动作被剧情挡住本来也走不动，不打断的话两边互相等，会卡死。
         /// </summary>
-        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false, string name = null)
+        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false, string name = null, bool interruptOnChat = false)
         {
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             queue.Enqueue(() =>
@@ -124,6 +126,7 @@ namespace BlindWhaleFarmer
                     currentStartedUtc = DateTime.UtcNow;
                     currentTicks = 0;
                     currentMaxTicks = Math.Max(1, maxSeconds) * 60;
+                    currentInterruptOnChat = interruptOnChat;
                     currentStartHealth = interruptOnDamage ? Safe(() => StardewValley.Game1.player?.health ?? -1, -1) : -1;
                 }
                 catch (Exception ex)
@@ -154,6 +157,12 @@ namespace BlindWhaleFarmer
             if (currentTicks > currentMaxTicks)
             {
                 Finish("失败：动作超时，已中止");
+                return;
+            }
+            // 联机时有人说话：先停下听（结果后面会附上说了什么）
+            if (currentInterruptOnChat && Safe(() => GameActions.ChatWantsAttention(), false))
+            {
+                Finish("失败：有人说话了，已停下（动作没做完，听完可以接着做）");
                 return;
             }
             // 非打怪动作途中掉血（被怪打了）：停下，让 AI 先清怪（结果后面会附上附近的怪）

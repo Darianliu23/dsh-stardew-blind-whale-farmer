@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using HarmonyLib;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -60,6 +61,15 @@ namespace BlindWhaleFarmer
 
             Directory.CreateDirectory(Path.Combine(helper.DirectoryPath, "logs"));
             transcriptPath = Path.Combine(helper.DirectoryPath, "logs", $"transcript-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+
+            PatchChat();
+            chatInput = new ChatInput(Monitor);
+            GameActions.Mode = GameActions.NormalizeMode(Config.CompanionMode);
+            GameActions.ModeChanged = mode =>
+            {
+                Config.CompanionMode = mode;
+                Helper.WriteConfig(Config);
+            };
 
             helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
             helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
@@ -160,6 +170,13 @@ namespace BlindWhaleFarmer
                 Config.McpIdleSeconds = Math.Clamp(idle.GetValue<int>(), 10, 3600);
             if (s["forageRadius"] is { } fr)
                 GameActions.ForageRadius = Config.ForageRadius = Math.Clamp(fr.GetValue<int>(), 0, 10);
+            if (s["companionMode"] is { } mode)
+            {
+                string newMode = GameActions.NormalizeMode(mode.GetValue<string>());
+                // 这里不在主线程，等下一帧再说（还没进存档就等进了再说）
+                modeAnnouncePending |= newMode != GameActions.Mode;
+                GameActions.Mode = Config.CompanionMode = newMode;
+            }
             if (s["extraInstructions"] is { } extra)
                 Config.ExtraInstructions = extra.GetValue<string>() ?? "";
             string guideLog = null;
@@ -220,6 +237,11 @@ namespace BlindWhaleFarmer
             // AI 停下后暂停的游戏：玩家按任意键接手
             if (pausedByUs)
                 SetIdlePaused(false);
+            if (e.Button == Config.ChatInputKey && Context.IsWorldReady && Context.IsMultiplayer)
+            {
+                chatInput.Open();
+                return;
+            }
             if (e.Button == Config.TakeOverKey && Context.IsWorldReady)
             {
                 SetPlayerInControl(!PlayerInControl);
@@ -273,6 +295,27 @@ namespace BlindWhaleFarmer
                 Helper.Data.WriteGlobalData<PauseOptionData>(PauseOptionKey, null);
         }
 
+        /// <summary>联机时把别人说的话记下来，告诉 AI。打不上补丁只是听不到聊天，不影响别的。</summary>
+        private ChatInput chatInput;
+        private volatile bool modeAnnouncePending;
+
+        private void PatchChat()
+        {
+            try
+            {
+                new Harmony("Darian.BlindWhaleFarmer").Patch(
+                    AccessTools.Method(typeof(ChatBox), nameof(ChatBox.receiveChatMessage)),
+                    postfix: new HarmonyMethod(typeof(ModEntry), nameof(AfterChatMessage)));
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log("聊天补丁失败，AI 听不到游戏里的聊天：" + ex, LogLevel.Warn);
+            }
+        }
+
+        private static void AfterChatMessage(long sourceFarmer, int chatKind, string message) =>
+            GameActions.OnChatMessage(sourceFarmer, chatKind, message);
+
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
             bool ready = Context.IsWorldReady;
@@ -282,6 +325,15 @@ namespace BlindWhaleFarmer
             // 玩家接管时 AI 可能还在发（会被拒绝的）请求，不算在玩：不冻结时间、不后台运行
             bool mcpPlaying = McpPlaying && !PlayerInControl;
             UpdateIdlePause(ready, mcpPlaying);
+
+            if (chatInput.TakeLine() is string said && ready && Context.IsMultiplayer)
+                Game1.chatBox?.textBoxEnter(said);
+            if (modeAnnouncePending && ready)
+            {
+                modeAnnouncePending = false;
+                if (Context.IsMultiplayer)
+                    GameActions.AnnounceMode("玩家在 DSH 设置里");
+            }
 
             MainThread.Tick(ready);
             if (ready)

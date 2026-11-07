@@ -48,7 +48,8 @@ namespace BlindWhaleFarmer
                     || o.bigCraftable.Value                    // 熔炉、洒水器以外的机器、箱子：要摆的
                     || o.IsSprinkler()
                     || o.Name.Contains("Bomb")
-                    || o.questItem.Value);
+                    || o.questItem.Value
+                    || o.QualifiedItemId is "(O)458" or "(O)460");   // 花束和美人鱼吊坠：买来就是要送的
                 if (usefulOnHand || i is Ring or Boots || keepAlso(i))
                     keep.Add(i);
             }

@@ -88,6 +88,17 @@ namespace BlindWhaleFarmer
                         foreach (var s in LeaveFestival())
                             yield return s;
                         break;
+                    case "grange":
+                        if (Game1.CurrentEvent is { isFestival: true } fair && fair.isSpecificFestival("fall16"))
+                        {
+                            var placed = new List<string>();
+                            foreach (var s in GrangeDisplay(fair, placed))
+                                yield return s;
+                            yield return ActionResult.Success(string.Join("；", placed));
+                        }
+                        else
+                            yield return ActionResult.Fail("只有星露谷展览会才有展示柜");
+                        break;
                     default:
                         yield return ActionResult.Fail("action 只能是 enter（进入）、greet（和大家打招呼）、start（找刘易斯开始主活动）、leave（离开）");
                         break;
@@ -213,6 +224,12 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success(msg + "。接下来 festival start 找刘易斯开始主活动，或 festival leave 离开");
         }
 
+        /// <summary>节日主活动已经开始了（可能是别人开始的）。展览会没有这个阶段。</summary>
+        internal static bool FestivalMainRunning(Event ev) =>
+            ev is { isFestival: true } && (ev.eventSwitched || ev.playerControlSequenceID is "eggHunt" or "iceFishing");
+
+        private static string festivalReadySaid;
+
         private IEnumerable<object> StartFestivalEvent()
         {
             var ev = Game1.CurrentEvent;
@@ -222,6 +239,38 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var notes = new List<string>();
+            bool farmhand = !Game1.IsMasterGame;
+            bool mainRunning = FestivalMainRunning(ev) || ev.doingSecretSanta;
+
+            // 展览会的展示柜大家共用，评分也只有主机能开始
+            if (farmhand && ev.isSpecificFestival("fall16"))
+            {
+                if (ev.grangeJudged)
+                {
+                    var host = ev.getActorByName("Lewis");
+                    var walk = new Outcome();
+                    if (host != null)
+                    {
+                        foreach (var s in GoAdjacent(host.TilePoint, walk))
+                            yield return s;
+                        if (walk.Ok)
+                        {
+                            Face(host.TilePoint);
+                            Loc.checkAction(new xLocation(host.TilePoint.X, host.TilePoint.Y), Game1.viewport, Player);
+                            foreach (var s in ClickThroughDialogue(YesChoice))
+                                yield return s;
+                        }
+                    }
+                    yield return walk.Ok && host != null
+                        ? ActionResult.Success($"找刘易斯问过评分了，现在有 {Player.festivalScore} 个星星币。逛完 festival leave")
+                        : ActionResult.Fail("走不到刘易斯旁边：" + walk.Message);
+                    yield break;
+                }
+                yield return ActionResult.Success(Game1.player.team.grangeDisplay.Any(i => i != null)
+                    ? "展示柜里已经摆了东西。评分只有主机能开始（主机找刘易斯），评完再 festival start 找刘易斯领奖"
+                    : "展示柜是大家共用的，先用 say 问主机要不要你来摆，同意了再 festival grange。评分只有主机能开始，评完再 festival start 找刘易斯领奖");
+                yield break;
+            }
 
             // 没有要刘易斯宣布的主活动的节日：万灵节去迷宫拿宝箱；展览会的展示柜和小游戏没做，打完招呼就走
             if (ev.isSpecificFestival("fall27"))
@@ -240,54 +289,121 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             // 主活动开始前要做的：夏威夷宴会往汤里放东西、花舞节找舞伴、冬日星盛宴送神秘礼物
-            if (ev.isSpecificFestival("summer11"))
+            if (!mainRunning && ev.isSpecificFestival("summer11"))
                 foreach (var s in AddLuauSoup(ev, notes))
                     yield return s;
-            if (ev.isSpecificFestival("spring24"))
+            if (!mainRunning && ev.isSpecificFestival("spring24"))
                 foreach (var s in InviteDancePartner(ev, notes))
                     yield return s;
-            if (ev.isSpecificFestival("winter25"))
+            if (!mainRunning && ev.isSpecificFestival("winter25"))
                 foreach (var s in GiveSecretSantaGift(ev, notes))
                     yield return s;
 
-            var lewis = ev.getActorByName("Lewis");
-            if (lewis == null)
+            // 联机时只有主机问得到“准备好了吗”，主机答应后所有人立刻开始，不会等农场工人。
+            // 所以做完准备就说一声，等主活动开始再接着往下走
+            if (farmhand && !FestivalMainRunning(ev) && !ev.isSpecificFestival("winter25"))
             {
-                yield return ActionResult.Fail("节日上找不到刘易斯，这个节日可能没有要他宣布开始的主活动（展览会、万灵节逛完直接 festival leave）");
-                yield break;
+                string readyKey = ev.id + Game1.Date.TotalDays;
+                if (festivalReadySaid != readyKey)
+                {
+                    festivalReadySaid = readyKey;
+                    Game1.chatBox?.textBoxEnter("我准备好了，可以找刘易斯开始主活动了");
+                }
+                string prepared = notes.Count > 0 ? string.Join("；", notes) + "。" : "";
+                for (int t = 0; t < 300 * 60 && !FestivalMainRunning(ev) && Game1.CurrentEvent == ev; t++)
+                {
+                    if (incomingChat.Count > 0)
+                    {
+                        yield return ActionResult.Success(prepared + "有人说话了，主活动还没开始。回完话再 festival start 接着等");
+                        yield break;
+                    }
+                    if (Game1.activeClickableMenu != null)
+                    {
+                        yield return ActionResult.Success(prepared + "出现了界面，先处理（处理完再 festival start 接着等）：\n" + observer.DescribeMenu());
+                        yield break;
+                    }
+                    yield return null;
+                }
+                if (!FestivalMainRunning(ev) && Game1.CurrentEvent == ev)
+                {
+                    yield return ActionResult.Fail(prepared + "等了 5 分钟，主机还没有开始主活动。用 say 问一声，想接着等就再 festival start，不等了就 festival leave");
+                    yield break;
+                }
             }
-            var o = new Outcome();
-            var tile = lewis.TilePoint;
-            foreach (var s in GoAdjacent(tile, o))
-                yield return s;
-            if (!o.Ok)
+
+            if (!FestivalMainRunning(ev) && !farmhand && !ev.isSpecificFestival("winter25"))
             {
-                yield return ActionResult.Fail("走不到刘易斯旁边：" + o.Message);
-                yield break;
-            }
-            Face(tile);
-            Loc.checkAction(new xLocation(tile.X, tile.Y), Game1.viewport, Player);
-            // “大家准备好了吗？”选“是”，主活动开始
-            bool asked = false;
-            for (int t = 0; t < 900 && Game1.activeClickableMenu is DialogueBox; t++)
-            {
-                if (Game1.activeClickableMenu is DialogueBox { isQuestion: true })
-                    asked = true;
-                foreach (var s in ClickThroughDialogue(YesChoice, 60))
+                var lewis = ev.getActorByName("Lewis");
+                if (lewis == null)
+                {
+                    yield return ActionResult.Fail("节日上找不到刘易斯，这个节日可能没有要他宣布开始的主活动（展览会、万灵节逛完直接 festival leave）");
+                    yield break;
+                }
+                var o = new Outcome();
+                var tile = lewis.TilePoint;
+                foreach (var s in GoAdjacent(tile, o))
                     yield return s;
-                yield return null;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail("走不到刘易斯旁边：" + o.Message);
+                    yield break;
+                }
+                Face(tile);
+                Loc.checkAction(new xLocation(tile.X, tile.Y), Game1.viewport, Player);
+                // “大家准备好了吗？”选“是”，主活动开始
+                bool asked = false;
+                for (int t = 0; t < 900 && Game1.activeClickableMenu is DialogueBox; t++)
+                {
+                    if (Game1.activeClickableMenu is DialogueBox { isQuestion: true })
+                        asked = true;
+                    foreach (var s in ClickThroughDialogue(YesChoice, 60))
+                        yield return s;
+                    yield return null;
+                }
+                if (!asked && ev.playerControlSequence && Game1.CurrentEvent == ev)
+                {
+                    yield return ActionResult.Fail("刘易斯没有问要不要开始（可能还没到时间，或者这个节日没有主活动）。"
+                        + "展览会、万灵节没有要他宣布的主活动，逛完 festival leave；其他节日可以过一会儿再 festival start");
+                    yield break;
+                }
+
+                // 联机时刘易斯那边答应后要等所有人都准备好
+                if (Game1.activeClickableMenu is ReadyCheckDialog ready)
+                {
+                    foreach (var s in WaitForPlayers(300))
+                        yield return s;
+                    if (Game1.activeClickableMenu == ready)
+                    {
+                        yield return ActionResult.Fail("等了 5 分钟，其他玩家还没准备好开始主活动。" + ReadyCheckHint(ready));
+                        yield break;
+                    }
+                }
             }
-            if (!asked && ev.playerControlSequence && Game1.CurrentEvent == ev)
+
+            // 冬日星盛宴没有要主机开始的主活动：送了礼物才有后面的交换剧情，没送成就到这里为止
+            if (ev.isSpecificFestival("winter25") && !ev.doingSecretSanta)
             {
-                yield return ActionResult.Fail("刘易斯没有问要不要开始（可能还没到时间，或者这个节日没有主活动）。"
-                    + "展览会、万灵节没有要他宣布的主活动，逛完 festival leave；其他节日可以过一会儿再 festival start");
-                yield break;
+                for (int t = 0; t < 300 && !ev.doingSecretSanta && Game1.CurrentEvent == ev; t++)
+                    yield return null;
+                if (!ev.doingSecretSanta && Game1.CurrentEvent == ev)
+                {
+                    yield return ActionResult.Success((notes.Count > 0 ? string.Join("；", notes) + "。" : "")
+                        + "冬日星盛宴没有要主机开始的主活动，送了礼物才有交换剧情。可以 festival greet 或者 festival leave");
+                    yield break;
+                }
             }
 
             // 主活动：大多是过场动画，自己点掉对话；找彩蛋时去捡彩蛋；冰钓比赛还不会钓，站着等它结束
             bool eggsDone = false, iceDone = false;
             for (int t = 0; t < 60 * 60 * 4 && Game1.eventUp && Game1.CurrentEvent != null; t++)
             {
+                // 冬日星盛宴交换完礼物可以自由走动，等大家一起离开，这里不用再等了
+                if (ev.playerControlSequenceID == "christmas2" && ev.playerControlSequence && Game1.activeClickableMenu == null)
+                {
+                    yield return ActionResult.Success((notes.Count > 0 ? string.Join("；", notes) + "。" : "")
+                        + "交换完礼物了，可以和大家聊聊天，想走就 festival leave（联机时要所有玩家都同意）");
+                    yield break;
+                }
                 if (!eggsDone && ev.playerControlSequenceID == "eggHunt" && ev.playerControlSequence && ev.festivalTimer > 0 && Game1.activeClickableMenu == null)
                 {
                     eggsDone = true;
@@ -303,15 +419,27 @@ namespace BlindWhaleFarmer
                 if (Game1.activeClickableMenu is DialogueBox)
                     foreach (var s in ClickThroughDialogue(YesChoice, 120))
                         yield return s;
+                else if (Game1.activeClickableMenu is ItemGrabMenu prize && ev.eventCommands[ev.CurrentCommand] == "null")
+                {
+                    // 发奖时背包满了会弹物品界面，剧情停在 null 命令上，要靠关界面时往下走一步（游戏在 ItemGrabMenu 按键关闭时做）
+                    int waitingAt = ev.CurrentCommand;
+                    GrabAll(prize);
+                    if (ev.CurrentCommand == waitingAt)
+                        ev.CurrentCommand++;
+                }
                 else if (Game1.activeClickableMenu is ItemGrabMenu or ShopMenu or LetterViewerMenu)
                     Game1.exitActiveMenu();
+                // 发奖界面被别的办法关掉了也接着走。只认发奖这两条：其他 null 命令（比如宣布赢家）是等对话框关闭，不能抢
+                else if (Game1.activeClickableMenu == null && ev.CurrentCommand > 0 && ev.CurrentCommand < ev.eventCommands.Length && ev.eventCommands[ev.CurrentCommand] == "null"
+                    && ev.eventCommands[ev.CurrentCommand - 1] is "awardFestivalPrize" or "cutscene addSecretSantaItem")
+                    ev.CurrentCommand++;
                 yield return null;
             }
             for (int t = 0; t < 600 && (Game1.isWarping || Game1.fadeToBlack || Game1.globalFade); t++)
                 yield return null;
             if (Game1.eventUp)
             {
-                yield return ActionResult.Fail("主活动还没结束（等太久了）。可以用 wait / dialogue 继续，或 festival leave");
+                yield return ActionResult.Fail((notes.Count > 0 ? string.Join("；", notes) + "。" : "") + "主活动还没结束（等太久了）。再 festival start 接着参加，或者用 dialogue 过对白");
                 yield break;
             }
             yield return ActionResult.Success((notes.Count > 0 ? string.Join("；", notes) + "。" : "")
