@@ -622,7 +622,11 @@ namespace BlindWhaleFarmer
             }
             int debris = loc.debris.Count(d => d.item != null || d.itemId.Value != null);
             if (debris > 0)
-                sb.AppendLine($"地上有 {debris} 堆掉落物（走近会自动捡起）");
+            {
+                var stuck = loc.debris.Where(d => (d.item != null || d.itemId.Value != null) && !GameActions.CanAccept(d)).Select(GameActions.DebrisName).Distinct().ToList();
+                sb.AppendLine($"地上有 {debris} 堆掉落物（走近会自动捡起）"
+                    + (stuck.Count > 0 ? $"；背包满了，其中 {string.Join("、", stuck.Take(5))} 捡不起来，先腾位置" : ""));
+            }
 
             // 可交互的地图格（商店柜台、告示板、邮箱等）
             for (int x = pt.X - r; x <= pt.X + r; x++)

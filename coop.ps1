@@ -46,9 +46,19 @@ if ($text -notmatch '"McpPort"\s*:\s*\d+') {
 [IO.File]::WriteAllText($config, ($text -replace '("McpPort"\s*:\s*)\d+', "`${1}$Port"))
 
 if (-not $AiOnly -and $running.Count -eq 0) {
-    Start-Process $smapi -WorkingDirectory $GamePath
-    # 等第一个窗口把 SMAPI 日志占住，第二个才会写到 player-2 那份
-    Start-Sleep -Seconds 5
+    $hostGame = Start-Process $smapi -WorkingDirectory $GamePath -PassThru
+    # 等主机窗口真正出来再开第二个：两个挨得太近时，先开的那个常常卡在启动（没有窗口），
+    # 而且第一个要先把 SMAPI 日志占住，第二个才会写到 player-2 那份
+    for ($i = 0; $i -lt 120 -and -not $hostGame.HasExited; $i++) {
+        $hostGame.Refresh()
+        if ($hostGame.MainWindowTitle -like "Stardew Valley*") { break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not ($hostGame.MainWindowTitle -like "Stardew Valley*")) {
+        Write-Host "你的窗口 2 分钟还没出来，可能卡在启动：先确认 Steam 开着，关掉它再运行一次。" -ForegroundColor Yellow
+        exit 1
+    }
+    Start-Sleep -Seconds 3
 }
 Start-Process $smapi -ArgumentList '--mods-path "Mods-AI"' -WorkingDirectory $GamePath
 

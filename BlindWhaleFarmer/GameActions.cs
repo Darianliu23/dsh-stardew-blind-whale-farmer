@@ -270,6 +270,12 @@ namespace BlindWhaleFarmer
             var (reachable, closest, dist) = Pathfinder.Explore(Loc, me, goals);
             if (reachable <= 1)
                 return $"你站的 ({me.X},{me.Y}) 四周都走不了，被困住了";
+            // 礼物箱（婚后的星之果实、新家的礼物）放在进门那格前面，会把门堵住，打开它就没了
+            var gift = Loc.objects.Pairs.Where(p => p.Value is StardewValley.Objects.Chest { giftbox.Value: true })
+                .Select(p => new Point((int)p.Key.X, (int)p.Key.Y))
+                .Where(p => Util.Manhattan(p, closest) <= 1).Select(p => (Point?)p).FirstOrDefault();
+            if (gift is Point g)
+                return $"礼物箱 ({g.X},{g.Y}) 挡在路上：先 interact ({g.X},{g.Y}) 打开它（东西会进背包，星之果实会直接吃掉），箱子就没了，再走";
             return $"被挡住了。从 ({me.X},{me.Y}) 能走到 {reachable} 格，其中离目标最近的是 ({closest.X},{closest.Y})，还差 {dist} 格";
         }
 
@@ -1249,10 +1255,10 @@ namespace BlindWhaleFarmer
             return new Point((int)(avg.X + 32) / 64, (int)(avg.Y + 32) / 64);
         }
 
-        private static bool CanAccept(Debris d) =>
+        internal static bool CanAccept(Debris d) =>
             d.item != null ? Player.couldInventoryAcceptThisItem(d.item) : Player.couldInventoryAcceptThisItem(d.itemId.Value, 1, d.itemQuality);
 
-        private static string DebrisName(Debris d) =>
+        internal static string DebrisName(Debris d) =>
             d.item?.DisplayName ?? ItemRegistry.GetDataOrErrorItem(d.itemId.Value).DisplayName;
 
         /// <summary>
@@ -1468,6 +1474,36 @@ namespace BlindWhaleFarmer
             foreach (var s in WaitTicks(10))
                 yield return s;
             yield return ActionResult.Success($"已把 {n} 个 {name} 放进出货箱（预计今晚结算约 {price}g）");
+        }
+
+        /// <summary>扔进垃圾桶（和背包界面里拖到垃圾桶一样，升级过垃圾桶会退一点钱）：背包满了又不在箱子旁边时腾位置用。</summary>
+        public IEnumerable<object> TrashItem(string itemSpec, int? count)
+        {
+            int idx = Util.FindItemIndex(itemSpec, i => i is not Tool && i.canBeTrashed());
+            if (idx < 0)
+            {
+                yield return ActionResult.Fail($"背包里没有能扔的“{itemSpec}”（工具、武器、任务物品不能扔）");
+                yield break;
+            }
+            var item = Player.Items[idx];
+            int n = Math.Clamp(count ?? item.Stack, 1, item.Stack);
+            string name = item.DisplayName;
+            Item gone;
+            if (n >= item.Stack)
+            {
+                gone = item;
+                Player.Items[idx] = null;
+            }
+            else
+            {
+                gone = item.getOne();
+                gone.Stack = n;
+                item.Stack -= n;
+            }
+            int money = Player.Money;
+            Utility.trashItem(gone);
+            string refund = Player.Money > money ? $"，垃圾桶退了 {Player.Money - money}g" : "";
+            yield return ActionResult.Success($"扔掉了 {name} x{n}{refund}。背包空位 {Player.Items.Count(i => i == null)} 个");
         }
 
         public IEnumerable<object> Eat(string itemSpec)

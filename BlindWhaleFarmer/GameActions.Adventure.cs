@@ -852,6 +852,15 @@ namespace BlindWhaleFarmer
                     stop = "体力不够了";
                     break;
                 }
+                // 背包满了：敲出来的矿石、宝石捡不起来，再往下走就丢在这一层了
+                var leftBehind = mine.debris.Where(d => IsPickupDebris(d) && !CanAccept(d)).ToList();
+                if (leftBehind.Count > 0)
+                {
+                    var where = DebrisTile(leftBehind[0]);
+                    stop = $"背包满了，地上的 {string.Join("、", leftBehind.Select(DebrisName).Distinct().Take(5))} 捡不起来（在 ({where.X},{where.Y}) 附近）。"
+                         + "先腾位置：吃掉食物（eat），或者用 trash_item 扔掉最不值钱的东西，再走过去捡，然后继续 explore_mine。下一层之前不捡就丢了";
+                    break;
+                }
                 if (Game1.timeOfDay >= 2300)
                 {
                     stop = "已经 23 点了，该回家睡觉";

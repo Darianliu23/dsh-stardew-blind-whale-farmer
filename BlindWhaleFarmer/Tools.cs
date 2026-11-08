@@ -30,7 +30,8 @@ namespace BlindWhaleFarmer
         private const string BagFullAdvice =
             "背包满了的处理顺序：① 用 tidy_backpack 一键整理（低级鱼竿、多余武器、矿石、鱼等存进农场箱子），或者 store_items 存指定的东西；"
             + "② 没箱子就 craft Chest（50 木材）、place_item 放在农场再存；③ 今天就要换钱的作物放进出货箱 ship_items；"
-            + "④ 不要为了腾地方马上 sell 掉，尤其是收集包材料和等钓鱼 5 级再卖更值钱的鱼";
+            + "④ 不要为了腾地方马上 sell 掉，尤其是收集包材料和等钓鱼 5 级再卖更值钱的鱼；"
+            + "在矿洞里回不去箱子时：先 eat 吃掉食物，再用 trash_item 扔最不值钱的（泥土、石头、杂物），别让矿石宝石留在地上";
 
         /// <summary>有人说话也不从外面打断的工具：本身就在等人或者很短；钓鱼半路断了鱼竿还在水里，它自己在两竿之间停。</summary>
         private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide" };
@@ -117,6 +118,10 @@ namespace BlindWhaleFarmer
                 j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
                 P("items", "string", "要取的物品名，多个用逗号分隔；all 表示全部", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
+
+            Add("trash_item", "把背包里的东西扔进垃圾桶，扔了就没了。只在背包满了、又不方便回去存箱子时用（比如在矿洞里），先扔最不值钱、最好补的（泥土、石头、杂物）；工具和任务物品扔不了。", 20,
+                j => () => a.TrashItem(Str(j, "item"), OptInt(j, "count")),
+                P("item", "string", "物品名称或背包序号"), P("count", "integer", "扔几个，不传扔掉这一格全部", false));
 
             Add("eat", "吃掉背包里的食物恢复体力和生命。", 30,
                 j => () => a.Eat(Str(j, "item")),

@@ -130,7 +130,7 @@ SMAPI 控制台命令（调试用）：
 - 背包里能捐给博物馆的东西、能交给社区中心收集包的材料
 - 附近能不能钓鱼；矿洞层数、下楼梯/竖井/电梯/出口的坐标
 
-## AI 能做什么（52 个工具）
+## AI 能做什么（53 个工具）
 
 | 类别 | 工具 |
 |---|---|
@@ -146,7 +146,7 @@ SMAPI 控制台命令（调试用）：
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
-| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子） |
+| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西） |
 | 界面 | `dialogue`、`menu_click`、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
 | 时间 | `sleep`（自动回家上床）、`wait` |
 | 记忆 | `update_notes` |
