@@ -18,7 +18,9 @@
    - 下载：<https://smapi.io>（开发时用的是 SMAPI 4.5.2 + 游戏 1.6.15）
    - 解压后运行安装程序（Windows 是 `install on Windows.bat`），按提示选择游戏目录
    - Steam 里给星露谷设置启动选项：`"<游戏目录>\StardewModdingAPI.exe" %command%`
-2. **安装本模组**：从 GitHub Releases 下载压缩包，把里面的 `BlindWhaleFarmer` 文件夹放进游戏目录的 `Mods` 里。
+2. **安装本模组**（三选一）：
+   - **用 DSH 的话最省事**：在 DSH 的插件市场装 dsh-stardew-blind-whale-farmer。插件自带编译好的模组，会自动装进游戏的 `Mods`（游戏开着时等关了再装）；以后在插件市场点“更新”，插件和模组一起更新。找不到游戏目录时，在插件的配置卡片里填“星露谷目录”。
+   - 从 GitHub Releases 下载压缩包，把里面的 `BlindWhaleFarmer` 文件夹放进游戏目录的 `Mods` 里。
    从源码安装的话，在仓库根目录运行（会自动在 Steam / GOG 的安装位置找游戏，包括装在其他盘的 Steam 库）：
    ```bash
    powershell -ExecutionPolicy Bypass -File build.ps1

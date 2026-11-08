@@ -32,12 +32,15 @@ const LABELS = {
   basePreset: ['session', '基础预设'],
   port: ['session', '游戏端口'],
   toolTimeoutMinutes: ['session', '单个动作最长等多少分钟'],
+  autoInstallMod: ['install', '自动安装和更新游戏模组'],
+  gamePath: ['install', '星露谷目录'],
 }
 
 const GROUPS = [
   ['play', '游玩'],
   ['guide', '攻略'],
   ['session', '会话与连接'],
+  ['install', '模组安装'],
 ]
 
 export function buildFields() {

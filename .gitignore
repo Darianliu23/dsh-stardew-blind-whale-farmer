@@ -9,8 +9,7 @@ node_modules/
 # 本机设置（路径等），参考 local.ps1.example
 local.ps1
 
-# release 里的 DLL 由 build.ps1 生成，发布时放到 GitHub Releases
-release/**/*.dll
+# release/BlindWhaleFarmer 里的 DLL 由 build.ps1 生成，发版时提交：DSH 插件自带它，自动装进游戏
 
 # 运行时产生的文件
 **/logs/
