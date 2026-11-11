@@ -347,7 +347,11 @@ namespace BlindWhaleFarmer
             KeepRunningInBackground(ready && (Agent.Running || mcpPlaying || MainThread.IsBusy));
             // 剧情标记卡住（eventUp 还开着、却没有剧情/界面/切场景）时自己解开；只在 AI 玩的时候管，不碰玩家自己玩
             if (ready && (Agent.Running || mcpPlaying || MainThread.IsBusy))
+            {
                 Actions.RecoverStuckEvent(Monitor);
+                // 剧情结束后人留在地图外面（坐标是负的、四周全空）时送回地图里
+                Actions.RecoverOffMap(Monitor);
+            }
             if (!ready || (!Agent.Running && !mcpPlaying))
             {
                 SetTimeFrozen(false);

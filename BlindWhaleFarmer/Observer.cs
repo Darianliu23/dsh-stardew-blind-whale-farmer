@@ -100,6 +100,12 @@ namespace BlindWhaleFarmer
             sb.AppendLine("## 位置");
             sb.AppendLine($"地点：{loc.NameOrUniqueName}（{loc.DisplayName}），{(loc.IsOutdoors ? "室外" : "室内")}，地图大小 {Pathfinder.MapWidth(loc)}x{Pathfinder.MapHeight(loc)}");
             sb.AppendLine($"你站在 ({pt.X},{pt.Y})，面朝{Util.DirName(player.FacingDirection)}");
+            // 有的剧情开头把主角藏在地图外面（马龙送剑是 -100,-100），坐标是负的、四周全空，AI 看了会以为出错了
+            bool offMap = !loc.isTileOnMap(pt.X, pt.Y);
+            if (offMap)
+                sb.AppendLine(Game1.eventUp
+                    ? "⚠ 你现在在地图外面：这是剧情把你暂时藏起来了，坐标和空地图都是正常的，不要 move_to/travel_to。用 dialogue 推进对话（或 skip_event 跳过），剧情会把你送回地图里"
+                    : "⚠ 你现在在地图外面（剧情结束后没被送回来）。模组会在几秒内把你送回地图里：wait 1 分钟后再 get_state，不用做别的");
             Safe(sb, () =>
             {
                 if (loc.canFishHere() && Util.FindTool<StardewValley.Tools.FishingRod>() >= 0 && HasWaterNearby(loc, pt, 30))
@@ -146,9 +152,17 @@ namespace BlindWhaleFarmer
             Safe(sb, () => AppendNearby(sb, loc, pt));
 
             sb.AppendLine();
-            sb.AppendLine($"## 文字地图（以你为中心，左上角坐标=({pt.X - config.MapRadiusX},{pt.Y - config.MapRadiusY})，每个字符一格，向右 x+1，向下 y+1）");
-            sb.AppendLine("图例：" + Legend);
-            Safe(sb, () => AppendMap(sb, loc, pt));
+            if (offMap)
+            {
+                sb.AppendLine("## 文字地图");
+                sb.AppendLine("（你在地图外面，四周什么都没有，地图省略；见上面“位置”里的说明）");
+            }
+            else
+            {
+                sb.AppendLine($"## 文字地图（以你为中心，左上角坐标=({pt.X - config.MapRadiusX},{pt.Y - config.MapRadiusY})，每个字符一格，向右 x+1，向下 y+1）");
+                sb.AppendLine("图例：" + Legend);
+                Safe(sb, () => AppendMap(sb, loc, pt));
+            }
 
             Safe(sb, () => AppendQuests(sb));
             return sb.ToString();

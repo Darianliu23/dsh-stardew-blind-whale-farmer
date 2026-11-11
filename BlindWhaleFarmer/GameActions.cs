@@ -2302,6 +2302,60 @@ namespace BlindWhaleFarmer
             }
         }
 
+        // ───────────────────────── 人在地图外面 ─────────────────────────
+
+        private int offMapTicks;
+
+        /// <summary>
+        /// 没有剧情、界面、小游戏，也不在切场景，人却站在地图外面：剧情开头会把主角藏到地图外（马龙送剑是 -100,-100），
+        /// 结束时送回“剧情前的位置”，这个位置记错了人就留在外面，四周没有能走的格子，自己回不来。
+        /// 持续 5 秒就记下现场，把她送回地图里：剧情前的位置能站就用它，否则放到最近的出口旁边。每帧调用。
+        /// </summary>
+        public void RecoverOffMap(StardewModdingAPI.IMonitor monitor)
+        {
+            var at = Player.TilePoint;
+            bool lost = Loc != null && !Loc.isTileOnMap(at.X, at.Y)
+                && !Game1.eventUp && Game1.CurrentEvent == null && Game1.farmEvent == null
+                && Game1.activeClickableMenu == null && Game1.currentMinigame == null
+                && !Game1.isWarping && !Game1.fadeToBlack && !Game1.globalFade && !Game1.newDay
+                && Game1.locationRequest == null;
+            if (!lost)
+            {
+                offMapTicks = 0;
+                return;
+            }
+            if (++offMapTicks < 300)
+                return;
+            offMapTicks = 0;
+
+            bool Standable(Point p) => Loc.isTileOnMap(p.X, p.Y) && Pathfinder.IsPassable(Loc, p.X, p.Y) && !Pathfinder.IsTouchWarp(Loc, p.X, p.Y);
+            var before = new Point((int)Player.positionBeforeEvent.X, (int)Player.positionBeforeEvent.Y);
+            Point? to = Standable(before) ? before : null;
+            // 出口旁边一定连着这张地图能走的部分；矿洞每层没有出口，用下来的梯子底下那格
+            var anchors = Exits.Get(Loc).Select(e => e.Tile).ToList();
+            if (Loc is MineShaft mine)
+                anchors.Insert(0, new Point((int)mine.tileBeneathLadder.X, (int)mine.tileBeneathLadder.Y));
+            anchors.Add(new Point(Pathfinder.MapWidth(Loc) / 2, Pathfinder.MapHeight(Loc) / 2));
+            foreach (var anchor in anchors)
+            {
+                if (to != null)
+                    break;
+                for (int r = 0; r <= 12 && to == null; r++)
+                    for (int dx = -r; dx <= r && to == null; dx++)
+                        for (int dy = -r; dy <= r && to == null; dy++)
+                            if (Math.Max(Math.Abs(dx), Math.Abs(dy)) == r && Standable(new Point(anchor.X + dx, anchor.Y + dy)))
+                                to = new Point(anchor.X + dx, anchor.Y + dy);
+            }
+            monitor.Log($"人在地图外面：{Loc.NameOrUniqueName} ({at.X},{at.Y})，没有剧情在播；剧情前的位置记的是 ({before.X},{before.Y})，时间 {Util.Stamp()}。"
+                + (to is Point t ? $"已送回 ({t.X},{t.Y})。" : "找不到能站的格子，没有动她。"), StardewModdingAPI.LogLevel.Warn);
+            if (to is Point target)
+            {
+                Player.Halt();
+                Player.setTileLocation(new Vector2(target.X, target.Y));
+                Player.CanMove = true;
+            }
+        }
+
         // ───────────────────────── 夜间自动确认 ─────────────────────────
 
         private IClickableMenu autoMenu;

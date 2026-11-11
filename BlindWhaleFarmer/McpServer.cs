@@ -38,7 +38,7 @@ namespace BlindWhaleFarmer
 - get_state 最前面的【你的长期笔记】是之前（可能是别的会话）用 update_notes 写下的目标和计划：接着它玩，计划有变化就用 update_notes 更新，换会话也不会丢。
 - 一个工具执行完会返回结果文字；动作执行期间游戏时间照常流逝，你思考时游戏时间是冻结的。
 - 长动作（fish、water_crops、wait 等）可能要几十秒到几分钟，fish 一次建议 casts 不超过 5。
-- 游戏里按 F8 启动的内置 AI 和你不能同时操作；它运行时你只能查信息（get_state、get_guide、gift_info、bundle_info），其他工具会返回“内置 AI 正在运行”：用 toggle_ai 传 on=false 停掉它，或请玩家按 F8。
+- “内置 AI”是模组自带的另一个 AI：玩家在游戏里按 F8 启动，它会自己接管游戏，花的是玩家自己的 API 额度。你就是在玩游戏的 AI，不需要、也不要去启动它。它和你不能同时操作：它运行时你只能查信息（get_state、get_guide、gift_info、bundle_info），其他工具会返回“内置 AI 正在运行”。玩家让你来玩时，用 toggle_ai 传 on=false 停掉它，或请玩家按 F8。
 - get_state 说游戏还在标题画面时，用 load_save 读取存档（不传参数读最近玩的那个）。";
 
         private readonly ModEntry mod;
@@ -284,13 +284,13 @@ namespace BlindWhaleFarmer
                 new JsonObject
                 {
                     ["name"] = "toggle_ai",
-                    ["description"] = "启动或停止游戏里的内置 AI（和玩家按 F8 一样，剧情播放时按键没反应也能用）。on=true 启动，on=false 停止，不传就切换。",
+                    ["description"] = "停止游戏里的内置 AI（模组自带的另一个 AI，玩家按 F8 启动，会接管游戏并花玩家自己的 API 额度）。它在运行、挡住你的动作时，传 on=false 停掉它（剧情里 F8 没反应也能用）。不传参数只查看它是否在运行。你自己就在玩游戏，不要启动它：on=true 默认会被拒绝。",
                     ["inputSchema"] = new JsonObject
                     {
                         ["type"] = "object",
                         ["properties"] = new JsonObject
                         {
-                            ["on"] = new JsonObject { ["type"] = "boolean", ["description"] = "true 启动，false 停止，不传就切换" }
+                            ["on"] = new JsonObject { ["type"] = "boolean", ["description"] = "false 停止；不传只查看状态；true 启动（默认不允许）" }
                         }
                     }
                 },
@@ -407,11 +407,18 @@ namespace BlindWhaleFarmer
         {
             if (!Context.IsWorldReady)
                 return "失败：游戏还没有进入存档，先用 load_save 读档";
-            bool want = on is JsonValue v
-                ? (v.TryGetValue(out bool b) ? b : v.ToString().Trim().ToLowerInvariant() is "true" or "1" or "on" or "yes")
-                : !mod.Agent.Running;
+            // 不传参数只报状态：以前是“切换”，模型随手调一次就会把内置 AI 打开
+            if (on is not JsonValue v)
+                return mod.Agent.Running
+                    ? "成功：内置 AI 正在运行（它在玩游戏，你的动作会被拒绝）。要自己操作就传 on=false 停掉它"
+                    : "成功：内置 AI 停着，你可以正常操作。不需要启动它";
+            bool want = v.TryGetValue(out bool b) ? b : v.ToString().Trim().ToLowerInvariant() is "true" or "1" or "on" or "yes";
             if (want == mod.Agent.Running)
                 return $"成功：内置 AI 本来就{(want ? "在运行" : "停着")}";
+            // 内置 AI 会接管游戏、花玩家自己的 API 额度：MCP 默认只能停，启动要玩家自己按键或在配置里放行
+            if (want && !mod.Config.McpCanStartAi)
+                return $"失败：不能通过 MCP 启动内置 AI。它是另一个会接管游戏、消耗玩家 API 额度的 AI，你自己就在玩游戏，不需要它。"
+                       + $"玩家想用它就在游戏里按 {mod.Config.ToggleKey}（要让 MCP 也能启动，把 config.json 的 McpCanStartAi 改成 true）";
             if (!want)
             {
                 mod.Agent.Stop("MCP 的 toggle_ai");

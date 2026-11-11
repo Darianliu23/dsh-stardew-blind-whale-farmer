@@ -20,6 +20,7 @@
   "GuideFile": "guide/攻略.md",
   "LogPrompts": false,
   "EnableMcp": true,
+  "McpCanStartAi": false,
   "McpPort": 18080,
   "McpFreezeTime": true,
   "McpIdleSeconds": 120,

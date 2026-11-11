@@ -71,6 +71,12 @@ namespace BlindWhaleFarmer
         /// <summary>开启本地 MCP 服务器，让 WorkBuddy / Claude Code / Cursor 等 MCP 客户端来玩（只监听本机 127.0.0.1）。</summary>
         public bool EnableMcp { get; set; } = true;
 
+        /// <summary>
+        /// 允许 MCP 客户端用 toggle_ai 启动内置 AI（默认只能停）。内置 AI 是另一个 AI，会接管游戏、花玩家自己的 API 额度，
+        /// MCP 那边的模型不该顺手把它打开；只有无人值守、想让外部脚本启动它的人才需要打开。
+        /// </summary>
+        public bool McpCanStartAi { get; set; } = false;
+
         /// <summary>MCP 服务器端口，地址为 http://127.0.0.1:端口/mcp。</summary>
         public int McpPort { get; set; } = 18080;
 
