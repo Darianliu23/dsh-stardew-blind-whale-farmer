@@ -7,6 +7,8 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using StardewModdingAPI;
+using StardewValley;
+using StardewValley.Menus;
 
 namespace BlindWhaleFarmer
 {
@@ -24,6 +26,9 @@ namespace BlindWhaleFarmer
         /// <summary>只读取信息、不在游戏里执行动作的工具：不走 Tools、不记 transcript、结果不算“失败”。</summary>
         private static readonly HashSet<string> InfoTools = new() { "get_state", "get_guide" };
 
+        /// <summary>只有 MCP 有的控制工具（无人值守用）：开关内置 AI、在标题画面读档。内置 AI 自己用不着。</summary>
+        private static readonly HashSet<string> ControlTools = new() { "toggle_ai", "load_save" };
+
         private const string McpNotes = @"
 
 ## 通过 MCP 玩的额外说明
@@ -33,7 +38,8 @@ namespace BlindWhaleFarmer
 - get_state 最前面的【你的长期笔记】是之前（可能是别的会话）用 update_notes 写下的目标和计划：接着它玩，计划有变化就用 update_notes 更新，换会话也不会丢。
 - 一个工具执行完会返回结果文字；动作执行期间游戏时间照常流逝，你思考时游戏时间是冻结的。
 - 长动作（fish、water_crops、wait 等）可能要几十秒到几分钟，fish 一次建议 casts 不超过 5。
-- 游戏里按 F8 启动的内置 AI 和你不能同时操作；如果工具返回“内置 AI 正在运行”，请提醒玩家先按 F8 停止它。";
+- 游戏里按 F8 启动的内置 AI 和你不能同时操作；它运行时你只能查信息（get_state、get_guide、gift_info、bundle_info），其他工具会返回“内置 AI 正在运行”：用 toggle_ai 传 on=false 停掉它，或请玩家按 F8。
+- get_state 说游戏还在标题画面时，用 load_save 读取存档（不传参数读最近玩的那个）。";
 
         private readonly ModEntry mod;
         private readonly HttpListener listener = new();
@@ -235,7 +241,7 @@ namespace BlindWhaleFarmer
                     string name = p?["name"]?.GetValue<string>();
                     if (string.IsNullOrEmpty(name))
                         return Error(id, -32602, "缺少工具名");
-                    if (!InfoTools.Contains(name) && !mod.Tools.IsKnown(name))
+                    if (!InfoTools.Contains(name) && !ControlTools.Contains(name) && !mod.Tools.IsKnown(name))
                         return Error(id, -32602, $"没有叫 {name} 的工具");
                     string text = await CallTool(name, p["arguments"] as JsonObject);
                     bool isError = !text.StartsWith("成功") && !InfoTools.Contains(name);
@@ -274,6 +280,32 @@ namespace BlindWhaleFarmer
                             ["topic"] = new JsonObject { ["type"] = "string", ["description"] = "专题名，不传读主攻略" }
                         }
                     }
+                },
+                new JsonObject
+                {
+                    ["name"] = "toggle_ai",
+                    ["description"] = "启动或停止游戏里的内置 AI（和玩家按 F8 一样，剧情播放时按键没反应也能用）。on=true 启动，on=false 停止，不传就切换。",
+                    ["inputSchema"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["on"] = new JsonObject { ["type"] = "boolean", ["description"] = "true 启动，false 停止，不传就切换" }
+                        }
+                    }
+                },
+                new JsonObject
+                {
+                    ["name"] = "load_save",
+                    ["description"] = "游戏停在标题画面时读取存档（单人）。不传 save 读最近玩的那个；读档要十几秒，之后用 get_state 确认进了游戏。",
+                    ["inputSchema"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["save"] = new JsonObject { ["type"] = "string", ["description"] = "存档名（农夫名字，或存档文件夹名的一部分），不传读最近玩的" }
+                        }
+                    }
                 }
             };
             // Schema 是共用对象，复制一份再取用（JsonNode 只能有一个父节点）
@@ -293,8 +325,28 @@ namespace BlindWhaleFarmer
 
         private async Task<string> CallTool(string name, JsonObject args)
         {
-            if (mod.Agent.Running)
-                return "失败：游戏里的内置 AI 正在运行，请先在游戏里按 " + mod.Config.ToggleKey + " 停止它，再通过 MCP 操作";
+            if (ControlTools.Contains(name))
+            {
+                string done;
+                try
+                {
+                    done = await mod.MainThread.Invoke(() => name == "toggle_ai" ? ToggleAi(args?["on"]) : LoadSave(args?["save"]?.ToString())).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    done = $"错误：{ex.GetType().Name}: {ex.Message}";
+                }
+                mod.WriteTranscript($"[{mod.CurrentStamp}] [MCP] {name}({Shorten(args?.ToJsonString() ?? "{}", 200)}) → {Shorten(done, 400)}");
+                return done;
+            }
+            if (mod.Agent.Running && !InfoTools.Contains(name))
+            {
+                // 只查信息的工具不打断内置 AI，直接放行
+                if (Tools.ReadOnlyTools.Contains(name))
+                    return await mod.MainThread.Invoke(() => mod.Tools.Peek(name, args?.ToJsonString())).ConfigureAwait(false);
+                return "失败：游戏里的内置 AI 正在运行，它运行时只能用 get_state、get_guide、gift_info、bundle_info。"
+                       + "要自己操作就先用 toggle_ai 传 on=false 停掉它（或在游戏里按 " + mod.Config.ToggleKey + "）";
+            }
             if (mod.PlayerInControl && !InfoTools.Contains(name) && name != "update_notes")
                 return $"失败：玩家按 {mod.Config.TakeOverKey} 接管了游戏，现在由玩家自己操作，你的动作都会被拒绝。"
                        + $"不要再尝试游戏动作：停下来向玩家汇报刚才在做什么、遇到了什么问题，等玩家在游戏里再按 {mod.Config.TakeOverKey} 交还、并告诉你继续";
@@ -348,6 +400,60 @@ namespace BlindWhaleFarmer
             if (!InfoTools.Contains(name))
                 mod.WriteTranscript($"[{mod.CurrentStamp}] [MCP] {name}({Shorten(argText, 200)}) → {Shorten(result, 400)}");
             return result;
+        }
+
+        /// <summary>toggle_ai：和按 F8 一样，但不走按键（剧情、对话框开着时按键会被游戏吃掉）。在主线程上调用。</summary>
+        private string ToggleAi(JsonNode on)
+        {
+            if (!Context.IsWorldReady)
+                return "失败：游戏还没有进入存档，先用 load_save 读档";
+            bool want = on is JsonValue v
+                ? (v.TryGetValue(out bool b) ? b : v.ToString().Trim().ToLowerInvariant() is "true" or "1" or "on" or "yes")
+                : !mod.Agent.Running;
+            if (want == mod.Agent.Running)
+                return $"成功：内置 AI 本来就{(want ? "在运行" : "停着")}";
+            if (!want)
+            {
+                mod.Agent.Stop("MCP 的 toggle_ai");
+                return "成功：内置 AI 已停止，现在可以通过 MCP 操作";
+            }
+            mod.Agent.Start();
+            return mod.Agent.Running
+                ? "成功：内置 AI 已启动。它运行时 MCP 只能查信息"
+                : "失败：内置 AI 没启动起来（多半是没有配置 API Key：Mods/BlindWhaleFarmer/config.json 的 ApiKey）";
+        }
+
+        /// <summary>load_save：在标题画面读档，和在“读取游戏”里点存档一样（LoadGameMenu 的 SaveFileSlot.Activate）。在主线程上调用。</summary>
+        private string LoadSave(string want)
+        {
+            if (Context.IsWorldReady)
+                return $"成功：已经在存档里了（{Game1.player.Name} 的{Game1.player.farmName.Value}农场），不用读档";
+            if (Game1.activeClickableMenu is not TitleMenu || Game1.gameMode != Game1.titleScreenGameMode)
+                return "失败：现在不在标题画面（游戏正在启动或正在读档），等 10 秒再用 get_state 看看";
+            var saves = new List<(string Slot, DateTime Played)>();
+            if (Directory.Exists(Constants.SavesPath))
+                foreach (string dir in Directory.GetDirectories(Constants.SavesPath))
+                {
+                    string slot = Path.GetFileName(dir);
+                    string file = Path.Combine(dir, slot);
+                    if (File.Exists(file))
+                        saves.Add((slot, File.GetLastWriteTime(file)));
+                }
+            saves.Sort((a, b) => b.Played.CompareTo(a.Played));
+            if (saves.Count == 0)
+                return "失败：没有找到任何存档，请玩家先在游戏里新建一个";
+            string list = string.Join("、", saves.ConvertAll(s => $"{s.Slot}（{s.Played:MM-dd HH:mm}）"));
+            var pick = saves[0];
+            if (!string.IsNullOrWhiteSpace(want))
+            {
+                int i = saves.FindIndex(s => s.Slot.Contains(want.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (i < 0)
+                    return $"失败：没有名字里带“{want}”的存档。现有存档：{list}";
+                pick = saves[i];
+            }
+            SaveGame.Load(pick.Slot);
+            Game1.exitActiveMenu();
+            return $"成功：正在读取存档 {pick.Slot}（上次游玩 {pick.Played:MM-dd HH:mm}），要十几秒。等 15 秒后用 get_state 确认进了游戏";
         }
 
         private static string Shorten(string s, int n)

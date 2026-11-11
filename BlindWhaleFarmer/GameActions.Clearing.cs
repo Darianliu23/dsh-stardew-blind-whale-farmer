@@ -24,8 +24,11 @@ namespace BlindWhaleFarmer
         /// </summary>
         private static bool ClearableObstacle(Point p)
         {
-            if (!InDungeon || !Loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || obj.isPassable())
+            if (!Loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || obj.isPassable())
                 return false;
+            // 矿洞外面只清杂草、捡野菜（不花体力，也不会砸掉玩家摆的东西）；石头、木桶只在矿洞里清
+            if (!InDungeon)
+                return obj.IsWeeds() || (obj.IsSpawnedObject && obj.isForage() && !obj.questItem.Value);
             // 墙上不会有这些东西，保险起见：Buildings 层有图块的格子清了也走不了
             if (Loc.map?.GetLayer("Buildings")?.Tiles[p.X, p.Y] != null)
                 return false;

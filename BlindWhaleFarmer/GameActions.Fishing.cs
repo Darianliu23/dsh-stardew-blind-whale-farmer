@@ -128,6 +128,21 @@ namespace BlindWhaleFarmer
             return spots.OrderByDescending(s => s.Clear).ThenBy(s => ShoreGap(loc, s)).ThenBy(s => Util.Manhattan(s.Stand, from)).ToList();
         }
 
+        /// <summary>附近没有钓鱼点时：这张地图最近的水在哪个方向、多远；整张图没有水就说去哪。</summary>
+        private static string NearestWaterHint(GameLocation loc, Point from)
+        {
+            Point? best = null;
+            int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
+            for (int x = 0; x < w; x++)
+                for (int y = 0; y < h; y++)
+                    if (loc.isWaterTile(x, y) && (best == null || Util.Manhattan(new Point(x, y), from) < Util.Manhattan(best.Value, from)))
+                        best = new Point(x, y);
+            if (best is not Point p)
+                return $"{loc.NameOrUniqueName} 这张地图没有水，换个有水的地方（Beach、Mountain 的湖、Town/Forest 的河）";
+            string dir = (p.Y < from.Y ? "北" : p.Y > from.Y ? "南" : "") + (p.X < from.X ? "西" : p.X > from.X ? "东" : "");
+            return $"最近的水在{dir}边 ({p.X},{p.Y})，离你 {Util.Manhattan(p, from)} 格：先 move_to 走到那附近再 fish，或者换个地方（Beach、Mountain 的湖、Town/Forest 的河）";
+        }
+
         private const string BagFullForFishing = "背包满了，再钓拿不下的会掉在地上。先把鱼和用不上的东西放进出货箱（ship_items），或者整理（tidy_backpack），空出位置再钓。体力够时别为了腾位置吃鱼";
 
         public IEnumerable<object> Fish(int casts, int? x, int? y, string direction)
@@ -184,7 +199,7 @@ namespace BlindWhaleFarmer
                 var spots = FindFishingSpots(loc, Player.TilePoint, 30);
                 if (spots.Count == 0)
                 {
-                    yield return ActionResult.Fail("附近 30 格内找不到能钓鱼的岸边，换个有水的地方（Beach、Mountain 的湖、Town/Forest 的河）");
+                    yield return ActionResult.Fail("附近 30 格内找不到能钓鱼的岸边，" + NearestWaterHint(loc, Player.TilePoint));
                     yield break;
                 }
                 // 从落点离岸最远的一档开始，每档做一次多目标寻路，取最近的走得到的点（紧贴水边的先试）

@@ -28,7 +28,11 @@ namespace BlindWhaleFarmer
         {
             this.reflection = reflection;
             this.observer = observer;
+            sharedObserver = observer;
         }
+
+        /// <summary>给静态的 Blocked 用：界面挡住动作时，把界面内容直接写进报错。</summary>
+        private static Observer sharedObserver;
 
         private static Farmer Player => Game1.player;
         private static GameLocation Loc => Game1.currentLocation;
@@ -47,7 +51,20 @@ namespace BlindWhaleFarmer
             }
             if (Game1.activeClickableMenu != null)
             {
-                why = "有界面打开了（" + Game1.activeClickableMenu.GetType().Name + "），请先处理界面";
+                // 报错里直接带上界面内容和该用哪个工具，不用再 get_state 一次
+                string menu = null;
+                try
+                {
+                    menu = sharedObserver?.DescribeMenu();
+                }
+                catch
+                {
+                    // 界面读不出来就只报类型
+                }
+                if (menu != null && menu.Length > 700)
+                    menu = menu.Substring(0, 700) + "…（get_state 看完整内容）";
+                why = "有界面打开了（" + Game1.activeClickableMenu.GetType().Name + "），请先处理界面"
+                    + (string.IsNullOrEmpty(menu) ? "：对话用 dialogue，其他用 close_menu" : "。当前界面：\n" + menu);
                 return true;
             }
             // festival 工具在节日里自由走动、找人说话时不算被剧情挡住
@@ -211,11 +228,60 @@ namespace BlindWhaleFarmer
             var path = Pathfinder.FindPath(Loc, Player.TilePoint, goals);
             if (path == null)
             {
+                // 镇上、山上的窄路会被新长出来的杂草、地上的野菜堵死：清掉就能过的话边走边清
+                if (!InDungeon && Pathfinder.FindPath(Loc, Player.TilePoint, goals, 20000, clearable: ClearableObstacle) != null)
+                {
+                    foreach (var x in GoToAnyClearing(goals, o, what))
+                        yield return x;
+                    yield break;
+                }
                 o.Fail($"找不到通往{what}的路（{WhyUnreachable(goals)}）");
                 yield break;
             }
             foreach (var x in WalkPath(path, o))
                 yield return x;
+        }
+
+        /// <summary>这一格上有什么（报错时告诉 AI）：物件、家具、大石头树桩、树、建筑、村民、水；认不出返回 null。</summary>
+        private static string WhatIsAt(Point p)
+        {
+            var v = new Vector2(p.X, p.Y);
+            var rect = new Rectangle(p.X * 64, p.Y * 64, 64, 64);
+            if (Loc.objects.TryGetValue(v, out var obj))
+                return obj.DisplayName;
+            // 地毯（furniture_type 12）踩得上去，不算东西
+            if (Loc.furniture.FirstOrDefault(f => f.furniture_type.Value != 12 && f.GetBoundingBox().Intersects(rect)) is { } furniture)
+                return furniture.DisplayName;
+            if (Loc.resourceClumps.FirstOrDefault(c => c.getBoundingBox().Intersects(rect)) is { } clump)
+                return Observer.ClumpName(clump);
+            if (Loc.terrainFeatures.TryGetValue(v, out var tf) && !tf.isPassable(Player))
+                return tf switch { FruitTree => "果树", Tree => "树", Bush => "灌木", _ => tf.GetType().Name };
+            if (Loc.largeTerrainFeatures.Any(l => l.getBoundingBox().Intersects(rect)))
+                return "灌木丛";
+            if (Loc.getBuildingAt(v) is { } building)
+                return building is ShippingBin ? "出货箱" : "建筑 " + building.buildingType.Value;
+            if (Loc.characters.FirstOrDefault(c => c != null && c.TilePoint == p) is { } who)
+                return who.displayName;
+            return Loc.isWaterTile(p.X, p.Y) ? "水" : null;
+        }
+
+        /// <summary>center 周围 radius 格内走不了的格子上都是什么（水和认不出的墙不算），最多列 4 个。</summary>
+        private static string BlockersNear(Point center, int radius)
+        {
+            // 大树桩、建筑占好几格：同名的只报第一格，后面写一共几格
+            var found = new List<(string What, Point At)>();
+            for (int dx = -radius; dx <= radius; dx++)
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    var p = new Point(center.X + dx, center.Y + dy);
+                    if (Pathfinder.IsPassable(Loc, p.X, p.Y))
+                        continue;
+                    string what = WhatIsAt(p);
+                    if (what != null && what != "水")
+                        found.Add((what, p));
+                }
+            var groups = found.GroupBy(f => f.What).Select(g => $"{g.Key}({g.First().At.X},{g.First().At.Y}){(g.Count() > 1 ? $" 等 {g.Count()} 格" : "")}").ToList();
+            return groups.Count == 0 ? null : string.Join("、", groups.Take(4)) + (groups.Count > 4 ? " 等" : "");
         }
 
         /// <summary>和村民说话能站的格子：游戏只要求在他周围一圈以内（Utility.withinRadiusOfPlayer 半径 1，斜角也算）。优先上下左右，没有再用斜角。</summary>
@@ -276,7 +342,10 @@ namespace BlindWhaleFarmer
                 .Where(p => Util.Manhattan(p, closest) <= 1).Select(p => (Point?)p).FirstOrDefault();
             if (gift is Point g)
                 return $"礼物箱 ({g.X},{g.Y}) 挡在路上：先 interact ({g.X},{g.Y}) 打开它（东西会进背包，星之果实会直接吃掉），箱子就没了，再走";
-            return $"被挡住了。从 ({me.X},{me.Y}) 能走到 {reachable} 格，其中离目标最近的是 ({closest.X},{closest.Y})，还差 {dist} 格";
+            // 村民不挡路（寻路直接穿过去），挡路的是地上的东西：说清楚是什么、在哪，AI 才知道该清掉还是绕开
+            string blockers = BlockersNear(closest, 2);
+            return $"被挡住了。从 ({me.X},{me.Y}) 能走到 {reachable} 格，其中离目标最近的是 ({closest.X},{closest.Y})，还差 {dist} 格"
+                + (blockers != null ? $"；那附近挡着的有：{blockers}。能清的用 clear_area 或 use_tool 清掉，清不掉就换条路" : "；那附近是墙或水，换个方向或换条路");
         }
 
         /// <summary>走到目标格旁边（上下左右之一）并面向目标。prefer 为优先站立的格子。</summary>
@@ -952,7 +1021,32 @@ namespace BlindWhaleFarmer
                     ? "不是空食槽，这里的食槽都放满了干草"
                     : $"不是食槽。这里的空食槽在：{string.Join("、", troughs.Select(p => $"({p.X},{p.Y})"))}（care_animals 会自动用背包里的干草放满）";
             }
-            return "没有可以交互的东西";
+            string here = WhatIsAt(target);
+            string nearby = NearbyInteractables(target, 3);
+            return (here != null ? $"是{here}，交互没有反应" : "没有可以交互的东西")
+                + (nearby != null ? $"。附近 3 格内能交互的：{nearby}" : "。附近 3 格内也没有能交互的东西，get_state 的“附近物体”里有坐标");
+        }
+
+        /// <summary>center 周围 radius 格内能 interact 的东西：村民、机器和箱子、家具、地图上带动作的格子（门、告示、柜台）。</summary>
+        private static string NearbyInteractables(Point center, int radius)
+        {
+            var found = new List<(int Dist, string Text)>();
+            void Add(Point p, string name)
+            {
+                if (p != center && Math.Abs(p.X - center.X) <= radius && Math.Abs(p.Y - center.Y) <= radius)
+                    found.Add((Util.Manhattan(p, center), $"{name}({p.X},{p.Y})"));
+            }
+            foreach (var c in Loc.characters.Where(c => c != null && !c.IsMonster && !c.IsInvisible))
+                Add(c.TilePoint, c.displayName);
+            foreach (var pair in Loc.objects.Pairs.Where(p => p.Value.bigCraftable.Value || p.Value.IsSpawnedObject))
+                Add(new Point((int)pair.Key.X, (int)pair.Key.Y), pair.Value.DisplayName);
+            foreach (var f in Loc.furniture.Where(f => f.furniture_type.Value != 12))
+                Add(new Point((int)f.TileLocation.X, (int)f.TileLocation.Y), f.DisplayName);
+            for (int x = center.X - radius; x <= center.X + radius; x++)
+                for (int y = center.Y - radius; y <= center.Y + radius; y++)
+                    if (Loc.isTileOnMap(x, y) && Loc.doesTileHaveProperty(x, y, "Action", "Buildings") is { } action)
+                        Add(new Point(x, y), "地图动作 " + action.Split(' ')[0]);
+            return found.Count == 0 ? null : string.Join("、", found.OrderBy(f => f.Dist).Take(6).Select(f => f.Text));
         }
 
         public IEnumerable<object> PlaceItem(string itemSpec, int x, int y)

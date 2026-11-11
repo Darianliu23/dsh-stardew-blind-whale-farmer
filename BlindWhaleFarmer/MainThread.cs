@@ -169,7 +169,9 @@ namespace BlindWhaleFarmer
             int health = currentStartHealth >= 0 ? Safe(() => StardewValley.Game1.player.health, currentStartHealth) : -1;
             if (currentStartHealth >= 0 && health < currentStartHealth)
             {
-                Finish($"失败：干活时被攻击了（生命 {currentStartHealth} → {health}），已停下。先用 fight 清掉附近的怪再继续");
+                string attacker = Safe(() => GameActions.NearestAttacker(), null);
+                Finish($"失败：干活时被攻击了（生命 {currentStartHealth} → {health}），已停下。"
+                    + (attacker != null ? $"最近的怪是{attacker}。" : "") + "先用 fight 清掉附近的怪再继续");
                 return;
             }
 

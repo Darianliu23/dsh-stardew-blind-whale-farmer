@@ -24,7 +24,13 @@ namespace BlindWhaleFarmer
                 tile = new Point(x.Value, y.Value);
                 if (Loc.objects.TryGetValue(new Vector2(x.Value, y.Value), out var o) && o is Chest c && c.playerChest.Value && !c.giftbox.Value)
                     return c;
-                error = $"({x},{y}) 不是箱子";
+                // 说清楚那格其实是什么、这里的箱子都在哪，AI 一步就能改对
+                string here = WhatIsAt(tile);
+                var chests = Loc.objects.Pairs.Where(p => p.Value is Chest pc && pc.playerChest.Value && !pc.giftbox.Value)
+                    .Select(p => $"({(int)p.Key.X},{(int)p.Key.Y})").ToList();
+                error = $"({x},{y}) 不是箱子，" + (here != null ? $"那里是{here}" : "那里什么都没有")
+                    + (chests.Count > 0 ? $"。{Loc.NameOrUniqueName} 的箱子在：{string.Join("、", chests.Take(8))}（不传坐标就用最近的一个）"
+                        : $"。{Loc.NameOrUniqueName} 里没有箱子（箱子的坐标只在放它的那张地图上有效，先 travel_to 过去）");
                 return null;
             }
             var me = Player.TilePoint;

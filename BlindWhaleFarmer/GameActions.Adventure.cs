@@ -263,6 +263,20 @@ namespace BlindWhaleFarmer
             return $"⚠ 附近有 {close.Count} 只怪：{list}，生命 {Player.health}/{Player.maxHealth}。先用 fight 清掉再干别的；生命低又没有回血食物就撤退";
         }
 
+        /// <summary>被打时报给 AI：最近的会打人的怪叫什么、在哪、哪个方向（远处放法术的也算，不限 6 格）。没有返回 null。</summary>
+        public static string NearestAttacker()
+        {
+            if (!StardewModdingAPI.Context.IsWorldReady)
+                return null;
+            var me = Player.TilePoint;
+            var m = LiveMonsters(Loc).Where(x => x.DamageToFarmer > 0 && !CannotHurt(x)).OrderBy(x => Util.Manhattan(x.TilePoint, me)).FirstOrDefault();
+            if (m == null)
+                return null;
+            var p = m.TilePoint;
+            string dir = (p.Y < me.Y ? "北" : p.Y > me.Y ? "南" : "") + (p.X < me.X ? "西" : p.X > me.X ? "东" : "");
+            return $"{MonsterName(m)} ({p.X},{p.Y})，在你{(dir == "" ? "脚下" : dir + "边")} {Util.Manhattan(p, me)} 格";
+        }
+
         /// <summary>怪物的中文名。联机时农场工人这边的怪是主机同步过来的，displayName 没翻译，只剩英文内部名，所以按名字查数据。</summary>
         internal static string MonsterName(Monster m) => Monster.GetDisplayName(m.Name);
 

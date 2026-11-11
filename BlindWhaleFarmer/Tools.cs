@@ -315,6 +315,30 @@ namespace BlindWhaleFarmer
 
         public bool IsKnown(string name) => name == "update_notes" || specs.ContainsKey(name);
 
+        /// <summary>只查信息、马上出结果的工具：内置 AI 在跑的时候 MCP 也能用（不占动作队列，不会打断它）。</summary>
+        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info" };
+
+        /// <summary>在主线程上直接跑一个只读工具，取它的第一个结果；不经过动作队列。</summary>
+        public string Peek(string name, string arguments)
+        {
+            if (!ReadOnlyTools.Contains(name) || !specs.TryGetValue(name, out var spec))
+                return $"失败：{name} 不是只读工具";
+            try
+            {
+                var args = string.IsNullOrWhiteSpace(arguments) ? new JsonObject() : JsonNode.Parse(arguments) as JsonObject ?? new JsonObject();
+                foreach (var step in spec.Make(args)())
+                    if (step is ActionResult result)
+                        return result.Message;
+                    else
+                        break;
+                return "失败：这个查询现在出不了结果，等内置 AI 停下再试";
+            }
+            catch (Exception ex)
+            {
+                return "失败：" + ex.Message;
+            }
+        }
+
         /// <summary>本次游玩的时长限制（见 PlaySession）；为 null 时不限制。</summary>
         public PlaySession Session { get; set; }
 
