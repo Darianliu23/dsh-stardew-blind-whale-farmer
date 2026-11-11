@@ -18,7 +18,7 @@ namespace BlindWhaleFarmer
         /// 吃的（料理；不够两样时补上回血最多的普通食物，鱼排在后面）、种子、肥料、鱼饵钓具、炸弹、任务物品、
         /// 要摆放的机器/洒水器/箱子，以及玩家点名要留的。其余都存进箱子。
         /// </summary>
-        private static HashSet<Item> ItemsToKeep(Func<Item, bool> keepAlso)
+        private static HashSet<Item> ItemsToKeep(Func<Item, bool> keepAlso, string purpose = null)
         {
             var keep = new HashSet<Item>();
             var items = Player.Items.Where(i => i != null).ToList();
@@ -60,6 +60,18 @@ namespace BlindWhaleFarmer
                 .ThenByDescending(i => ((SObject)i).healthRecoveredOnConsumption())
                 .Take(Math.Max(0, 2 - keep.Count(Heals)));
             keep.UnionWith(extraFood.ToList());
+
+            // 给了出门目的：这次用不上的（下矿的锄头水壶种子、钓鱼的镐子武器……）也存起来；任务要交的和点名要留的照样留
+            if (purpose != null)
+            {
+                var reserved = ReservedChecker();
+                keep.RemoveWhere(i => !UsefulFor(purpose, i) && !keepAlso(i) && !(i is SObject q && (q.questItem.Value || reserved(i)?.StartsWith("任务") == true || reserved(i)?.StartsWith("特别订单") == true)));
+                // 下矿多带点回血的：一路打下去两样不够吃
+                if (purpose == "mine")
+                    keep.UnionWith(items.Where(i => Heals(i) && reserved(i) == null)
+                        .OrderBy(i => ((SObject)i).sellToStorePrice() / Math.Max(1, ((SObject)i).healthRecoveredOnConsumption()))
+                        .Take(Math.Max(0, 5 - keep.Count(Heals))).ToList());
+            }
             return keep;
         }
 
@@ -67,19 +79,27 @@ namespace BlindWhaleFarmer
         /// 整理背包：把用不上的东西存进农场（或当前地点）的箱子，一个箱子满了换下一个。
         /// 低级的鱼竿、多余的武器等重复工具也存起来，每类只留最好的一把。
         /// </summary>
-        public IEnumerable<object> TidyBackpack(string keep)
+        public IEnumerable<object> TidyBackpack(string keep, string purposeSpec = null)
         {
             if (Blocked(out string why))
             {
                 yield return ActionResult.Fail(why);
                 yield break;
             }
+            string purpose = NormalizePurpose(purposeSpec);
+            if (!string.IsNullOrWhiteSpace(purposeSpec) && purpose == null)
+            {
+                yield return ActionResult.Fail($"不认识出门目的“{purposeSpec}”，可以用 mine（下矿）、fish（钓鱼）、farm（种地）、town（去镇上送礼办事），不传就按通用规则整理");
+                yield break;
+            }
             var keepFilter = string.IsNullOrWhiteSpace(keep) ? (_ => false) : ItemFilter(keep);
-            var keepSet = ItemsToKeep(keepFilter);
+            var keepSet = ItemsToKeep(keepFilter, purpose);
             var toStore = Player.Items.Where(i => i != null && !keepSet.Contains(i)).ToList();
+            // 这次要用、但现在在箱子里的东西（比如下矿要的炸弹、回血料理），整理完顺手提醒
+            string missing = purpose != null ? MissingForTrip(purpose) : null;
             if (toStore.Count == 0)
             {
-                yield return ActionResult.Success("背包已经很整齐了，没有需要存起来的东西");
+                yield return ActionResult.Success("背包已经很整齐了，没有需要存起来的东西" + (missing != null ? "。" + missing : ""));
                 yield break;
             }
 
@@ -141,6 +161,10 @@ namespace BlindWhaleFarmer
             msg += $"。身上留着：{string.Join("、", kept)}（空位 {Player.freeSpotsInInventory()} 个）";
             if (leftover.Count > 0)
                 msg += $"。箱子都满了，还剩 {string.Join("、", leftover)} 没地方放：craft Chest（50 木材）再放一个箱子";
+            if (purpose != null)
+                msg = $"按{PurposeName[purpose]}整理。" + msg;
+            if (missing != null)
+                msg += "。" + missing;
             yield return stored.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
         }
 

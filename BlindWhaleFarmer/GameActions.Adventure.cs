@@ -222,6 +222,8 @@ namespace BlindWhaleFarmer
         private sealed class FightStats
         {
             public int Kills, Swings, Eaten;
+            /// <summary>要在结果里告诉 AI 的事（比如迫不得已吃了要交的东西）。</summary>
+            public readonly List<string> Notes = new();
             /// <summary>找不到路走过去、等了也没过来的怪。</summary>
             public readonly HashSet<Monster> Unreachable = new();
             /// <summary>打了不掉血、这次不再打的怪。</summary>
@@ -322,12 +324,36 @@ namespace BlindWhaleFarmer
             return best;
         }
 
-        /// <summary>背包里回血最多的食物。</summary>
-        private static int BestHealingFood() =>
-            Player.Items.Select((it, i) => (it, i))
+        /// <summary>
+        /// 打架时该吃哪样：任务、特别订单、收集包要交的不吃；够回满大半血的里面挑最便宜的（别把贵的鱼、料理浪费在掉一点血上），
+        /// 都不够就吃回血最多的。只剩要交的东西时，血量危急（≤20%）才吃，reserved 返回原因。
+        /// </summary>
+        private static int BestHealingFood(out string reserved)
+        {
+            reserved = null;
+            var isReserved = ReservedChecker();
+            var foods = Player.Items.Select((it, i) => (it, i))
                 .Where(x => x.it is SObject o && o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0)
-                .OrderByDescending(x => ((SObject)x.it).healthRecoveredOnConsumption())
-                .Select(x => x.i).DefaultIfEmpty(-1).First();
+                .Select(x => (x.i, o: (SObject)x.it, why: isReserved(x.it))).ToList();
+            var free = foods.Where(f => f.why == null).ToList();
+            if (free.Count > 0)
+            {
+                int missing = Player.maxHealth - Player.health;
+                var enough = free.Where(f => f.o.healthRecoveredOnConsumption() >= missing * 0.6f).ToList();
+                return enough.Count > 0
+                    ? enough.OrderBy(f => f.o.sellToStorePrice()).ThenBy(f => f.o.healthRecoveredOnConsumption()).First().i
+                    : free.OrderByDescending(f => f.o.healthRecoveredOnConsumption()).First().i;
+            }
+            if (foods.Count > 0 && Player.health <= Player.maxHealth * 0.2f)
+            {
+                var last = foods.OrderByDescending(f => f.o.healthRecoveredOnConsumption()).First();
+                reserved = $"{last.o.DisplayName}（{last.why}）";
+                return last.i;
+            }
+            if (foods.Count > 0)
+                reserved = string.Join("、", foods.Select(f => $"{f.o.DisplayName}（{f.why}）").Distinct());
+            return -1;
+        }
 
         private static int DirToward(Point from, Point to)
         {
@@ -484,16 +510,19 @@ namespace BlindWhaleFarmer
                 // 先保命
                 if (Player.health < Player.maxHealth * minHealth)
                 {
-                    int food = BestHealingFood();
+                    int food = BestHealingFood(out string reservedFood);
                     if (food < 0)
                     {
-                        o.Fail($"!生命只剩 {Player.health}/{Player.maxHealth}，背包里没有能回血的食物，赶紧撤退");
+                        o.Fail($"!生命只剩 {Player.health}/{Player.maxHealth}，背包里没有能回血的食物"
+                            + (reservedFood != null ? $"（只有要交的 {reservedFood}，没舍得吃）" : "") + "，赶紧撤退");
                         yield break;
                     }
-                    foreach (var s in Eat(food.ToString()))
+                    foreach (var s in Eat(food.ToString(), force: true))
                         if (s is not ActionResult)
                             yield return s;
                     st.Eaten++;
+                    if (reservedFood != null)
+                        st.Notes.Add($"血量危急，只好吃了要交的 {reservedFood}");
                     continue;
                 }
 
@@ -646,6 +675,8 @@ namespace BlindWhaleFarmer
                 yield return s;
             int left = LiveMonsters(Loc).Count(m => Util.Manhattan(m.TilePoint, Player.TilePoint) <= radius);
             string msg = $"挥了 {st.Swings} 下，打倒 {st.Kills} 只，吃了 {st.Eaten} 次东西，生命 {Player.health}/{Player.maxHealth}，附近还剩 {left} 只";
+            if (st.Notes.Count > 0)
+                msg += "。" + string.Join("；", st.Notes.Distinct());
             var blocked = st.Unreachable.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
             var immune = st.Immune.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
             KnownUnreachable = new HashSet<Monster>(blocked.Concat(immune));
@@ -781,6 +812,8 @@ namespace BlindWhaleFarmer
         public IEnumerable<object> ExploreMine(int levels, int? startLevel)
         {
             var o = new Outcome();
+            // 出门带了下矿用不上的东西，结束时提醒一句（下次出门前整理）
+            string clutter = TripClutterHint("mine");
             if (Loc is not MineShaft)
             {
                 if (!Loc.Name.Equals("Mine", StringComparison.OrdinalIgnoreCase))
@@ -1043,8 +1076,12 @@ namespace BlindWhaleFarmer
                 msg += "；开宝箱拿到：" + string.Join("、", loot);
             if (chestNotes.Count > 0)
                 msg += "；" + string.Join("；", chestNotes);
+            if (st.Notes.Count > 0)
+                msg += "；" + string.Join("；", st.Notes.Distinct());
             if (stop != null)
                 msg += "；停下原因：" + stop;
+            if (clutter != null)
+                msg += "。" + clutter;
             yield return descended > 0 || rocks > 0 || st.Kills > 0 || loot.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
         }
     }

@@ -1049,12 +1049,18 @@ namespace BlindWhaleFarmer
             return found.Count == 0 ? null : string.Join("、", found.OrderBy(f => f.Dist).Take(6).Select(f => f.Text));
         }
 
-        public IEnumerable<object> PlaceItem(string itemSpec, int x, int y)
+        public IEnumerable<object> PlaceItem(string itemSpec, int x, int y, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec, i => i is SObject);
             if (idx < 0)
             {
                 yield return ActionResult.Fail($"背包里没有可放置的“{itemSpec}”");
+                yield break;
+            }
+            // 机器、箱子随手一放就会压在田里、堵在门口；集中放在一片
+            if (!force && PlacementProblem(Loc, Player.Items[idx], new Point(x, y)) is string problem)
+            {
+                yield return ActionResult.Fail($"{problem}。{MachineAreaHint(Loc)}。{ForceHint}");
                 yield break;
             }
             var o = new Outcome();
@@ -1079,7 +1085,7 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 批量农活 ─────────────────────────
 
-        public IEnumerable<object> TillArea(int x1, int y1, int x2, int y2)
+        public IEnumerable<object> TillArea(int x1, int y1, int x2, int y2, bool force = false)
         {
             int hoe = Util.FindTool<Hoe>();
             if (hoe < 0)
@@ -1088,6 +1094,26 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var loc = Loc;
+            // 农场上已经有田、田里还空着不少，又要在离田很远的地方另开一块：作物会东一块西一块，先种满老田或者挨着它扩
+            if (!force && loc is Farm)
+            {
+                var want = new Rectangle(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1) + 1, Math.Abs(y2 - y1) + 1);
+                var fields = Fields(loc).Where(f => f.Tiles.Count >= 4).ToList();
+                if (fields.Count > 0 && fields.All(f => RectGap(want, f.Box) > 3))
+                {
+                    int empty = fields.Sum(f => f.Empty);
+                    string where = string.Join("；", fields.Take(3).Select(f => f.Describe()));
+                    if (empty >= 6)
+                    {
+                        yield return ActionResult.Fail($"老田里还有 {empty} 格空耕地没种（{where}），先 plant_seeds 种满它们，别在离田远的地方另开一块。{ForceHint}");
+                        yield break;
+                    }
+                    yield return ActionResult.Fail($"这块地离现有的田（{where}）太远，作物分散了浇水收菜都要满农场跑。"
+                        + (SuggestFieldExpansion(loc, want.Width * want.Height) is string ext ? ext + "。" : "")
+                        + $"真要另开一块新田（比如老田四周没地方了）就传 force=true");
+                    yield break;
+                }
+            }
             var tiles = RectTiles(x1, y1, x2, y2, 80).Where(p =>
                 loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null
                 && !loc.Objects.ContainsKey(new Vector2(p.X, p.Y))
@@ -1149,10 +1175,45 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("没有可以播种的空耕地（先用 till_area 开垦；注意种子要当季）");
                 yield break;
             }
+
+            // 没给区域时按田来种：先把已经有作物的田补满、再种大块的田，一块种完再换下一块；零散的一两格耕地不种。
+            // 以前是从近到远挑空耕地，种子会撒得到处都是，浇水收菜都要满农场跑。
+            string skippedNote = null;
+            List<Point> order;
+            if (!x1.HasValue && seed.Category == SObject.SeedsCategory)
+            {
+                var set = new HashSet<Point>(tiles);
+                var fields = Fields(loc);
+                var ranked = fields.Where(f => f.Tiles.Any(set.Contains))
+                    .OrderByDescending(f => f.Tiles.Count >= 4)
+                    .ThenByDescending(f => f.Crops > 0)
+                    .ThenByDescending(f => f.Tiles.Count)
+                    .ThenBy(f => f.Tiles.Min(p => Util.Manhattan(p, Player.TilePoint)))
+                    .ToList();
+                bool hasRealField = ranked.Any(f => f.Tiles.Count >= 4);
+                order = new List<Point>();
+                int skipped = 0;
+                foreach (var f in ranked)
+                {
+                    var mine = f.Tiles.Where(set.Contains).ToList();
+                    if (hasRealField && f.Tiles.Count < 4)
+                    {
+                        skipped += mine.Count;
+                        continue;
+                    }
+                    // 一块田里一行一行种（蛇形），比“最近的下一格”整齐
+                    order.AddRange(mine.OrderBy(p => p.Y).ThenBy(p => p.Y % 2 == 0 ? p.X : -p.X));
+                }
+                if (skipped > 0)
+                    skippedNote = $"零散的 {skipped} 格耕地没种（离田太远，种了不好照顾；真要种就传 x1,y1,x2,y2 指定区域）";
+            }
+            else
+                order = Util.NearestOrder(Player.TilePoint, tiles).ToList();
+
             int done = 0;
             string err = null;
             var o = new Outcome();
-            foreach (var p in Util.NearestOrder(Player.TilePoint, tiles).Take(Math.Clamp(max, 1, 200)))
+            foreach (var p in order.Take(Math.Clamp(max, 1, 200)))
             {
                 if (Player.Items[idx] == null || Player.Items[idx].DisplayName != seedName)
                 {
@@ -1177,6 +1238,10 @@ namespace BlindWhaleFarmer
                     yield return s;
             }
             string msg = $"种下了 {done} 格 {seedName}";
+            if (skippedNote != null)
+                msg += "；" + skippedNote;
+            if (done == 0 && err == null)
+                err = "没有能种的耕地" + (loc is Farm && SuggestFieldExpansion(loc) is string ext ? "，" + ext : "");
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
         }
 
@@ -1498,12 +1563,17 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 物品 ─────────────────────────
 
-        public IEnumerable<object> ShipItems(string itemSpec, int? count)
+        public IEnumerable<object> ShipItems(string itemSpec, int? count, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec);
             if (idx < 0)
             {
                 yield return ActionResult.Fail($"背包里没有“{itemSpec}”");
+                yield break;
+            }
+            if (!force && ReservedChecker()(Player.Items[idx]) is string reservedWhy)
+            {
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，卖了就交不了，先留着（交完再卖多的）。{ForceHint}");
                 yield break;
             }
             if (!Player.Items[idx].canBeShipped())
@@ -1571,12 +1641,17 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>扔进垃圾桶（和背包界面里拖到垃圾桶一样，升级过垃圾桶会退一点钱）：背包满了又不在箱子旁边时腾位置用。</summary>
-        public IEnumerable<object> TrashItem(string itemSpec, int? count)
+        public IEnumerable<object> TrashItem(string itemSpec, int? count, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec, i => i is not Tool && i.canBeTrashed());
             if (idx < 0)
             {
                 yield return ActionResult.Fail($"背包里没有能扔的“{itemSpec}”（工具、武器、任务物品不能扔）");
+                yield break;
+            }
+            if (!force && ReservedChecker()(Player.Items[idx]) is string reservedWhy)
+            {
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，别扔，扔别的（石头、泥土、杂物）。{ForceHint}");
                 yield break;
             }
             var item = Player.Items[idx];
@@ -1600,15 +1675,16 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success($"扔掉了 {name} x{n}{refund}。背包空位 {Player.Items.Count(i => i == null)} 个");
         }
 
-        public IEnumerable<object> Eat(string itemSpec)
+        public IEnumerable<object> Eat(string itemSpec, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec, i => i is SObject o && o.Edibility != -300);
             if (idx < 0)
             {
-                // 列出能吃的（格号和回复多少体力），省得一格一格去试
+                // 列出能吃的（格号和回复多少体力），省得一格一格去试；要交的不列
+                var reservedCheck = ReservedChecker();
                 var edible = Player.Items
                     .Select((item, i) => (item, i))
-                    .Where(x => x.item is SObject o && o.Edibility > 0)
+                    .Where(x => x.item is SObject o && o.Edibility > 0 && reservedCheck(x.item) == null)
                     .OrderByDescending(x => ((SObject)x.item).staminaRecoveredOnConsumption())
                     .Take(8)
                     .Select(x => $"{x.i}:{x.item.DisplayName}（+{((SObject)x.item).staminaRecoveredOnConsumption()} 体力）")
@@ -1620,6 +1696,11 @@ namespace BlindWhaleFarmer
             if (Blocked(out string why))
             {
                 yield return ActionResult.Fail(why);
+                yield break;
+            }
+            if (!force && ReservedChecker()(Player.Items[idx]) is string reservedWhy)
+            {
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，吃了就交不了，换别的吃（get_state 背包里标了【留着】的都别吃）。{ForceHint}");
                 yield break;
             }
             foreach (var s in WaitPlayerFree())
@@ -1931,6 +2012,16 @@ namespace BlindWhaleFarmer
                 case ReadyCheckDialog ready when !ready.isCancelable():
                     yield return ActionResult.Fail(ReadyCheckHint(ready));
                     yield break;
+                // 钓鱼宝箱、背包满时弹的“拿走物品”界面：直接关掉东西会掉在地上，先拿进背包
+                case ItemGrabMenu grab when grab.source != ItemGrabMenu.source_chest && grab.context is not StardewValley.Objects.Chest
+                                            && grab.ItemsToGrabMenu?.actualInventory.Any(i => i != null) == true:
+                {
+                    var taken = new List<string>();
+                    var dropped = GrabAll(grab, taken);
+                    yield return ActionResult.Success($"拿进背包：{string.Join("、", taken)}"
+                        + (dropped.Count > 0 ? $"；背包满了，{string.Join("、", dropped)} 掉在脚边（空出位置走过去能捡回来）" : ""));
+                    yield break;
+                }
                 default:
                     // 铁匠正在砸晶球：等砸完，否则开出来的东西就没了
                     for (int i = 0; i < 300 && menu is GeodeMenu { geodeAnimationTimer: > 0 }; i++)

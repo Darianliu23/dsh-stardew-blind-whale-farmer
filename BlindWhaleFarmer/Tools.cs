@@ -67,15 +67,18 @@ namespace BlindWhaleFarmer
                 P("npc", "string", "村民名字（英文或中文），与 x,y 二选一", false),
                 P("item", "string", "交互时手里拿的物品（名称或背包序号），用于送礼/放材料", false));
 
-            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。", 60,
-                j => () => a.PlaceItem(Str(j, "item"), Int(j, "x"), Int(j, "y")),
-                P("item", "string", "物品名称或背包序号"), P("x", "integer", "x"), P("y", "integer", "y"));
+            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。", 60,
+                j => () => a.PlaceItem(Str(j, "item"), Int(j, "x"), Int(j, "y"), OptBool(j, "force") ?? false),
+                P("item", "string", "物品名称或背包序号"), P("x", "integer", "x"), P("y", "integer", "y"),
+                P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false));
 
-            Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）。区域里有石头杂草的格子会跳过，先用 clear_area。", 300,
-                j => () => a.TillArea(Int(j, "x1"), Int(j, "y1"), Int(j, "x2"), Int(j, "y2")),
-                P("x1", "integer", "左上 x"), P("y1", "integer", "左上 y"), P("x2", "integer", "右下 x"), P("y2", "integer", "右下 y"));
+            Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）。区域里有石头杂草的格子会跳过，先用 clear_area。"
+                + "农场上新田要挨着已有的田开（状态“作物”一节的“农田”行有田的位置和扩田建议），离老田太远会被拒绝。", 300,
+                j => () => a.TillArea(Int(j, "x1"), Int(j, "y1"), Int(j, "x2"), Int(j, "y2"), OptBool(j, "force") ?? false),
+                P("x1", "integer", "左上 x"), P("y1", "integer", "左上 y"), P("x2", "integer", "右下 x"), P("y2", "integer", "右下 y"),
+                P("force", "boolean", "确实要离老田很远另开一块时传 true", false));
 
-            Add("plant_seeds", "在空耕地上批量播种（或施肥）。不给区域就在本地点所有空耕地上按由近到远播种。", 300,
+            Add("plant_seeds", "在空耕地上批量播种（或施肥）。不给区域时按田来种：先补满已有作物的田、再种大块的田，一行一行种，零散的一两格耕地不种。", 300,
                 j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200),
                 P("seed", "string", "种子名称或背包序号"),
                 P("x1", "integer", "区域左上 x", false), P("y1", "integer", "区域左上 y", false),
@@ -95,9 +98,10 @@ namespace BlindWhaleFarmer
                 P("x1", "integer", "左上 x"), P("y1", "integer", "左上 y"), P("x2", "integer", "右下 x"), P("y2", "integer", "右下 y"),
                 P("include_trees", "boolean", "是否也砍大树（很耗体力）", false));
 
-            Add("ship_items", "把物品放进农场的出货箱（每晚自动结算成钱）。不在农场会自动走回农场。", 180,
-                j => () => a.ShipItems(Str(j, "item"), OptInt(j, "count")),
-                P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false));
+            Add("ship_items", "把物品放进农场的出货箱（每晚自动结算成钱）。不在农场会自动走回农场。任务、特别订单、收集包要交的东西会拒绝（背包里标了【留着】）。", 180,
+                j => () => a.ShipItems(Str(j, "item"), OptInt(j, "count"), OptBool(j, "force") ?? false),
+                P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false),
+                P("force", "boolean", "要交的东西也照样出货（一般不要用）", false));
 
             Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就用本地点最近的箱子。", 120,
                 j => () => a.StoreItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
@@ -110,9 +114,15 @@ namespace BlindWhaleFarmer
                 P("action", "string", "enter / greet / start / leave / grange", true));
 
             Add("tidy_backpack", "整理背包：每类工具只留最好的一把（低级鱼竿、多余的武器等存起来），身上留吃的（料理；不够两样时再留回血最多的普通食物）、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器，"
-                + "其余（矿石、石头木材、宝石、鱼、作物、怪物掉落……）存进农场的箱子，一个满了换下一个。不在农场会先回农场。出门下矿/钓鱼前、背包快满时用。", 300,
-                j => () => a.TidyBackpack(OptStr(j, "keep")),
-                P("keep", "string", "额外要留在身上的物品名，多个用逗号分隔（比如今天要送的礼物、要交的收集包材料）", false));
+                + "其余（矿石、石头木材、宝石、鱼、作物、怪物掉落……）存进农场的箱子，一个满了换下一个。不在农场会先回农场。出门下矿/钓鱼前、背包快满时用。"
+                + "传 purpose 时只留这次出门用得上的：mine 下矿（武器、镐子、炸弹、最多 5 样回血食物）、fish 钓鱼（鱼竿、鱼饵钓具、料理）、farm 种地（农具、种子肥料、洒水器机器）、town 去镇上（料理、花束）；还会提醒这次该带却在箱子里的东西。", 300,
+                j => () => a.TidyBackpack(OptStr(j, "keep"), OptStr(j, "purpose")),
+                P("keep", "string", "额外要留在身上的物品名，多个用逗号分隔（比如今天要送的礼物、要交的收集包材料）", false),
+                P("purpose", "string", "出门干什么：mine / fish / farm / town，可省略", false));
+
+            Add("list_chests", "列出所有箱子（农场、农舍、冰箱……）在哪、里面有什么；传 item 只找这样东西放在哪个箱子。不花游戏时间。找东西、出门前想想要带什么时用，别凭记忆。", 10,
+                j => () => a.ListChests(OptStr(j, "item")),
+                P("item", "string", "要找的物品名，多个用逗号分隔，可省略", false));
 
             Add("take_items", "从箱子里取东西回背包。结果会列出箱子里还有什么。", 120,
                 j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
@@ -120,12 +130,14 @@ namespace BlindWhaleFarmer
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
 
             Add("trash_item", "把背包里的东西扔进垃圾桶，扔了就没了。只在背包满了、又不方便回去存箱子时用（比如在矿洞里），先扔最不值钱、最好补的（泥土、石头、杂物）；工具和任务物品扔不了。", 20,
-                j => () => a.TrashItem(Str(j, "item"), OptInt(j, "count")),
-                P("item", "string", "物品名称或背包序号"), P("count", "integer", "扔几个，不传扔掉这一格全部", false));
+                j => () => a.TrashItem(Str(j, "item"), OptInt(j, "count"), OptBool(j, "force") ?? false),
+                P("item", "string", "物品名称或背包序号"), P("count", "integer", "扔几个，不传扔掉这一格全部", false),
+                P("force", "boolean", "要交的东西也照样扔（一般不要用）", false));
 
-            Add("eat", "吃掉背包里的食物恢复体力和生命。", 30,
-                j => () => a.Eat(Str(j, "item")),
-                P("item", "string", "食物名称或背包序号"));
+            Add("eat", "吃掉背包里的食物恢复体力和生命。任务、特别订单、收集包要交的东西（背包里标了【留着】）会拒绝，挑别的吃。", 30,
+                j => () => a.Eat(Str(j, "item"), OptBool(j, "force") ?? false),
+                P("item", "string", "食物名称或背包序号"),
+                P("force", "boolean", "要交的东西也照样吃（一般不要用）", false));
 
             Add("open_shop", "在商店所在地点打开商店界面（店主要在场、在营业时间）。不传 shop_id 就自动判断：SeedShop→杂货店，Blacksmith→铁匠，ScienceHouse→木匠，FishShop→鱼店，Saloon→酒吧。", 20,
                 j => () => a.OpenShop(OptStr(j, "shop_id")),
@@ -174,7 +186,7 @@ namespace BlindWhaleFarmer
                 j => () => a.CareAnimals(OptStr(j, "door")),
                 P("door", "string", "open/close，可省略（不动门）", false));
 
-            Add("gift_info", "查询村民的送礼喜好（最爱/喜欢/讨厌）、生日、好感和本周送礼次数，以及背包里哪些东西他喜欢。不花游戏时间。", 10,
+            Add("gift_info","查询村民的送礼喜好（最爱/喜欢/讨厌）、生日、好感和本周送礼次数，以及背包里哪些东西他喜欢。不花游戏时间。", 10,
                 j => () => a.GiftInfo(Str(j, "npc")),
                 P("npc", "string", "村民名字（英文或中文）"));
 
@@ -228,10 +240,12 @@ namespace BlindWhaleFarmer
                 P("type", "string", "动物种类，如 Chicken、Cow、Goat、Duck、Pig（中英文都可以）", false),
                 P("name", "string", "名字（可省略，自动起名）", false), P("count", "integer", "买几只，默认 1", false));
 
-            Add("build", "找木匠 Robin（ScienceHouse）在农场建造或升级建筑（鸡舍 Coop、畜棚 Barn、筒仓 Silo 等；Big Coop 等是升级）。不传 x,y 会在农舍附近自动找空地。不传 building 会列出能建的和价格。", 300,
-                j => () => a.Build(OptStr(j, "building"), OptInt(j, "x"), OptInt(j, "y")),
+            Add("build", "找木匠 Robin（ScienceHouse）在农场建造或升级建筑（鸡舍 Coop、畜棚 Barn、筒仓 Silo 等；Big Coop 等是升级）。不传 building 会列出能建的和价格。"
+                + "推荐不传 x,y：会自动规划位置（同类建筑排成一排、四周留一格路、门口下方空两格、不贴着田）。自己给坐标时也按这些规则检查，不合适会拒绝并给出建议位置。", 300,
+                j => () => a.Build(OptStr(j, "building"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false),
                 P("building", "string", "建筑名（中英文都可以），可省略", false),
-                P("x", "integer", "建筑左上角 x（可省略）", false), P("y", "integer", "建筑左上角 y（可省略）", false));
+                P("x", "integer", "建筑左上角 x（可省略）", false), P("y", "integer", "建筑左上角 y（可省略）", false),
+                P("force", "boolean", "坐标不符合规划规则也照样建（一般不要用）", false));
 
             Add("upgrade_house", "找 Robin 升级农舍：第一次 10000g+450木材，升级后有厨房（可以 cook）和冰箱。", 240,
                 j => () => a.UpgradeHouse());
@@ -316,7 +330,7 @@ namespace BlindWhaleFarmer
         public bool IsKnown(string name) => name == "update_notes" || specs.ContainsKey(name);
 
         /// <summary>只查信息、马上出结果的工具：内置 AI 在跑的时候 MCP 也能用（不占动作队列，不会打断它）。</summary>
-        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info" };
+        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests" };
 
         /// <summary>在主线程上直接跑一个只读工具，取它的第一个结果；不经过动作队列。</summary>
         public string Peek(string name, string arguments)

@@ -118,6 +118,17 @@ namespace BlindWhaleFarmer
             Safe(sb, () => AppendInventory(sb));
             Safe(sb, () => AppendDonationHints(sb));
 
+            // 箱子里有什么每次都给出来，不用靠记忆（东西多时只列每个箱子里最多的几样，全部用 list_chests）
+            Safe(sb, () =>
+            {
+                if (GameActions.ChestOverview() is string chests)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("## 箱子（所有地点，按数量列主要物品；找某样东西用 list_chests item=名字）");
+                    sb.AppendLine(chests);
+                }
+            });
+
             sb.AppendLine();
             sb.AppendLine("## 本地出口（travel_to 可以自动走多段路，下面只是本地点的直接出口）");
             Safe(sb, () =>
@@ -140,6 +151,8 @@ namespace BlindWhaleFarmer
             Safe(sb, () =>
             {
                 AppendCrops(sb, loc, pt);
+                if (loc is Farm && GameActions.FieldOverview(loc) is string fields)
+                    sb.AppendLine(fields);
                 if (loc is not Farm)
                 {
                     CountCrops(Game1.getFarm(), out int needWater, out int ready, out int total);
@@ -311,6 +324,15 @@ namespace BlindWhaleFarmer
             var items = Game1.player.Items;
             int empty = 0;
             var parts = new List<string>();
+            Func<Item, string> reserved;
+            try
+            {
+                reserved = GameActions.ReservedChecker();
+            }
+            catch
+            {
+                reserved = _ => null;
+            }
             for (int i = 0; i < Game1.player.MaxItems && i < items.Count; i++)
             {
                 if (items[i] == null)
@@ -319,6 +341,9 @@ namespace BlindWhaleFarmer
                     continue;
                 }
                 string mark = i == Game1.player.CurrentToolIndex ? "（手持）" : "";
+                // 任务、特别订单、收集包要交的：别吃、别卖、别扔
+                if (reserved(items[i]) is string why)
+                    mark += $"【留着：{why}】";
                 parts.Add($"{i}: {Util.ItemLabel(items[i])}{mark}");
             }
             foreach (var p in parts)
@@ -846,6 +871,13 @@ namespace BlindWhaleFarmer
 
                 case ShippingMenu:
                     sb.AppendLine("每日出货结算界面（会自动确认；如果没有，用 menu_click 点 OK 按钮）");
+                    break;
+
+                case ItemGrabMenu grab when grab.source != ItemGrabMenu.source_chest && grab.context is not StardewValley.Objects.Chest
+                                            && grab.ItemsToGrabMenu?.actualInventory.Any(i => i != null) == true:
+                    string kind = grab.source == ItemGrabMenu.source_fishingChest ? "钓鱼宝箱" : "拿取物品的界面";
+                    sb.AppendLine($"{kind}，里面有：{string.Join("、", grab.ItemsToGrabMenu.actualInventory.Where(i => i != null).Select(Util.ItemLabel))}。"
+                        + $"用 close_menu 全部拿进背包（背包空位 {Game1.player.freeSpotsInInventory()} 个，放不下的会掉在脚边）");
                     break;
 
                 case LetterViewerMenu letter:

@@ -148,7 +148,7 @@ SMAPI 控制台命令（调试用）：
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
-| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西） |
+| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
 | 界面 | `dialogue`、`menu_click`、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
 | 时间 | `sleep`（自动回家上床）、`wait` |
 | 记忆 | `update_notes` |

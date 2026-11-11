@@ -24,7 +24,6 @@ namespace BlindWhaleFarmer
                 Active = false;
             if (!Active || Game1.activeClickableMenu is not BobberBar bar || bar.fadeIn || bar.fadeOut)
                 return;
-
             // 绿条覆盖 [barPos-32, barPos-32+h]，鱼占 [pos-16, pos+12]，让两者中心对齐
             float h = bar.bobberBarHeight;
             float target = bar.bobberPosition + 30f - h / 2f;
@@ -283,6 +282,8 @@ namespace BlindWhaleFarmer
                 summary += $"，跑掉/没咬钩 {misses} 次";
             if (stopReason != null)
                 summary += $"（{stopReason}）";
+            if (stopReason == BagFullForFishing && TripClutterHint("fish") is string clutter)
+                summary += "。" + clutter;
             summary += $"，体力 {(int)Player.Stamina}，现在 {Util.TimeString(Game1.timeOfDay)}";
             yield return caught.Count > 0 || misses > 0 ? ActionResult.Success(summary) : ActionResult.Fail(summary);
         }
@@ -417,34 +418,50 @@ namespace BlindWhaleFarmer
                     yield return null;
             }
 
-            // 宝箱或背包满时会弹出物品界面，能拿的都拿走，拿不下的丢在地上
+            // 钓到宝箱：鱼先进背包，宝箱飞起来、打开（约 1.3 秒）后弹出物品界面；背包满时鱼也在这个界面里。
+            // 能拿的都拿走，拿不下的丢在脚边。宝箱动画没播完就往下走的话，界面会在下一次抛竿时才弹出来，把钓鱼卡住。
+            bool treasure = rod.treasureCaught || rod.showingTreasure;
             var dropped = new List<string>();
-            for (int i = 0; i < 240; i++)
+            var loot = new List<string>();
+            for (int i = 0; i < (treasure ? 600 : 240); i++)
             {
                 if (Game1.activeClickableMenu is ItemGrabMenu grab)
                 {
-                    dropped = GrabAll(grab);
+                    treasure |= grab.source == ItemGrabMenu.source_fishingChest;
+                    dropped = GrabAll(grab, loot);
                     break;
                 }
-                if (!rod.showingTreasure && !rod.fishCaught && Player.CanMove && !Player.UsingTool)
+                if (!rod.showingTreasure && !rod.fishCaught && Player.CanMove && !Player.UsingTool && (!treasure || i > 150))
                     break;
                 yield return null;
             }
 
             foreach (var _ in WaitPlayerFree(300))
                 yield return null;
+            // 兜底：界面晚弹出来了也拿掉
+            if (Game1.activeClickableMenu is ItemGrabMenu late && late.source is ItemGrabMenu.source_fishingChest or ItemGrabMenu.source_none)
+            {
+                treasure = true;
+                dropped.AddRange(GrabAll(late, loot));
+            }
+            // 宝箱里有鱼本身（背包满时）就不重复算
+            if (loot.Count > 0 && loot[0].StartsWith(fishName))
+                loot.RemoveAt(0);
 
             // 有小游戏时看进度条是否满；没有小游戏（垃圾等）看有没有“举起物品”
             bool success = sawBar ? lastProgress >= 0.9f : sawCaught;
+            string chest = treasure ? (loot.Count > 0 ? $"+宝箱[{string.Join("、", loot)}]" : "+宝箱") : "";
+            string drop = dropped.Count > 0 ? $"（背包满，{string.Join("、", dropped)} 掉在脚边了，空出位置再走过去能捡回来）" : "";
             if (success)
-                o.Succeed(fishName + (sawBar && perfect ? "(完美)" : "")
-                    + (dropped.Count > 0 ? $"（背包满，{string.Join("、", dropped)} 掉在脚边了，空出位置再走过去能捡回来）" : ""));
+                o.Succeed(fishName + (sawBar && perfect ? "(完美)" : "") + chest + drop);
+            else if (treasure && loot.Count > 0)
+                o.Succeed("宝箱[" + string.Join("、", loot) + "]" + drop); // 鱼跑了但宝箱拿到了
             else
                 o.Fail(sawBar ? $"{fishName} 跑掉了" : "提竿失败");
         }
 
-        /// <summary>拿走物品界面里的东西，返回拿不下、丢在地上的物品名。</summary>
-        private static List<string> GrabAll(ItemGrabMenu grab)
+        /// <summary>拿走物品界面里的东西，返回拿不下、丢在地上的物品名；taken 不为 null 时记下拿到的每一样。</summary>
+        internal static List<string> GrabAll(ItemGrabMenu grab, List<string> taken = null)
         {
             var dropped = new List<string>();
             var items = grab.ItemsToGrabMenu?.actualInventory;
@@ -453,6 +470,7 @@ namespace BlindWhaleFarmer
                 // 先拍快照：回调（比如自动采集器的）会修改同一个列表
                 foreach (var item in items.Where(i => i != null).ToList())
                 {
+                    taken?.Add(Util.ItemLabel(item));
                     items.Remove(item);
                     var left = Player.addItemToInventory(item);
                     if (left != null)

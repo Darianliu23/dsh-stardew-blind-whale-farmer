@@ -451,7 +451,7 @@ namespace BlindWhaleFarmer
             return true;
         }
 
-        public IEnumerable<object> Build(string buildingSpec, int? x, int? y)
+        public IEnumerable<object> Build(string buildingSpec, int? x, int? y, bool force = false)
         {
             var o = new Outcome();
             foreach (var s in GoToShopkeeper("ScienceHouse", "Robin", "Carpenter", o))
@@ -535,26 +535,31 @@ namespace BlindWhaleFarmer
                     yield return ActionResult.Fail($"({x},{y}) 放不下 {bp.DisplayName}（{data.Size.X}x{data.Size.Y}，坐标是左上角；不能压到建筑、石头树木、耕地，必须在可建造区域）。不传坐标我会自动找位置");
                     yield break;
                 }
+                // 放得下但规划不好（贴着别的建筑、堵门、压田边）：说清楚，给出自动规划的位置
+                if (!force && BuildingLayoutProblem(farm, new Point(x.Value, y.Value), data.Size) is string layout)
+                {
+                    var planned = PlanBuildingSpot(farm, data, bp.Id);
+                    yield return ActionResult.Fail($"({x},{y}) 放 {bp.DisplayName} 不合适：{layout}。"
+                        + (planned is Point p ? $"建议放在 ({p.X},{p.Y})（不传坐标就用这里）" : "不传坐标我会自动找位置")
+                        + $"。{ForceHint}");
+                    yield break;
+                }
                 spot = new Point(x.Value, y.Value);
             }
             else
             {
-                // 在农舍附近由近到远找第一块放得下的地
-                var house = farm.GetMainFarmHouseEntry();
-                int w = Pathfinder.MapWidth(farm), h = Pathfinder.MapHeight(farm);
-                var candidates = new List<Point>();
-                for (int cx = 1; cx < w - data.Size.X; cx++)
-                    for (int cy = 1; cy < h - data.Size.Y; cy++)
-                        candidates.Add(new Point(cx, cy));
-                foreach (var c in candidates.OrderBy(c => Util.Manhattan(c, house)))
+                // 自动规划：同类建筑排成一排、四周留路、门口空出来、不贴着田；实在没有这种位置再退回“放得下就行”
+                spot = PlanBuildingSpot(farm, data, bp.Id);
+                if (spot == null)
                 {
-                    if (Util.Manhattan(c, house) < 6)
-                        continue; // 别堵在家门口
-                    if (CanPlace(farm, data, c))
-                    {
-                        spot = c;
-                        break;
-                    }
+                    var house = farm.GetMainFarmHouseEntry();
+                    int w = Pathfinder.MapWidth(farm), h = Pathfinder.MapHeight(farm);
+                    var candidates = new List<Point>();
+                    for (int cx = 1; cx < w - data.Size.X; cx++)
+                        for (int cy = 1; cy < h - data.Size.Y; cy++)
+                            candidates.Add(new Point(cx, cy));
+                    spot = candidates.Where(c => Util.Manhattan(c, house) >= 6).OrderBy(c => Util.Manhattan(c, house))
+                        .Select(c => (Point?)c).FirstOrDefault(c => CanPlace(farm, data, c.Value));
                 }
                 if (spot == null)
                 {

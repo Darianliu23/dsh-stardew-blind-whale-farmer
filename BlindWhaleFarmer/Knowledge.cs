@@ -238,9 +238,9 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>和 Bundle.IsValidItemForThisIngredientDescription 相同的判断（不含腌制品的风味细节，提交时以游戏判断为准）。</summary>
-        public static bool Matches(Item item, BundleIngredientDescription ing)
+        public static bool Matches(Item item, BundleIngredientDescription ing, bool ignoreStack = false)
         {
-            if (item == null || ing.completed || ing.quality > item.Quality || item.Stack < ing.stack)
+            if (item == null || ing.completed || ing.quality > item.Quality || (!ignoreStack && item.Stack < ing.stack))
                 return false;
             if (ing.preservesId != null)
                 return item is SObject o && o.preservedParentSheetIndex.Value == ing.preservesId;
