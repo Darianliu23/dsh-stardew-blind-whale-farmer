@@ -28,7 +28,7 @@
    ```bash
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
-3. **填 API Key**：打开 `游戏目录\Mods\BlindWhaleFarmer\config.json`，把 `ApiKey` 填成你的 DeepSeek Key（<https://platform.deepseek.com>）。也可以不写在文件里，改设系统环境变量 `DEEPSEEK_API_KEY`。
+3. **填 API Key**：打开 `游戏目录\Mods\BlindWhaleFarmer\config.json`（用压缩包安装的，先通过 SMAPI 启动一次游戏，这个文件会自动生成；以后更新解压覆盖也不会清掉你的设置），把 `ApiKey` 填成你的 DeepSeek Key（<https://platform.deepseek.com>）。也可以不写在文件里，改设系统环境变量 `DEEPSEEK_API_KEY`。
 
 ## 使用
 
