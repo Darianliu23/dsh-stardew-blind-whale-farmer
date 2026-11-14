@@ -574,7 +574,12 @@ namespace BlindWhaleFarmer
                 if (Loc.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 {
                     var t = Player.TilePoint;
-                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : ""));
+                    // 剧情开头会把主角临时移出地图，这时候读到的是负数坐标（马龙送剑那场是 -100,-100），
+                    // 换图一完成就报成功，等于把「人看不见的格子」当成有效位置报给 AI；等剧情走完再报真实坐标
+                    string pos = (t.X < 0 || t.Y < 0 || Game1.eventUp || Game1.CurrentEvent != null)
+                        ? "正在播放剧情，位置要等剧情结束才准（用 skip_event 或 dialogue 推进）"
+                        : $"位置 ({t.X},{t.Y})";
+                    o.Succeed($"已到达 {targetName}，{pos}" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : ""));
                     yield break;
                 }
                 // 矿洞每层都是临时地图，地图上没有出口，只能从入口梯子出去
