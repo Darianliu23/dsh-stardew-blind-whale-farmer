@@ -53,6 +53,9 @@ namespace BlindWhaleFarmer
         /// <summary>自动点掉出货结算界面、无需选择的升级界面。</summary>
         public bool AutoConfirmNightMenus { get; set; } = true;
 
+        /// <summary>钓鱼小游戏里出现宝箱时，进度够高就先去拿宝箱再回来钓鱼（传说鱼不拿）。想保“完美”钓鱼就关掉。</summary>
+        public bool FishTreasure { get; set; } = true;
+
         /// <summary>走路时顺手采集野生采集物的范围（格，含斜角）。0 = 不顺手采；1 = 只采紧挨着的；更大会离开路线几步去采再回来。最大 10。</summary>
         public int ForageRadius { get; set; } = 1;
 

@@ -23,6 +23,8 @@ namespace BlindWhaleFarmer
         public List<ToolCall> ToolCalls = new();
         public int PromptTokens;
         public int CompletionTokens;
+        /// <summary>输出到 max_tokens 被截断了（finish_reason = length）：工具调用可能没写完或者根本没写出来。</summary>
+        public bool Truncated;
     }
 
     /// <summary>OpenAI 兼容的 Chat Completions 客户端（DeepSeek 官方接口即此格式）。</summary>
@@ -103,7 +105,8 @@ namespace BlindWhaleFarmer
             {
                 Content = msg?["content"]?.GetValue<string>() ?? "",
                 PromptTokens = root?["usage"]?["prompt_tokens"]?.GetValue<int>() ?? 0,
-                CompletionTokens = root?["usage"]?["completion_tokens"]?.GetValue<int>() ?? 0
+                CompletionTokens = root?["usage"]?["completion_tokens"]?.GetValue<int>() ?? 0,
+                Truncated = root?["choices"]?[0]?["finish_reason"]?.GetValue<string>() == "length"
             };
             if (msg?["tool_calls"] is JsonArray calls)
             {

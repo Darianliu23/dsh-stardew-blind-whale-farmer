@@ -118,6 +118,14 @@ namespace BlindWhaleFarmer
             Safe(sb, () => AppendInventory(sb));
             Safe(sb, () => AppendDonationHints(sb));
 
+            // 身上穿戴了什么：鞋子、戒指、帽子不在背包里，不写出来 AI 不知道戒指位还空着
+            Safe(sb, () =>
+            {
+                sb.AppendLine();
+                sb.AppendLine("## 穿戴（背包里有更好的鞋子、戒指会自动换上）");
+                sb.AppendLine(GameActions.GearOverview());
+            });
+
             // 箱子里有什么每次都给出来，不用靠记忆（东西多时只列每个箱子里最多的几样，全部用 list_chests）
             Safe(sb, () =>
             {

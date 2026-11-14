@@ -33,6 +33,8 @@ namespace BlindWhaleFarmer
         /// <summary>Game1.paused 是不是我们打开的：MCP 客户端停下后整个游戏暂停，等玩家按键或 AI 回来。</summary>
         private bool pausedByUs;
         private bool mcpWasPlaying;
+        private bool agentWasRunning;
+        private bool agentPausePending;
 
         /// <summary>玩家按了接管键：AI 的游戏动作一律拒绝，不冻结时间、不自动暂停。再按一次交还。</summary>
         internal volatile bool PlayerInControl;
@@ -337,11 +339,14 @@ namespace BlindWhaleFarmer
 
             MainThread.Tick(ready);
             if (ready)
+            {
+                FishingAssist.ChaseTreasure = Config.FishTreasure;
                 FishingAssist.Tick(MainThread.IsBusy);
+            }
 
             // 内置 AI 玩到本次时长上限就自己停下（MCP 客户端那边靠工具的拒绝信息收尾）
             if (ready && Agent.Running && !MainThread.IsBusy && e.IsMultipleOf(60) && Session.Ended)
-                Agent.Stop("本次游玩时间到了");
+                Agent.Stop("本次游玩时间到了", onItsOwn: true);
 
             // 用 MCP 客户端玩时游戏窗口通常在后台；默认的“失去焦点时暂停”会让 Game1.Update 直接返回，人物走不动
             KeepRunningInBackground(ready && (Agent.Running || mcpPlaying || MainThread.IsBusy));
@@ -373,12 +378,23 @@ namespace BlindWhaleFarmer
         /// </summary>
         private void UpdateIdlePause(bool ready, bool mcpPlaying)
         {
-            bool stopped = mcpWasPlaying && !mcpPlaying && !Agent.Running;
+            // 内置 AI 自己停下（连续请求失败、出错、玩够时间）也算“AI 停了”；玩家按键让它停的不算，人就在电脑前
+            // 停下的那一帧手上的动作可能还在收尾（MainThread.IsBusy），所以先记着，等能暂停时再暂停
+            if (agentWasRunning && !Agent.Running && Agent.StoppedOnItsOwn)
+                agentPausePending = true;
+            agentWasRunning = Agent.Running;
+            if (Agent.Running || mcpPlaying || PlayerInControl || !ready)
+                agentPausePending = false;
+            bool agentStopped = agentPausePending;
+            bool stopped = (mcpWasPlaying && !mcpPlaying && !Agent.Running) || agentStopped;
             mcpWasPlaying = mcpPlaying;
             if (pausedByUs && (!ready || mcpPlaying || Agent.Running))
                 SetIdlePaused(false);
             else if (stopped && ready && Config.PauseWhenAiStops && !PlayerInControl && !Context.IsMultiplayer && !Game1.paused && !MainThread.IsBusy)
-                SetIdlePaused(true);
+            {
+                SetIdlePaused(true, agentStopped ? "内置 AI 停下了" : $"MCP 客户端 {Config.McpIdleSeconds} 秒没有动作");
+                agentPausePending = false;
+            }
         }
 
         /// <summary>
@@ -406,13 +422,13 @@ namespace BlindWhaleFarmer
             }
         }
 
-        private void SetIdlePaused(bool paused)
+        private void SetIdlePaused(bool paused, string why = null)
         {
             Game1.paused = paused;
             pausedByUs = paused;
             Hud.SetStatus(paused ? "AI 停下了，游戏已暂停。按任意键接手，或让 AI 继续" : "");
             if (paused)
-                Monitor.Log($"MCP 客户端 {Config.McpIdleSeconds} 秒没有动作，已暂停游戏（按任意键继续）。", LogLevel.Info);
+                Monitor.Log($"{why}，已暂停游戏（按任意键继续）。", LogLevel.Info);
         }
 
         /// <summary>

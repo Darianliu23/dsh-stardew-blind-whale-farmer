@@ -305,15 +305,15 @@ namespace BlindWhaleFarmer
             return false;
         }
 
-        /// <summary>伤害最高的近战武器；没有就用镰刀凑合。</summary>
+        /// <summary>伤害最高的近战武器，没有就返回 -1。镰刀不算：拿它打矿洞深处的怪打不动，只会一层都下不去地空转。</summary>
         private static int BestWeapon()
         {
             int best = -1, bestDmg = -1;
             for (int i = 0; i < Player.Items.Count; i++)
             {
-                if (Player.Items[i] is MeleeWeapon w)
+                if (Player.Items[i] is MeleeWeapon w && !w.isScythe())
                 {
-                    int dmg = w.isScythe() ? 0 : w.minDamage.Value + w.maxDamage.Value;
+                    int dmg = w.minDamage.Value + w.maxDamage.Value;
                     if (dmg > bestDmg)
                     {
                         best = i;
@@ -478,7 +478,9 @@ namespace BlindWhaleFarmer
             int weaponIdx = BestWeapon();
             if (weaponIdx < 0)
             {
-                o.Fail("!背包里没有武器（冒险者公会 AdventureGuild 可以买剑，进矿洞第一次也会送一把）");
+                // 箱子里有武器就说在哪个箱子，免得白跑一趟公会
+                string where = MissingForTrip("mine") is string miss && miss.Contains("武器在") ? "。" + miss : "";
+                o.Fail("!背包里没有武器（镰刀不算；冒险者公会 AdventureGuild 可以买剑，进矿洞第一次也会送一把）" + where);
                 yield break;
             }
             int start = Game1.ticks;
@@ -732,9 +734,21 @@ namespace BlindWhaleFarmer
                     before.Remove(name);
                 if (Game1.activeClickableMenu is ItemGrabMenu grab)
                 {
-                    // 背包满了：游戏已经把这件从箱子里拿出来放进拿取界面，关掉界面它就掉在脚边
-                    var dropped = grab.ItemsToGrabMenu.actualInventory.Where(i => i != null).Select(i => i.DisplayName).ToList();
-                    Game1.exitActiveMenu();
+                    // 背包满了：游戏已经把这件从箱子里拿出来放进拿取界面。宝箱里多半是独一份的装备（鞋子、武器），
+                    // 不能关掉界面让它掉在地上：好鞋直接穿上，其他的把背包里最不值钱的一格丢到脚边换它进来
+                    var reward = grab.ItemsToGrabMenu.actualInventory.Where(i => i != null).ToList();
+                    var gotList = new List<string>();
+                    var onGround = GrabAll(grab, gotList);
+                    var rewardNames = reward.Select(Util.ItemLabel).ToList();
+                    var lost = onGround.Where(rewardNames.Contains).ToList();
+                    if (lost.Count == 0)
+                    {
+                        took.AddRange(reward.Select(i => i.DisplayName));
+                        if (onGround.Count > 0)
+                            note($"背包满了，为了装下宝箱里的 {string.Join("、", rewardNames)}，把 {string.Join("、", onGround)} 丢在了脚边 ({Player.TilePoint.X},{Player.TilePoint.Y})");
+                        continue;
+                    }
+                    var dropped = lost;
                     var left = mine.objects.TryGetValue(new Vector2(tile.X, tile.Y), out var rest) && rest is Chest restChest
                         ? restChest.GetItemsForPlayer().Where(i => i != null).Select(i => i.DisplayName).ToList() : new List<string>();
                     note($"背包满了，宝箱里的 {string.Join("、", dropped)} 掉在你脚边 ({Player.TilePoint.X},{Player.TilePoint.Y}) 附近的地上：扔掉或用掉一样东西腾出位置，再走过去就会捡起来"

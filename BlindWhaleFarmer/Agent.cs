@@ -48,6 +48,10 @@ namespace BlindWhaleFarmer
         private Task loop;
         private DeepSeekClient client;
         private int consecutiveErrors;
+        /// <summary>连续几次回复里没有工具调用。</summary>
+        private int emptyTurns;
+        /// <summary>内置 AI 是自己停下的（出错、玩够时间），不是玩家按键或接管停的。模组据此决定要不要暂停游戏。</summary>
+        public volatile bool StoppedOnItsOwn;
 
         public volatile bool IsThinking;
         public string Notes = "";
@@ -75,15 +79,19 @@ namespace BlindWhaleFarmer
             client = new DeepSeekClient(mod.Config);
             cts = new CancellationTokenSource();
             consecutiveErrors = 0;
+            emptyTurns = 0;
+            StoppedOnItsOwn = false;
             mod.Hud.SetStatus("AI 已启动");
             mod.Monitor.Log("AI 已启动。", LogLevel.Info);
             loop = Task.Run(() => RunLoop(cts.Token));
         }
 
-        public void Stop(string reason)
+        /// <param name="onItsOwn">AI 自己停下的（出错、玩够时间），不是玩家让它停的。</param>
+        public void Stop(string reason, bool onItsOwn = false)
         {
             if (!Running)
                 return;
+            StoppedOnItsOwn = onItsOwn;
             cts?.Cancel();
             mod.MainThread.Cancel("AI 已停止");
             IsThinking = false;
@@ -209,7 +217,7 @@ namespace BlindWhaleFarmer
                         mod.Hud.SetStatus("调用 DeepSeek 失败：" + ex.Message);
                         if (consecutiveErrors >= 5)
                         {
-                            Stop("连续 5 次请求失败，请检查网络和 API Key");
+                            Stop("连续 5 次请求失败，请检查网络和 API Key", onItsOwn: true);
                             return;
                         }
                         await Task.Delay(5000 * consecutiveErrors, ct).ConfigureAwait(false);
@@ -231,12 +239,21 @@ namespace BlindWhaleFarmer
                         AddLog($"[{stamp}] 想法：{OneLine(thought, 200)}");
                     }
 
+                    // 输出到 max_tokens 被截断：工具调用没写出来，或者参数只写了一半。不提醒的话模型下一步照样写这么长，一直空转
+                    if (reply.Truncated)
+                        AddLog($"[{stamp}] （上一次输出太长，被截断了。这次想法只写一两句，只调用一个工具，参数写短）");
+
                     if (reply.ToolCalls.Count == 0)
                     {
-                        AddLog($"[{stamp}] （没有调用工具。提醒自己：必须调用工具才能行动）");
+                        emptyTurns++;
+                        if (!reply.Truncated)
+                            AddLog(emptyTurns >= 2
+                                ? $"[{stamp}] （已经连续 {emptyTurns} 次没有调用工具，游戏里什么都没发生。这一步必须调用一个工具来行动，光写想法不算）"
+                                : $"[{stamp}] （没有调用工具。提醒自己：必须调用工具才能行动）");
                         await Task.Delay(1000, ct).ConfigureAwait(false);
                         continue;
                     }
+                    emptyTurns = 0;
 
                     foreach (var call in reply.ToolCalls.Take(Math.Max(1, mod.Config.MaxActionsPerStep)))
                     {
@@ -264,6 +281,7 @@ namespace BlindWhaleFarmer
             {
                 mod.Monitor.Log("AI 主循环出错：" + ex, LogLevel.Error);
                 mod.Hud.SetStatus("AI 出错停止：" + ex.Message);
+                StoppedOnItsOwn = true;
             }
             finally
             {

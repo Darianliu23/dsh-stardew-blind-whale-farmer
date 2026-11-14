@@ -51,7 +51,7 @@ namespace BlindWhaleFarmer
                 j => () => a.MoveTo(Int(j, "x"), Int(j, "y")),
                 P("x", "integer", "目标 x"), P("y", "integer", "目标 y"));
 
-            Add("travel_to", "自动走到另一个地点（会自动经过多个地图、开门）。地点用英文内部名，如 Farm、FarmHouse、Town、SeedShop(皮埃尔杂货店)、Blacksmith(铁匠)、ScienceHouse(木匠)、Saloon、Beach、FishShop、Mountain、Forest、BusStop、Mine、JojaMart、ManorHouse(镇长家)、CommunityCenter。", 180,
+            Add("travel_to", "自动走到另一个地点（会自动经过多个地图、开门）。地点用英文内部名，如 Farm、FarmHouse、Town、SeedShop(皮埃尔杂货店)、Blacksmith(铁匠)、ScienceHouse(木匠)、Saloon、Beach、FishShop、Mountain、Forest、BusStop、Mine、JojaMart、ManorHouse(镇长家)、CommunityCenter、Desert(沙漠)、SkullCave(骷髅洞穴)。去沙漠会自动在巴士站买票坐巴士（500g，巴士修好后、帕姆在站台时才行），从沙漠回来也会自动坐巴士。", 300,
                 j => () => a.TravelTo(Str(j, "location"), OptBool(j, "detour") == true),
                 P("location", "string", "目标地点内部名"),
                 P("detour", "boolean", "近路被挡住时绕路走。默认不绕，会先告诉你挡在哪、绕路怎么走，让你选开路还是绕路", false));

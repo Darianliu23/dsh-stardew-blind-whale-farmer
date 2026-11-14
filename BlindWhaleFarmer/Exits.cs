@@ -14,7 +14,9 @@ namespace BlindWhaleFarmer
         /// <summary>需要对门交互（可能有营业时间）。</summary>
         Door,
         /// <summary>农场上的建筑门。</summary>
-        BuildingDoor
+        BuildingDoor,
+        /// <summary>巴士：巴士站的售票机（去沙漠，要买票）、沙漠里停着的巴士（回巴士站，免费）。</summary>
+        Bus
     }
 
     internal sealed class Exit
@@ -42,6 +44,7 @@ namespace BlindWhaleFarmer
             {
                 ExitKind.Warp => "出口",
                 ExitKind.Door => "门",
+                ExitKind.Bus => "巴士",
                 _ => "建筑门"
             };
             return $"{kind} ({Tile.X},{Tile.Y}) → {Target}{Note}";
@@ -68,7 +71,8 @@ namespace BlindWhaleFarmer
                 list.Add(new Exit { Kind = ExitKind.Warp, Tile = new Point(w.X, w.Y), Target = w.TargetName, TargetTile = new Point(w.TargetX, w.TargetY) });
             }
 
-            list.AddRange(GetTileExits(loc));
+            // 去沙漠的巴士要等金库收集包（或 Joja 的巴士项目）完成、巴士修好以后才有
+            list.AddRange(GetTileExits(loc).Where(e => e.Kind != ExitKind.Bus || e.Target != "Desert" || BusRepaired));
 
             foreach (var b in loc.buildings)
             {
@@ -108,6 +112,10 @@ namespace BlindWhaleFarmer
             return merged;
         }
 
+        /// <summary>巴士修好了没有（和游戏里售票机的判断一样，看主机收没收到 ccVault）。</summary>
+        public static bool BusRepaired =>
+            Game1.MasterPlayer.mailReceived.Contains("ccVault") || Game1.MasterPlayer.mailReceived.Contains("jojaVault");
+
         private static List<Exit> GetTileExits(GameLocation loc)
         {
             string key = loc.NameOrUniqueName;
@@ -128,10 +136,21 @@ namespace BlindWhaleFarmer
                             list.Add(e);
                     }
 
+                    // 巴士站的售票机没有 Action 属性，游戏是按图块编号 1057 认的（BusStop.checkAction）
+                    if (loc is StardewValley.Locations.BusStop && loc.getTileIndexAt(x, y, "Buildings") == 1057
+                        && Game1.getLocationFromName("Desert") != null)
+                    {
+                        list.Add(new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "Desert",
+                            Note = "（售票机，坐巴士去沙漠，车票 500g；帕姆在站台时才发车，大约 10:00-17:00）" });
+                    }
+
                     string touch = loc.doesTileHaveProperty(x, y, "TouchAction", "Back");
                     if (!string.IsNullOrEmpty(touch))
                     {
                         var parts = touch.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        // 沙漠里停着的巴士：走到车门那一格就问“是否返回星露谷”
+                        if (parts.Length >= 1 && parts[0] == "DesertBus" && Game1.getLocationFromName("BusStop") != null)
+                            list.Add(new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BusStop", IsTouch = true, Note = "（坐巴士回巴士站，免费）" });
                         if (parts.Length >= 4 && (parts[0] == "Warp" || parts[0] == "MagicWarp")
                             && Game1.getLocationFromName(parts[1]) != null
                             && int.TryParse(parts[2], out int tx) && int.TryParse(parts[3], out int ty))

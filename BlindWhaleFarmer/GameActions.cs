@@ -537,6 +537,10 @@ namespace BlindWhaleFarmer
             return null;
         }
 
+        /// <summary>平常的沙滩，或者夜市那几天顶替它的地图。</summary>
+        private static bool IsBeach(string name) =>
+            name != null && (name.Equals("Beach", StringComparison.OrdinalIgnoreCase) || name.Equals("BeachNightMarket", StringComparison.OrdinalIgnoreCase));
+
         public IEnumerable<object> TravelTo(string name, bool detour = false)
         {
             var o = new Outcome();
@@ -577,6 +581,13 @@ namespace BlindWhaleFarmer
                     o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : ""));
                     yield break;
                 }
+                // 夜市（冬 15-17）那几天，游戏把去沙滩的人送到 BeachNightMarket 这张地图，名字不是 Beach 但就是沙滩
+                if (IsBeach(Loc.Name) && IsBeach(targetName))
+                {
+                    var t = Player.TilePoint;
+                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})（夜市这几天沙滩换成了夜市地图 {Loc.Name}，就是同一个沙滩；商店 17:00 开）");
+                    yield break;
+                }
                 // 矿洞每层都是临时地图，地图上没有出口，只能从入口梯子出去
                 if (Loc is MineShaft mine)
                 {
@@ -586,7 +597,8 @@ namespace BlindWhaleFarmer
                         yield break;
                     continue;
                 }
-                var route = Exits.PlanRoute(Loc, targetName, blockedExits);
+                // 别的地图上通往沙滩的出口写的都是 Beach，所以要去夜市地图时也按 Beach 找路，到了再认
+                var route = Exits.PlanRoute(Loc, IsBeach(targetName) ? "Beach" : targetName, blockedExits);
                 if (route == null || route.Count == 0)
                 {
                     o.Fail(blockedWhy != null ? $"{blockedWhy}；试过的其他路线也走不通" : $"找不到从 {Loc.NameOrUniqueName} 到 {targetName} 的路线");
@@ -707,7 +719,45 @@ namespace BlindWhaleFarmer
                         Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
                     break;
                 }
+                case ExitKind.Bus:
+                {
+                    // 售票机 / 沙漠里的巴士：交互后问“要不要坐车”，选“是”以后人自己走上车，巴士开走再换地图
+                    if (e.IsTouch)
+                    {
+                        // 沙漠的巴士：踩到车门那格就弹出问题，走路会被这个界面打断，所以不看走路的结果，看问题出来没有
+                        foreach (var s in GoToAny(new List<Point> { e.Tile }, o, $"去 {e.Target} 的巴士"))
+                            yield return s;
+                        if (!o.Ok && Game1.activeClickableMenu is not DialogueBox { isQuestion: true })
+                            yield break;
+                        o.Succeed();
+                    }
+                    else
+                    {
+                        foreach (var s in GoAdjacent(e.Tile, o, new Point(e.Tile.X, e.Tile.Y + 1)))
+                            yield return s;
+                        if (!o.Ok)
+                            yield break;
+                        Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
+                    }
+                    foreach (var s in WaitTicks(10))
+                        yield return s;
+                    if (Game1.activeClickableMenu is DialogueBox { isQuestion: true } ask)
+                    {
+                        int yes = Array.FindIndex(ask.responses, r => r.responseKey == "Yes");
+                        if (yes < 0)
+                        {
+                            o.Fail($"坐不了去 {e.Target} 的巴士。当前界面：{observer.DescribeMenu()}");
+                            yield break;
+                        }
+                        foreach (var s in Dialogue(yes))
+                            if (s is not ActionResult)
+                                yield return s;
+                    }
+                    break;
+                }
             }
+            // 巴士要等人走上车、开出画面才换地图，比走门慢得多
+            int waitTicks = e.Kind == ExitKind.Bus ? 2400 : 600;
 
             // 联机时走进节日地图不会马上传送：游戏先等所有玩家都到（确认后才传送）
             if (Game1.activeClickableMenu is ReadyCheckDialog ready)
@@ -722,13 +772,21 @@ namespace BlindWhaleFarmer
             }
 
             // 等待场景切换完成
-            for (int i = 0; i < 600; i++)
+            for (int i = 0; i < waitTicks; i++)
             {
                 yield return null;
                 if (Game1.currentLocation != from && !Game1.isWarping && !Game1.fadeToBlack && Game1.locationRequest == null)
                 {
                     foreach (var s in WaitTicks(10))
                         yield return s;
+                    // 到站后巴士还要开进来、人下车，这段时间动不了
+                    if (e.Kind == ExitKind.Bus)
+                    {
+                        for (int w = 0; w < 900 && (!Player.CanMove || Game1.freezeControls || Player.controller != null || Game1.globalFade || Game1.fadeToBlack); w++)
+                            yield return null;
+                        foreach (var s in WaitTicks(20))
+                            yield return s;
+                    }
                     o.Succeed();
                     yield break;
                 }
@@ -736,7 +794,9 @@ namespace BlindWhaleFarmer
                 {
                     string text = db.getCurrentString();
                     db.closeDialogue();
-                    o.Fail($"进不去 {e.Target}：{text}");
+                    o.Fail(e.Kind == ExitKind.Bus
+                        ? $"坐不了去 {e.Target} 的巴士：{text}（去沙漠要 500g 车票，帕姆在巴士站台时才发车，大约 10:00-17:00）"
+                        : $"进不去 {e.Target}：{text}");
                     yield break;
                 }
                 // 门上贴的告示（比如威利的“钓鱼去也。明日归”）是信件样式的界面，不是对话框
@@ -2018,7 +2078,7 @@ namespace BlindWhaleFarmer
                 {
                     var taken = new List<string>();
                     var dropped = GrabAll(grab, taken);
-                    yield return ActionResult.Success($"拿进背包：{string.Join("、", taken)}"
+                    yield return ActionResult.Success((taken.Count > 0 ? $"拿进背包：{string.Join("、", taken)}" : "一样都没拿进背包")
                         + (dropped.Count > 0 ? $"；背包满了，{string.Join("、", dropped)} 掉在脚边（空出位置走过去能捡回来）" : ""));
                     yield break;
                 }

@@ -415,6 +415,7 @@ namespace BlindWhaleFarmer
             var deposited = new List<string>();
             var completed = new List<string>();
             var rewards = new List<string>();
+            var rewardDrops = new List<string>();
             // 有奖励待领的区域也要打开一次便条
             var areas = targets.Concat(Knowledge.Bundles().Where(b => cc.bundleRewards.TryGetValue(b.Index, out bool r) && r).Select(b => b.Area))
                 .Where(a => a >= 0 && a <= 5).Distinct().ToList();
@@ -498,7 +499,7 @@ namespace BlindWhaleFarmer
                     if (Game1.activeClickableMenu is ItemGrabMenu grab)
                     {
                         rewards.AddRange(grab.ItemsToGrabMenu.actualInventory.Where(i => i != null).Select(Util.ItemLabel));
-                        GrabAll(grab);
+                        rewardDrops.AddRange(GrabAll(grab));
                     }
                 }
 
@@ -519,6 +520,8 @@ namespace BlindWhaleFarmer
                 msg.Add("完成收集包：" + string.Join("、", completed.Distinct()));
             if (rewards.Count > 0)
                 msg.Add("领到奖励：" + string.Join("、", rewards));
+            if (rewardDrops.Count > 0)
+                msg.Add($"背包满了，{string.Join("、", rewardDrops)} 掉在脚边 ({Player.TilePoint.X},{Player.TilePoint.Y})，空出位置走过去能捡回来，今天不捡就没了");
             yield return deposited.Count > 0 || rewards.Count > 0 ? ActionResult.Success(string.Join("；", msg)) : ActionResult.Fail(string.Join("；", msg));
         }
     }

@@ -17,16 +17,60 @@ namespace BlindWhaleFarmer
         /// <summary>只有 fish 动作执行期间才接管小游戏，玩家自己钓鱼时不干预。</summary>
         public static bool Active;
 
+        /// <summary>小游戏里出现宝箱时，进度够高就去拿（config 的 FishTreasure）。</summary>
+        public static bool ChaseTreasure = true;
+
+        /// <summary>这一竿正在追宝箱（进度不够了才放弃回去追鱼）。</summary>
+        private static bool chasing;
+
+        // 鱼不在绿条里时进度每帧掉 0.003；宝箱要在绿条里待满约 75 帧（每帧 +0.0135）
+        private const float LossPerFrame = 0.003f;
+        private const float StartMargin = 0.25f; // 算上来回路程，拿完宝箱回到鱼身上时至少还剩这么多进度才出发
+        private const float KeepMargin = 0.12f;  // 追的过程中，现在掉头回到鱼身上时会剩不到这么多就放弃
+
+        /// <summary>绿条从现在的位置移到 target 大约要多少帧（加速度 0.25，先加速后减速，再留一点余量）。</summary>
+        private static float TravelFrames(float distance) => 12f + 2f * MathF.Sqrt(MathF.Abs(distance) / 0.25f);
+
+        /// <summary>这一帧绿条该对准哪里：平时对准鱼；宝箱出现后，鱼和宝箱能同时盖住就盖两个，进度够高就先去拿宝箱。</summary>
+        private static float PickTarget(BobberBar bar, float h)
+        {
+            // 绿条覆盖 [barPos-32, barPos-32+h]，鱼/宝箱占 [pos-16, pos+12]，让两者中心对齐
+            float fish = bar.bobberPosition + 30f - h / 2f;
+            if (!ChaseTreasure || !bar.treasure || bar.treasureCaught || bar.treasureAppearTimer > 0f || bar.bossFish)
+            {
+                chasing = false;
+                return fish;
+            }
+            float chest = bar.treasurePosition + 30f - h / 2f;
+            // 鱼和宝箱离得近，一条绿条能同时盖住：对准中间，不耽误钓鱼
+            if (MathF.Abs(bar.treasurePosition - bar.bobberPosition) + 28f <= h - 8f)
+            {
+                chasing = false;
+                return (fish + chest) / 2f;
+            }
+            float back = TravelFrames(chest - fish);                         // 拿完再回到鱼身上
+            float there = TravelFrames(chest - bar.bobberBarPos);            // 现在赶到宝箱
+            float stay = (1f - bar.treasureCatchLevel) / 0.0135f;            // 还要在宝箱上待多久
+            float after = bar.distanceFromCatching - LossPerFrame * (there + stay + back);
+            if (!chasing)
+                chasing = bar.distanceFromCatching >= 0.85f && after >= StartMargin;
+            else if (after < KeepMargin)
+                chasing = false; // 再追下去鱼要跑了，回去
+            return chasing ? chest : fish;
+        }
+
         public static void Tick(bool actionRunning)
         {
             // 动作被取消/超时时协程的 finally 不一定会执行，这里兜底
             if (!actionRunning)
                 Active = false;
             if (!Active || Game1.activeClickableMenu is not BobberBar bar || bar.fadeIn || bar.fadeOut)
+            {
+                chasing = false;
                 return;
-            // 绿条覆盖 [barPos-32, barPos-32+h]，鱼占 [pos-16, pos+12]，让两者中心对齐
+            }
             float h = bar.bobberBarHeight;
-            float target = bar.bobberPosition + 30f - h / 2f;
+            float target = PickTarget(bar, h);
             // 预测几帧后的位置，提前松键/按键，避免来回过冲
             // 预测帧数用离线复刻的小游戏物理调过：12 帧时普通鱼（难度≤70）几乎全中
             float predicted = bar.bobberBarPos + bar.bobberBarSpeed * 12f;
@@ -470,14 +514,21 @@ namespace BlindWhaleFarmer
                 // 先拍快照：回调（比如自动采集器的）会修改同一个列表
                 foreach (var item in items.Where(i => i != null).ToList())
                 {
-                    taken?.Add(Util.ItemLabel(item));
-                    items.Remove(item);
-                    var left = Player.addItemToInventory(item);
-                    if (left != null)
+                    string label = Util.ItemLabel(item);
+                    // 有的界面（比如节日发奖）给的是定长数组，Remove 会抛 NotSupportedException，只能把那一格置空
+                    int at = items.IndexOf(item);
+                    if (at >= 0)
                     {
-                        dropped.Add(left.DisplayName);
-                        Game1.createItemDebris(left, Player.getStandingPosition(), Player.FacingDirection);
+                        if (items.IsReadOnly || items is Item[])
+                            items[at] = null;
+                        else
+                            items.RemoveAt(at);
                     }
+                    // 背包满时不直接丢：好装备直接穿上，贵重的把最不值钱的一格换出去
+                    var onGround = AddOrMakeRoom(item);
+                    if (!onGround.Contains(item))
+                        taken?.Add(label); // 它自己掉在地上了就不算拿到
+                    dropped.AddRange(onGround.Select(Util.ItemLabel));
                     // 和手动拿走一样触发界面的回调（社区中心奖励靠它标记“已领取”）
                     grab.behaviorOnItemGrab?.Invoke(item, Player);
                 }
