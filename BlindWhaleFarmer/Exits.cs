@@ -32,6 +32,8 @@ namespace BlindWhaleFarmer
         /// <summary>LockedDoorWarp 要求的好感：比如玛鲁房间的侧门要和玛鲁 500 点（2 心）。没有要求时为 null。</summary>
         public string FriendNpc;
         public int FriendPoints;
+        /// <summary>LockedDoorWarp 的营业时间（游戏时间，比如 900、1600）；不是有营业时间的门时为 -1。</summary>
+        public int OpenTime = -1, CloseTime = -1;
 
         /// <summary>和 GameLocation.lockedDoorWarp 一样判断好感门槛（冬天这类门不限好感）。</summary>
         public bool FriendshipOk(GameLocation from) =>
@@ -112,6 +114,45 @@ namespace BlindWhaleFarmer
             return merged;
         }
 
+        /// <summary>
+        /// 这扇有营业时间的门现在进不进得去（和 GameLocation.lockedDoorWarp 的判断一样，好感门槛另算）。
+        /// 进得去返回 null；今天晚些时候会开时 opensAt 是开门时间，今天不会再开时为 -1。
+        /// </summary>
+        public static string DoorClosedReason(GameLocation from, Exit e, out int opensAt)
+        {
+            opensAt = -1;
+            if (e.Kind != ExitKind.Door || e.OpenTime < 0 || from == null)
+                return null;
+            string place = PlaceName(e.Target);
+            if (GameLocation.AreStoresClosedForFestival() && from.InValleyContext())
+                return $"今天是节日，镇上的店铺都关门，{place}进不去。今天先干别的（或者去参加节日），明天再来";
+            bool townKey = Game1.player.HasTownKey && from.InValleyContext() && (from is not StardewValley.Locations.BeachNightMarket || e.Target == "FishShop");
+            if (e.Target == "SeedShop" && Game1.shortDayNameFromDayOfSeason(Game1.dayOfMonth) == "Wed" && !Utility.HasAnyPlayerSeenEvent("191393") && !Game1.player.HasTownKey)
+                return $"{place}每周三休息（社区中心修好以后才每天开），今天进不去。种子可以去 JojaMart 买，或者明天再来";
+            if (townKey)
+                return null;
+            if (from.IsGreenRainingHere() && Game1.year == 1 && from is not StardewValley.Locations.Beach && from is not StardewValley.Locations.Forest && e.Target != "AdventureGuild")
+                return null;
+            int open = e.Target == "FishShop" && Game1.player.mailReceived.Contains("willyHours") ? 800 : e.OpenTime;
+            int now = Game1.timeOfDay;
+            if (now >= open && now < e.CloseTime)
+                return null;
+            string hours = $"营业 {Util.TimeString(open)}-{Util.TimeString(e.CloseTime)}，现在 {Util.TimeString(now)}";
+            if (now < open)
+            {
+                opensAt = open;
+                return $"{place}还没开门（{hours}）";
+            }
+            return $"{place}今天已经关门了（{hours}），明天 {Util.TimeString(open)} 以后再来";
+        }
+
+        private static string PlaceName(string name)
+        {
+            var loc = Game1.getLocationFromName(name);
+            string display = loc?.DisplayName;
+            return string.IsNullOrEmpty(display) || display == name ? name : $"{display}（{name}）";
+        }
+
         /// <summary>巴士修好了没有（和游戏里售票机的判断一样，看主机收没收到 ccVault）。</summary>
         public static bool BusRepaired =>
             Game1.MasterPlayer.mailReceived.Contains("ccVault") || Game1.MasterPlayer.mailReceived.Contains("jojaVault");
@@ -182,6 +223,11 @@ namespace BlindWhaleFarmer
                         if (p[0] == "LockedDoorWarp" && p.Length >= 6)
                             note = $"（营业 {p[4]}-{p[5]}）";
                         var exit = new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = p[3], TargetTile = new Point(tx, ty), Note = note };
+                        if (p[0] == "LockedDoorWarp" && p.Length >= 6 && int.TryParse(p[4], out int open) && int.TryParse(p[5], out int close))
+                        {
+                            exit.OpenTime = open;
+                            exit.CloseTime = close;
+                        }
                         // LockedDoorWarp x y 地点 开门 关门 [NPC 好感点数]
                         if (p[0] == "LockedDoorWarp" && p.Length >= 8 && int.TryParse(p[7], out int points) && points > 0)
                         {

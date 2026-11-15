@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xna.Framework;
@@ -90,6 +91,91 @@ namespace BlindWhaleFarmer
                 o.Fail($"({p.X},{p.Y}) 的{name}打了 {maxHits} 下还没清掉");
             else
                 o.Succeed();
+        }
+
+        /// <summary>
+        /// 把当前地图上（或身边 radius 格内）的野生采集物挨个走过去采了：从最近的开始，一次最多 max 样。
+        /// 和手动按交互键一样（算采集经验和品质）；任务专用的、有村民站着的、背包装不下的跳过。
+        /// </summary>
+        public IEnumerable<object> Forage(int? radius, int max)
+        {
+            var loc = Loc;
+            if (Game1.CurrentEvent != null)
+            {
+                yield return ActionResult.Fail("正在剧情或节日里，不能采集");
+                yield break;
+            }
+            max = Math.Clamp(max, 1, 60);
+            int r = radius is > 0 ? radius.Value : 0;
+            var start = Player.TilePoint;
+            bool InRange(Point p) => r == 0 || Math.Max(Math.Abs(p.X - start.X), Math.Abs(p.Y - start.Y)) <= r;
+
+            var picked = new List<string>();
+            var tried = new HashSet<Point>();
+            var noRoom = new List<string>();
+            var o = new Outcome();
+            pickingForage = true;
+            try
+            {
+                while (picked.Count < max)
+                {
+                    var me = Player.TilePoint;
+                    var next = loc.objects.Pairs
+                        .Select(kv => (p: new Point((int)kv.Key.X, (int)kv.Key.Y), obj: kv.Value))
+                        .Where(t => t.obj.IsSpawnedObject && t.obj.isForage() && !t.obj.questItem.Value && !tried.Contains(t.p) && InRange(t.p))
+                        .OrderBy(t => Util.Manhattan(t.p, me))
+                        .FirstOrDefault();
+                    if (next.obj == null)
+                        break;
+                    tried.Add(next.p);
+                    if (!Player.couldInventoryAcceptThisItem(next.obj))
+                    {
+                        noRoom.Add(next.obj.DisplayName);
+                        continue;
+                    }
+                    if (!PickableForage(loc, next.p))
+                        continue;
+                    foreach (var s in GoAdjacent(next.p, o))
+                        yield return s;
+                    if (Loc != loc || Game1.activeClickableMenu != null)
+                        break;
+                    if (!o.Ok)
+                    {
+                        o.Succeed();
+                        continue;
+                    }
+                    if (!PickableForage(loc, next.p))
+                        continue;
+                    string name = next.obj.DisplayName;
+                    Player.Halt();
+                    Face(next.p);
+                    loc.checkAction(new xLocation(next.p.X, next.p.Y), Game1.viewport, Player);
+                    foreach (var s in WaitPlayerFree(60))
+                        yield return s;
+                    if (!loc.objects.ContainsKey(new Vector2(next.p.X, next.p.Y)))
+                        picked.Add(name);
+                    if (Game1.activeClickableMenu != null || Loc != loc)
+                        break;
+                }
+            }
+            finally
+            {
+                pickingForage = false;
+            }
+
+            string where = r == 0 ? $" {loc.NameOrUniqueName} 这张地图上" : $"身边 {r} 格内";
+            string free = $"背包空位 {Player.freeSpotsInInventory()} 个";
+            string full = noRoom.Count > 0 ? $"；背包装不下，没采：{string.Join("、", noRoom.Distinct())}" : "";
+            if (picked.Count == 0)
+            {
+                yield return noRoom.Count > 0
+                    ? ActionResult.Fail($"{where}的采集品都装不下了{full}。先腾背包（tidy_backpack / store_items）")
+                    : ActionResult.Success($"{where}没有能采的采集品了。{free}");
+                yield break;
+            }
+            string list = string.Join("、", picked.GroupBy(n => n).Select(g => g.Count() > 1 ? $"{g.Key}×{g.Count()}" : g.Key));
+            string more = picked.Count >= max ? $"（到了一次最多 {max} 样，可能还有，再 forage 一次）" : "";
+            yield return ActionResult.Success($"在{where}采了 {picked.Count} 样：{list}{more}{full}。{free}");
         }
 
         /// <summary>路上顺手采到的东西，下一次工具返回时报告给 AI 后清空。</summary>

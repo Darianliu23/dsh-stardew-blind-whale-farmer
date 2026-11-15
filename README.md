@@ -132,13 +132,13 @@ SMAPI 控制台命令（调试用）：
 - 背包里能捐给博物馆的东西、能交给社区中心收集包的材料
 - 附近能不能钓鱼；矿洞层数、下楼梯/竖井/电梯/出口的坐标
 
-## AI 能做什么（53 个工具）
+## AI 能做什么（54 个工具）
 
 | 类别 | 工具 |
 |---|---|
 | 移动 | `move_to`（A* 寻路）、`travel_to`（跨地图自动规划路线，会自动开门） |
 | 单个操作 | `use_tool`、`interact`（聊天/开门/捡东西/收机器/送礼）、`place_item`、`eat` |
-| 批量农活 | `till_area`、`plant_seeds`、`water_crops`（水壶空了自动去灌水）、`harvest_crops`、`clear_area` |
+| 批量农活 | `till_area`、`plant_seeds`、`water_crops`（水壶空了自动去灌水）、`harvest_crops`、`clear_area`（不给坐标就清自己周围）、`forage`（把地图上的野生采集物挨个采了） |
 | 钓鱼 | `fish`（自动找岸边、按钓鱼等级算抛竿力度、等咬钩、提竿、自动玩钓鱼小游戏、收宝箱，一次最多连钓 20 竿） |
 | 动物 | `care_animals`（自动进每个鸡舍/畜棚：捡蛋和羊毛、清空自动采集器、食槽放干草、摸动物、挤奶/剪毛；可开关动物门） |
 | 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托） |
@@ -150,7 +150,7 @@ SMAPI 控制台命令（调试用）：
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
 | 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
 | 界面 | `dialogue`、`menu_click`、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
-| 时间 | `sleep`（自动回家上床）、`wait` |
+| 时间 | `sleep`（自动回家上床）、`wait`（一次最多两小时） |
 | 记忆 | `update_notes` |
 
 工具执行都走游戏自己的逻辑（`BeginUsingTool`、`checkAction`、`tryToPlaceItem`、出货箱 `shipItem` 等），体力消耗、动画、掉落都和手动操作一致；走路是逐格移动并播放走路动画。

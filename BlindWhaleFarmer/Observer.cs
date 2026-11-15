@@ -356,7 +356,7 @@ namespace BlindWhaleFarmer
             }
             foreach (var p in parts)
                 sb.AppendLine(p);
-            sb.AppendLine($"空位：{empty} 个");
+            sb.AppendLine($"背包空位：{empty} 个（共 {Game1.player.MaxItems} 格）");
         }
 
         /// <summary>
@@ -560,7 +560,7 @@ namespace BlindWhaleFarmer
                 if (o.QualifiedItemId == "(O)590" || o.QualifiedItemId == "(O)SeedSpot")
                     return ('?', o.DisplayName, "锄头");
                 if (o.IsSpawnedObject || o.isForage())
-                    return ('*', o.DisplayName, "interact 捡起");
+                    return ('*', o.DisplayName, "forage 一次采完，或 interact 捡这一个");
                 if (o is CrabPot pot)
                 {
                     if (pot.readyForHarvest.Value && pot.heldObject.Value != null)

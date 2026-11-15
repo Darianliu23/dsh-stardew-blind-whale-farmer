@@ -18,15 +18,65 @@ namespace BlindWhaleFarmer
     /// <summary>镇上的服务：工具升级（Clint）、告示板任务、买动物（Marnie）、建造和升级房子（Robin）。</summary>
     internal sealed partial class GameActions
     {
+        /// <summary>店主在柜台的时间：开门、关门（游戏时间）和休息日（星期几的英文缩写）。</summary>
+        private static readonly Dictionary<string, (int open, int close, string[] daysOff, string name)> ShopHours = new()
+        {
+            ["Clint"] = (900, 1600, Array.Empty<string>(), "Clint 的铁匠铺"),
+            ["Marnie"] = (900, 1600, new[] { "Mon", "Tue" }, "Marnie 的牧场"),
+            ["Robin"] = (900, 1700, new[] { "Tue" }, "Robin 的木匠铺"),
+        };
+
+        private static readonly Dictionary<string, string> DayNames = new()
+        {
+            ["Mon"] = "周一", ["Tue"] = "周二", ["Wed"] = "周三", ["Thu"] = "周四", ["Fri"] = "周五", ["Sat"] = "周六", ["Sun"] = "周日"
+        };
+
+        /// <summary>出发前判断店主今天、现在会不会在柜台：不在就返回原因（没把握的情况返回 null，到了再看）。</summary>
+        private static string ShopkeeperAway(string npc)
+        {
+            if (!ShopHours.TryGetValue(npc, out var h))
+                return null;
+            if (GameLocation.AreStoresClosedForFestival())
+                return $"今天是节日，镇上的店铺都关门，{h.name}今天不营业。先干别的（或者去参加节日），明天再来";
+            string day = Game1.shortDayNameFromDayOfSeason(Game1.dayOfMonth);
+            if (h.daysOff.Contains(day))
+                return $"{h.name}{string.Join("、", h.daysOff.Select(d => DayNames[d]))}休息，今天是{DayNames[day]}，去了也没人。明天再来";
+            int now = Game1.timeOfDay;
+            string hours = $"营业 {Util.TimeString(h.open)}-{Util.TimeString(h.close)}，现在 {Util.TimeString(now)}";
+            if (now >= h.close)
+                return $"{h.name}今天已经下班了（{hours}），明天再来";
+            if (now < h.open && Utility.CalculateMinutesBetweenTimes(now, h.open) > DoorWaitMinutes)
+                return $"{h.name}还没开门（{hours}），没有出发。先干别的，{Util.TimeString(h.open)} 前后再来（路上也要花时间，可以提前一小时出发）";
+            return null;
+        }
+
         /// <summary>去某个店并确认店主在场。</summary>
         private IEnumerable<object> GoToShopkeeper(string location, string npc, string counterAction, Outcome o)
         {
+            // 先看今天、现在店主在不在柜台，免得走过去才发现白跑
+            if (!Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase) && ShopkeeperAway(npc) is string away)
+            {
+                o.Fail(away);
+                yield break;
+            }
             if (!Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase))
             {
                 foreach (var s in TravelInner(location, o))
                     yield return s;
                 if (!o.Ok)
                     yield break;
+            }
+            // 提前到了：店主快上班了就在店里等一会儿（最多等到开门后半小时）
+            if (!Loc.characters.Any(c => c.Name == npc) && ShopHours.TryGetValue(npc, out var hours)
+                && Game1.timeOfDay < hours.open && Utility.CalculateMinutesBetweenTimes(Game1.timeOfDay, hours.open) <= DoorWaitMinutes)
+            {
+                int giveUp = Utility.ModifyTime(hours.open, 30);
+                for (int t = 0; t < 60 * 600 && Game1.timeOfDay < giveUp && !Loc.characters.Any(c => c.Name == npc); t++)
+                {
+                    if ((Game1.eventUp && Game1.CurrentEvent != null) || Game1.activeClickableMenu != null)
+                        break;
+                    yield return null;
+                }
             }
             if (!Loc.characters.Any(c => c.Name == npc))
             {
@@ -232,6 +282,27 @@ namespace BlindWhaleFarmer
             }
             var stock = shop.itemPriceAndStock[offer];
             string cost = $"{stock.Price}g + {stock.TradeItemCount ?? 1}个{Util.ObjectName(stock.TradeItem)}";
+            // 钱或矿锭不够：直接算出差多少，别让 AI 自己去猜
+            var gaps = new List<string>();
+            if (Player.Money < stock.Price)
+                gaps.Add($"钱差 {stock.Price - Player.Money}g（要 {stock.Price}g，你身上 {Player.Money}g）");
+            if (stock.TradeItem != null)
+            {
+                string q = ItemRegistry.QualifyItemId(stock.TradeItem) ?? stock.TradeItem;
+                int need = stock.TradeItemCount ?? 1;
+                int have = Player.Items.Where(i => i != null && i.QualifiedItemId == q).Sum(i => i.Stack);
+                if (have < need)
+                {
+                    string bar = Util.ObjectName(stock.TradeItem);
+                    gaps.Add($"材料差 {need - have} 个{bar}（要 {need} 个，背包里有 {have} 个；可以先 list_chests item={bar} 看看箱子里有没有，矿石放进熔炉加煤炭能炼成锭）");
+                }
+            }
+            if (gaps.Count > 0)
+            {
+                shop.exitThisMenu(false);
+                yield return ActionResult.Fail($"升级 {current.DisplayName} → {offer.DisplayName} 需要 {cost}，现在还不够：{string.Join("；", gaps)}");
+                yield break;
+            }
             ActionResult buy = null;
             foreach (var s in Buy(shop.forSale.Where(x => shop.itemPriceAndStock.ContainsKey(x)).ToList().IndexOf(offer).ToString(), 1))
             {

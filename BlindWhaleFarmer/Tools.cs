@@ -93,12 +93,18 @@ namespace BlindWhaleFarmer
                 j => () => a.HarvestCrops(OptInt(j, "max") ?? 300),
                 P("max", "integer", "最多收几株", false));
 
-            Add("clear_area", "清理一个矩形区域里的杂物：石头用镐、杂草和草用镰刀、树枝/树苗/树桩用斧头、远古斑点用锄头。默认不砍大树。一次最多60处。", 400,
-                j => () => a.ClearArea(Int(j, "x1"), Int(j, "y1"), Int(j, "x2"), Int(j, "y2"), OptBool(j, "include_trees") ?? false),
-                P("x1", "integer", "左上 x"), P("y1", "integer", "左上 y"), P("x2", "integer", "右下 x"), P("y2", "integer", "右下 y"),
+            Add("clear_area", "清理一个矩形区域里的杂物：石头用镐、杂草和草用镰刀、树枝/树苗/树桩用斧头、远古斑点用锄头。默认不砍大树。一次最多60处。不给坐标就清你周围（左右上下各 radius 格，默认 4）。", 400,
+                j => () => a.ClearArea(OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "radius"), OptBool(j, "include_trees") ?? false),
+                P("x1", "integer", "左上 x（四个坐标都不给就清周围）", false), P("y1", "integer", "左上 y", false), P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false),
+                P("radius", "integer", "不给坐标时清周围几格（1~8），默认 4", false),
                 P("include_trees", "boolean", "是否也砍大树（很耗体力）", false));
 
-            Add("ship_items", "把物品放进农场的出货箱（每晚自动结算成钱）。不在农场会自动走回农场。任务、特别订单、收集包要交的东西会拒绝（背包里标了【留着】）。", 180,
+            Add("forage", "采集：把当前地图上的野生采集物（地图上的 *，季节野菜、贝壳、蘑菇、海草……）从最近的开始挨个走过去采了。不传 radius 就采整张地图，传了只采身边几格。背包装不下的跳过。", 300,
+                j => () => a.Forage(OptInt(j, "radius"), OptInt(j, "max") ?? 30),
+                P("radius", "integer", "只采身边几格以内的（可省略=整张地图）", false),
+                P("max", "integer", "最多采几样（1~60），默认 30", false));
+
+            Add("ship_items","把物品放进农场的出货箱（每晚自动结算成钱）。不在农场会自动走回农场。任务、特别订单、收集包要交的东西会拒绝（背包里标了【留着】）。", 180,
                 j => () => a.ShipItems(Str(j, "item"), OptInt(j, "count"), OptBool(j, "force") ?? false),
                 P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false),
                 P("force", "boolean", "要交的东西也照样出货（一般不要用）", false));
@@ -254,7 +260,7 @@ namespace BlindWhaleFarmer
             Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。", 420,
                 j => () => a.Sleep());
 
-            Add("wait", "原地等待若干游戏分钟（10~600），比如等商店开门。", 900,
+            Add("wait", "原地等待若干游戏分钟（10~120，一次最多两小时，要等更久就分几次），比如等商店开门。", 300,
                 j => () => a.Wait(OptInt(j, "minutes") ?? 60),
                 P("minutes", "integer", "游戏内分钟数"));
 
@@ -341,6 +347,9 @@ namespace BlindWhaleFarmer
             try
             {
                 var args = string.IsNullOrWhiteSpace(arguments) ? new JsonObject() : JsonNode.Parse(arguments) as JsonObject ?? new JsonObject();
+                string argProblem = NormalizeArgs(spec, args);
+                if (argProblem != null)
+                    return "失败：" + argProblem;
                 foreach (var step in spec.Make(args)())
                     if (step is ActionResult result)
                         return result.Message;
@@ -382,6 +391,10 @@ namespace BlindWhaleFarmer
 
             if (!specs.TryGetValue(name, out var spec))
                 return $"失败：没有叫 {name} 的工具";
+
+            string argProblem = NormalizeArgs(spec, args);
+            if (argProblem != null)
+                return "失败：" + argProblem;
 
             Func<IEnumerable<object>> factory;
             try
@@ -440,6 +453,45 @@ namespace BlindWhaleFarmer
                 // 世界未就绪等情况下不提醒
             }
             return warning == null ? result : result + "\n" + warning;
+        }
+
+        /// <summary>模型常顺手带上的说明性字段，不算参数，直接去掉。</summary>
+        private static readonly HashSet<string> CommentKeys = new(StringComparer.OrdinalIgnoreCase) { "thought", "thoughts", "reason", "reasoning", "why", "note", "comment" };
+
+        private static string CanonKey(string key) => new string(key.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+        /// <summary>
+        /// 参数名对不上时不能静默忽略（比如 startLevel 被当成没传，人就从第 1 层开始爬）：
+        /// 只是大小写、驼峰、下划线、连字符不同的，改成正确的名字；真不认识的报错，并列出这个工具的参数。
+        /// </summary>
+        private static string NormalizeArgs(Spec spec, JsonObject args)
+        {
+            var known = spec.Params.Select(p => p.Name).ToHashSet();
+            var unknown = new List<string>();
+            foreach (var key in args.Select(kv => kv.Key).ToList())
+            {
+                if (known.Contains(key))
+                    continue;
+                if (CommentKeys.Contains(key))
+                {
+                    args.Remove(key);
+                    continue;
+                }
+                var match = spec.Params.FirstOrDefault(p => CanonKey(p.Name) == CanonKey(key));
+                if (match != null && !args.ContainsKey(match.Name))
+                {
+                    var value = args[key];
+                    args.Remove(key);
+                    args[match.Name] = value;
+                    continue;
+                }
+                unknown.Add(key);
+            }
+            if (unknown.Count == 0)
+                return null;
+            string list = spec.Params.Length == 0 ? "这个工具不用传参数"
+                : "这个工具的参数有：" + string.Join("、", spec.Params.Select(p => p.Name + (p.Required ? "（必填）" : "")));
+            return $"{spec.Name} 不认识参数 {string.Join("、", unknown)}，所以什么都没做。{list}。改好参数名再调用一次";
         }
 
         // ── 参数解析：模型有时会把数字写成字符串，这里都兼容 ──

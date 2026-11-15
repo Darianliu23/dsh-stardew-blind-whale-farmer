@@ -598,6 +598,7 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             string targetName = target.NameOrUniqueName;
+            doorWaitNote = null;
             // 地图上被石头、树挡住的出口：这次不走了，换一条路线（比如农场南门堵了就经过小镇去森林）
             var blockedExits = new HashSet<string>();
             string blockedWhy = null;
@@ -616,7 +617,7 @@ namespace BlindWhaleFarmer
                 if (Loc.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 {
                     var t = Player.TilePoint;
-                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : ""));
+                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : "") + doorWaitNote);
                     yield break;
                 }
                 // 夜市（冬 15-17）那几天，游戏把去沙滩的人送到 BeachNightMarket 这张地图，名字不是 Beach 但就是沙滩
@@ -651,6 +652,13 @@ namespace BlindWhaleFarmer
                         + $"不参加的话这条路线要经过 {fest.Location}，请等到 {Util.TimeString(fest.End)} 以后再去，或者先做不经过 {fest.Location} 的事");
                     yield break;
                 }
+                // 路线上有营业时间的门（铁匠铺、杂货店……）现在进不去就先别走：到了门口才发现关着是白跑一趟。
+                // 快开门（两小时内）的照样出发，路上要花时间，到门口还没开就等一会儿（见 TakeExit）
+                if (RouteDoorClosed(route) is string closed)
+                {
+                    o.Fail(closed);
+                    yield break;
+                }
                 string exitFrom = Loc.NameOrUniqueName;
                 foreach (var s in TakeExit(route[0], o))
                     yield return s;
@@ -674,6 +682,34 @@ namespace BlindWhaleFarmer
                     yield break;
             }
             o.Fail("路线太长，没有走到");
+        }
+
+        /// <summary>这次 travel 在门口等开门花的时间，接在“已到达”后面。</summary>
+        private string doorWaitNote;
+
+        /// <summary>到门口最多等多久开门（游戏分钟）；离开门还更久就不出发。</summary>
+        private const int DoorWaitMinutes = 120;
+
+        /// <summary>路线上哪扇门今天进不去、或者还要很久才开：返回说明；都能进（或快开了）返回 null。</summary>
+        private string RouteDoorClosed(List<Exit> route)
+        {
+            var from = Loc;
+            foreach (var e in route)
+            {
+                string why = Exits.DoorClosedReason(from, e, out int opensAt);
+                if (why != null)
+                {
+                    if (opensAt < 0)
+                        return why + "。没有出发";
+                    int minutes = Utility.CalculateMinutesBetweenTimes(Game1.timeOfDay, opensAt);
+                    if (minutes > DoorWaitMinutes)
+                        return $"{why}，还要 {minutes} 分钟才开，没有出发。先干别的，{Util.TimeString(opensAt)} 前后再来（路上也要花时间，可以提前一小时出发）";
+                }
+                from = Game1.getLocationFromName(e.Target);
+                if (from == null)
+                    break;
+            }
+            return null;
         }
 
         /// <summary>走到这一层的入口梯子，选“离开矿井”（回到矿洞入口或骷髅洞穴入口）。</summary>
@@ -744,6 +780,27 @@ namespace BlindWhaleFarmer
                         yield return s;
                     if (!o.Ok)
                         yield break;
+                    // 到门口还没开门、但快开了：在门口等着，开门就进
+                    if (Exits.DoorClosedReason(Loc, e, out int opensAt) is string closed)
+                    {
+                        int minutes = opensAt < 0 ? -1 : Utility.CalculateMinutesBetweenTimes(Game1.timeOfDay, opensAt);
+                        if (minutes < 0 || minutes > DoorWaitMinutes)
+                        {
+                            o.Fail(closed);
+                            yield break;
+                        }
+                        int startTime = Game1.timeOfDay;
+                        for (int t = 0; t < 60 * 600 && Game1.timeOfDay < opensAt; t++)
+                        {
+                            if ((Game1.eventUp && Game1.CurrentEvent != null) || Game1.activeClickableMenu != null)
+                            {
+                                o.Fail($"在 {e.Target} 门口等开门时被打断了（现在 {Util.TimeString(Game1.timeOfDay)}，{Util.TimeString(opensAt)} 开门）：出现了剧情或界面，先处理它");
+                                yield break;
+                            }
+                            yield return null;
+                        }
+                        doorWaitNote = $"（到门口还没开门，等了 {Utility.CalculateMinutesBetweenTimes(startTime, Game1.timeOfDay)} 分钟）";
+                    }
                     Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
                     break;
                 }
@@ -1596,6 +1653,25 @@ namespace BlindWhaleFarmer
             var stranded = skip.Where(d => loc.debris.Contains(d) && CanAccept(d)).Select(DebrisName).Distinct().ToList();
             if (stranded.Count > 0)
                 notes.Add($"{string.Join("、", stranded)} 走不过去，没捡到");
+        }
+
+        /// <summary>不给坐标时清自己周围（左右上下各 radius 格）；坐标只给了一半算参数错误。</summary>
+        public IEnumerable<object> ClearArea(int? x1, int? y1, int? x2, int? y2, int? radius, bool includeTrees)
+        {
+            int given = new[] { x1, y1, x2, y2 }.Count(v => v.HasValue);
+            if (given != 0 && given != 4)
+            {
+                yield return ActionResult.Fail("clear_area 的 x1、y1、x2、y2 要么四个都给，要么都不给（不给就清你周围）");
+                yield break;
+            }
+            if (given == 0)
+            {
+                int r = Math.Clamp(radius ?? 4, 1, 8);
+                var me = Player.TilePoint;
+                x1 = me.X - r; y1 = me.Y - r; x2 = me.X + r; y2 = me.Y + r;
+            }
+            foreach (var s in ClearArea(x1.Value, y1.Value, x2.Value, y2.Value, includeTrees))
+                yield return s;
         }
 
         public IEnumerable<object> ClearArea(int x1, int y1, int x2, int y2, bool includeTrees)
@@ -2452,7 +2528,10 @@ namespace BlindWhaleFarmer
 
         public IEnumerable<object> Wait(int minutes)
         {
-            minutes = Math.Clamp(minutes, 10, 600);
+            // 一次最多等两小时：等太久中途发生什么都看不到，剩下的再 wait 一次
+            int asked = minutes;
+            minutes = Math.Clamp(minutes, 10, MaxWaitMinutes);
+            string rest = asked > MaxWaitMinutes ? $"（一次最多等 {MaxWaitMinutes} 分钟；你要等 {asked} 分钟，还差 {asked - MaxWaitMinutes} 分钟，需要的话再 wait 一次）" : "";
             int start = Game1.timeOfDay;
             int startMin = start / 100 * 60 + start % 100;
             int targetMin = startMin + minutes;
@@ -2471,8 +2550,10 @@ namespace BlindWhaleFarmer
                 }
                 yield return null;
             }
-            yield return ActionResult.Success($"等待结束，现在是 {Util.TimeString(Game1.timeOfDay)}");
+            yield return ActionResult.Success($"等待结束，现在是 {Util.TimeString(Game1.timeOfDay)}{rest}");
         }
+
+        private const int MaxWaitMinutes = 120;
 
         // ───────────────────────── 剧情标记卡住 ─────────────────────────
 

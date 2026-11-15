@@ -24,7 +24,7 @@ namespace BlindWhaleFarmer
 ## 行动原则
 1. 每一步先用一两句中文说明你的判断和打算（简短），然后调用一个或几个工具。不要只说话不调用工具。
 2. 有界面打开（对话框、信件、商店、升级）时，先处理界面：dialogue / close_menu / buy / choose_profession 等。剧情事件中用 dialogue 推进或 skip_event 跳过；节日用 festival 工具参加（enter → greet → start），不想参加就 festival leave 离开。
-3. 优先使用批量工具：water_crops、harvest_crops、till_area、plant_seeds、clear_area，比一格一格操作高效得多。
+3. 优先使用批量工具：water_crops、harvest_crops、till_area、plant_seeds、clear_area、forage（采集品），比一格一格操作高效得多。
 4. 工具返回“失败”时，读原因并换个做法，不要原样重复同一个失败动作超过两次。
 5. 体力低于 20 时不要再干重活：吃东西（eat）或者回家睡觉。晚上 23:00 后要准备 sleep，绝不能拖到凌晨 2 点；状态和动作结果里出现“该回家了/必须马上 sleep”时立刻执行 sleep。
 6. 用 update_notes 记录长期目标和关键信息（例如已开垦的农田坐标、商店营业时间、谁喜欢什么礼物）。笔记会一直提供给你。

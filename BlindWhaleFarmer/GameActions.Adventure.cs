@@ -939,6 +939,18 @@ namespace BlindWhaleFarmer
             }
             else if (Loc is not MineShaft)
             {
+                int target = startLevel ?? 1;
+                // 电梯层：5 的倍数、到过的，最多到 120（再往下是骷髅洞穴的层数）。出发前就检查，别走到矿洞门口才说
+                int topElevator = Math.Min(MineShaft.lowestLevelReached, 120) / 5 * 5;
+                if (target > 1 && (target % 5 != 0 || target > topElevator))
+                {
+                    string floors = topElevator < 5 ? "你还没解锁电梯（下到第 5 层才有），只能从第 1 层开始（不传 start_level）"
+                        : $"你现在能按：{string.Join("、", Enumerable.Range(1, topElevator / 5).Select(i => i * 5))}";
+                    int suggest = Math.Min(target, topElevator) / 5 * 5;
+                    yield return ActionResult.Fail($"电梯到不了第 {target} 层：电梯只能到 5 的倍数层，而且要到过（你最深到过第 {MineShaft.lowestLevelReached} 层）。{floors}"
+                        + (suggest >= 5 ? $"。离你想去的最近的是 start_level={suggest}" : "") + "。没有出发");
+                    yield break;
+                }
                 if (!Loc.Name.Equals("Mine", StringComparison.OrdinalIgnoreCase))
                 {
                     foreach (var s in TravelInner("Mine", o))
@@ -948,12 +960,6 @@ namespace BlindWhaleFarmer
                         yield return ActionResult.Fail("去矿洞入口失败（春季第5天后才开放）：" + o.Message);
                         yield break;
                     }
-                }
-                int target = startLevel ?? 1;
-                if (target > 1 && (target % 5 != 0 || target > MineShaft.lowestLevelReached))
-                {
-                    yield return ActionResult.Fail($"电梯只能到 5 的倍数层，而且要到过（你最深到过第 {MineShaft.lowestLevelReached} 层）");
-                    yield break;
                 }
                 var entry = FindTileAction(Loc, target > 1 ? "MineElevator" : "Mine");
                 if (entry.HasValue)
