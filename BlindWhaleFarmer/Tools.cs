@@ -28,7 +28,7 @@ namespace BlindWhaleFarmer
 
         /// <summary>背包满了时附在结果后面的处理顺序：先存，后出货，别急着卖。</summary>
         private const string BagFullAdvice =
-            "背包满了的处理顺序：① 用 tidy_backpack 一键整理（低级鱼竿、多余武器、矿石、鱼等存进农场箱子），或者 store_items 存指定的东西；"
+            "背包满了的处理顺序（①②③ 都要回农场，做完人就在 Farm，不在原来的地方了）：① 用 tidy_backpack 一键整理（低级鱼竿、多余武器、矿石、鱼等存进农场箱子），或者 store_items 存指定的东西；"
             + "② 没箱子就 craft Chest（50 木材）、place_item 放在农场再存；③ 今天就要换钱的作物放进出货箱 ship_items；"
             + "④ 不要为了腾地方马上 sell 掉，尤其是收集包材料和等钓鱼 5 级再卖更值钱的鱼；"
             + "在矿洞里回不去箱子时：先 eat 吃掉食物，再用 trash_item 扔最不值钱的（泥土、石头、杂物），别让矿石宝石留在地上";
@@ -67,7 +67,7 @@ namespace BlindWhaleFarmer
                 P("npc", "string", "村民名字（英文或中文），与 x,y 二选一", false),
                 P("item", "string", "交互时手里拿的物品（名称或背包序号），用于送礼/放材料", false));
 
-            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。", 60,
+            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。", 60,
                 j => () => a.PlaceItem(Str(j, "item"), Int(j, "x"), Int(j, "y"), OptBool(j, "force") ?? false),
                 P("item", "string", "物品名称或背包序号"), P("x", "integer", "x"), P("y", "integer", "y"),
                 P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false));
@@ -217,10 +217,11 @@ namespace BlindWhaleFarmer
                 P("radius", "integer", "多远以内的怪（格），默认 12", false),
                 P("min_health_percent", "integer", "生命低于百分之多少就吃东西，默认 40", false));
 
-            Add("explore_mine", "自动下矿洞：打附近的怪、用镐敲石头找楼梯、下楼，下够 levels 层或体力/生命/时间不够时停下。在矿洞外会先去矿洞入口；start_level 可用电梯直达（5 的倍数且到过）。出发前带上武器、镐子和回血食物。", 900,
-                j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level")),
+            Add("explore_mine", "自动下矿洞：打附近的怪、用镐敲石头找楼梯、下楼，下够 levels 层或体力/生命/时间不够时停下。在矿洞外会先去矿洞入口；start_level 可用电梯直达（5 的倍数且到过）。出发前带上武器、镐子和回血食物。where=skull 去沙漠的骷髅洞穴（要有骷髅钥匙，会自己坐巴士过去；没有电梯，每次从第 1 层开始；遇到竖井、血量充足就跳，一次连降几层）。", 900,
+                j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level"), OptStr(j, "where")),
                 P("levels", "integer", "这次往下走几层（1~20），默认 3", false),
-                P("start_level", "integer", "从哪层开始（电梯层，可省略）", false));
+                P("start_level", "integer", "从哪层开始（电梯层，可省略；骷髅洞穴没有电梯）", false),
+                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴。人已经在沙漠或骷髅洞穴入口时默认是 skull", false));
 
             Add("upgrade_tool", "找铁匠 Clint（Blacksmith）升级工具（花钱+矿锭，2 天后取，期间工具不能用），或者领取已经升级好的工具（tool 可省略）。建议在下雨天升级水壶。", 240,
                 j => () => a.UpgradeTool(OptStr(j, "tool")),
@@ -392,6 +393,17 @@ namespace BlindWhaleFarmer
                 return "失败：参数错误：" + ex.Message;
             }
             // 打怪类动作本来就会挨打；其他动作被怪打了要停下，让 AI 先清怪
+            // 记下动作开始时在哪张地图：出货、整理背包、存东西这些动作会自己走去别的地方，做完人就不在原地了
+            string locBefore = null;
+            try
+            {
+                if (StardewModdingAPI.Context.IsWorldReady)
+                    locBefore = await main.Invoke(() => StardewValley.Game1.currentLocation?.NameOrUniqueName).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 拿不到就不提醒
+            }
             bool interruptOnDamage = !CombatTools.Contains(name) && !InterfaceTools.Contains(name);
             string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name, !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name)).ConfigureAwait(false);
             if (name == "sleep")
@@ -408,10 +420,18 @@ namespace BlindWhaleFarmer
                     warning = await main.Invoke(() =>
                     {
                         var equipped = GameActions.AutoEquip();
+                        // 动作把人带到了别的地图（比如在海边 ship_items，会走回农场的出货箱）：明说现在在哪，免得 AI 以为还在原地
+                        string locNow = StardewValley.Game1.currentLocation?.NameOrUniqueName;
+                        string moved = locBefore != null && locNow != null && locNow != locBefore && name != "travel_to"
+                            && StardewValley.Game1.currentLocation is not StardewValley.Locations.MineShaft
+                            ? $"📍 这个动作把你从 {locBefore} 带到了 {locNow}，你现在在 {locNow}。接下来的动作都在这里进行；要回 {locBefore} 接着干就用 travel_to"
+                            : null;
+                        // 做完的任务，金币奖励要在日志里点一下才到手；AI 没有翻日志的工具，这里替它领
+                        var claimed = GameActions.ClaimQuestRewards();
                         // 这次结果里有新的话就先不催，等下一步
                         string chat = GameActions.TakeChat();
                         string replyReminder = chat == null && name != "get_guide" ? GameActions.TakeReplyReminder() : null;
-                        var parts = new[] { equipped != null ? "🎽 " + equipped : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
+                        var parts = new[] { moved, equipped != null ? "🎽 " + equipped : null, claimed != null ? "💰 " + claimed : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
                         return parts.Count > 0 ? string.Join("\n", parts) : null;
                     }).ConfigureAwait(false);
             }

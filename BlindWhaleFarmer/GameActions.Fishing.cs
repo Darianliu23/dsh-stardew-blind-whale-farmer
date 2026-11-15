@@ -101,6 +101,9 @@ namespace BlindWhaleFarmer
     {
         /// <param name="Distance">从站立格到落点的格数。</param>
         /// <param name="Clear">落点离岸多远（游戏算鱼和品质用的 clearWaterDistance，0~5）。</param>
+        /// <summary>刚才那一竿钓上来的是不是垃圾（报纸、破眼镜、浮木这类）。</summary>
+        private static bool lastCatchWasJunk;
+
         private sealed record FishingSpot(Point Stand, int Dir, int Distance, int Clear = 0);
 
         private static readonly Point[] DirVec = { new(0, -1), new(1, 0), new(0, 1), new(-1, 0) };
@@ -186,7 +189,8 @@ namespace BlindWhaleFarmer
             return $"最近的水在{dir}边 ({p.X},{p.Y})，离你 {Util.Manhattan(p, from)} 格：先 move_to 走到那附近再 fish，或者换个地方（Beach、Mountain 的湖、Town/Forest 的河）";
         }
 
-        private const string BagFullForFishing = "背包满了，再钓拿不下的会掉在地上。先把鱼和用不上的东西放进出货箱（ship_items），或者整理（tidy_backpack），空出位置再钓。体力够时别为了腾位置吃鱼";
+        private const string BagFullForFishing = "背包满了，再钓拿不下的会掉在地上。想留在这里接着钓：钓上来的垃圾（报纸、破眼镜、浮木这类）用 trash_item 扔掉就能腾出位置。"
+            + "东西都要留的话，放进出货箱（ship_items）或者整理（tidy_backpack）：出货箱和箱子都在农场，这两个动作会把你带回 Farm，做完想接着钓要先 travel_to 回钓鱼的地方。体力够时别为了腾位置吃鱼";
 
         public IEnumerable<object> Fish(int casts, int? x, int? y, string direction)
         {
@@ -272,7 +276,7 @@ namespace BlindWhaleFarmer
             }
 
             var caught = new List<string>();
-            int misses = 0;
+            int misses = 0, junk = 0;
             string stopReason = null;
             try
             {
@@ -303,7 +307,11 @@ namespace BlindWhaleFarmer
                     foreach (var s in FishOnce(rodIdx, spot, one))
                         yield return s;
                     if (one.Ok)
+                    {
                         caught.Add(one.Message);
+                        if (lastCatchWasJunk)
+                            junk++;
+                    }
                     else if (one.Message.StartsWith("!"))
                     {
                         stopReason = one.Message.Substring(1);
@@ -319,7 +327,7 @@ namespace BlindWhaleFarmer
             }
 
             string summary = $"用 {bestRod.DisplayName}" + (rodNote != null ? $"（{rodNote}）" : "")
-                             + $"在 ({spot.Stand.X},{spot.Stand.Y}) 朝{Util.DirName(spot.Dir)}抛 {spot.Distance} 格（落点离岸 {spot.Clear} 格，最多算 5）钓鱼，钓到 {caught.Count} 次";
+                             + $"在 {Loc.NameOrUniqueName} ({spot.Stand.X},{spot.Stand.Y}) 朝{Util.DirName(spot.Dir)}抛 {spot.Distance} 格（落点离岸 {spot.Clear} 格，最多算 5）钓鱼，钓到 {caught.Count} 次";
             if (caught.Count > 0)
                 summary += "：" + string.Join("、", caught);
             if (misses > 0)
@@ -329,6 +337,9 @@ namespace BlindWhaleFarmer
             if (stopReason == BagFullForFishing && TripClutterHint("fish") is string clutter)
                 summary += "。" + clutter;
             summary += $"，体力 {(int)Player.Stamina}，现在 {Util.TimeString(Game1.timeOfDay)}";
+            // 钓上来的大半是垃圾：这片水里没什么鱼（标准农场的小池塘就是这样），继续钓只是白花体力和时间
+            if (caught.Count >= 2 && junk * 2 > caught.Count)
+                summary += $"。⚠ 在 {Loc.NameOrUniqueName} 这里钓上来的大半是垃圾（{junk}/{caught.Count}），这片水没什么鱼，别在这里钓了：用 travel_to 去 Beach（海边）、Mountain（山上的湖）或 Town / Forest（河）再 fish";
             yield return caught.Count > 0 || misses > 0 ? ActionResult.Success(summary) : ActionResult.Fail(summary);
         }
 
@@ -439,6 +450,15 @@ namespace BlindWhaleFarmer
             }
             sawCaught |= rod.fishCaught || rod.showingTreasure || Game1.activeClickableMenu is ItemGrabMenu;
 
+            lastCatchWasJunk = false;
+            try
+            {
+                lastCatchWasJunk = rod.whichFish != null && ItemRegistry.GetData(rod.whichFish.QualifiedItemId)?.Category == StardewValley.Object.junkCategory;
+            }
+            catch
+            {
+                // 查不到物品数据就当不是垃圾
+            }
             string fishName = "某样东西";
             if (rod.whichFish != null)
             {

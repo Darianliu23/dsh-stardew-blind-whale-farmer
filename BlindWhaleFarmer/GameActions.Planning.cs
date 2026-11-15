@@ -403,6 +403,75 @@ namespace BlindWhaleFarmer
             return null;
         }
 
+        // ───────────────────────── 洒水器 ─────────────────────────
+
+        /// <summary>已经被现有洒水器浇到的格子。</summary>
+        private static HashSet<Vector2> SprinklerCovered(GameLocation loc) =>
+            loc.objects.Values.Where(o => o.IsSprinkler()).SelectMany(o => o.GetSprinklerTiles()).ToHashSet();
+
+        /// <summary>这只洒水器放在 tile 上能新浇到几格耕地（已经被别的洒水器浇到的不算）。范围由游戏自己算，普通 4 格、优质 3x3、铱制 5x5。</summary>
+        private static int SprinklerGain(GameLocation loc, SObject sprinkler, Point tile, HashSet<Vector2> covered)
+        {
+            if (sprinkler.getOne() is not SObject probe)
+                return 0;
+            probe.TileLocation = new Vector2(tile.X, tile.Y);
+            return probe.GetSprinklerTiles().Count(v => !covered.Contains(v) && loc.terrainFeatures.TryGetValue(v, out var f) && f is HoeDirt);
+        }
+
+        /// <summary>能放洒水器的格子：没有东西、没有作物（空耕地可以）、走得到。</summary>
+        private static bool CanHoldSprinkler(GameLocation loc, Point t)
+        {
+            var v = new Vector2(t.X, t.Y);
+            if (!loc.isTileOnMap(t.X, t.Y) || loc.Objects.ContainsKey(v))
+                return false;
+            if (loc.terrainFeatures.TryGetValue(v, out var f))
+                return f is HoeDirt { crop: null };
+            return Pathfinder.IsPassable(loc, t.X, t.Y);
+        }
+
+        /// <summary>
+        /// 洒水器放得对不对：放在 tile 一格耕地都浇不到，或者田里有明显更好的位置（能多浇不少格）时返回原因和建议坐标；没问题返回 null。
+        /// gain 是放在 tile 能新浇到的耕地格数。
+        /// </summary>
+        private static string SprinklerProblem(GameLocation loc, Item item, Point tile, out int gain)
+        {
+            gain = 0;
+            if (item is not SObject o || !o.IsSprinkler())
+                return null;
+            var covered = SprinklerCovered(loc);
+            gain = SprinklerGain(loc, o, tile, covered);
+
+            // 在每块田和它外面一圈里找能新浇到最多耕地的位置
+            Point? best = null;
+            int bestGain = 0;
+            foreach (var f in Fields(loc))
+            {
+                for (int x = f.Box.Left - 1; x <= f.Box.Right; x++)
+                    for (int y = f.Box.Top - 1; y <= f.Box.Bottom; y++)
+                    {
+                        var p = new Point(x, y);
+                        if (!CanHoldSprinkler(loc, p))
+                            continue;
+                        int g = SprinklerGain(loc, o, p, covered);
+                        if (g > bestGain || (g == bestGain && best.HasValue && Util.Manhattan(p, tile) < Util.Manhattan(best.Value, tile)))
+                        {
+                            best = p;
+                            bestGain = g;
+                        }
+                    }
+            }
+            string name = o.DisplayName;
+            if (loc.terrainFeatures.TryGetValue(new Vector2(tile.X, tile.Y), out var tf) && tf is HoeDirt { crop: not null })
+                return $"({tile.X},{tile.Y}) 上种着作物，放不了{name}" + (best.HasValue ? $"。放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格耕地" : "");
+            if (gain == 0)
+                return best.HasValue
+                    ? $"{name}放在 ({tile.X},{tile.Y}) 一格耕地都浇不到（周围没有耕地，或者都已经被别的洒水器浇到了）。放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格"
+                    : $"{name}放在 ({tile.X},{tile.Y}) 一格耕地都浇不到，而且现在所有耕地都已经有洒水器浇了，这只先留着，等开了新田再放";
+            if (best.HasValue && bestGain >= gain + 2 && gain * 4 < bestGain * 3)
+                return $"{name}放在 ({tile.X},{tile.Y}) 只能浇到 {gain} 格耕地，放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格";
+            return null;
+        }
+
         /// <summary>农场上摆机器、箱子的规划问题：别压在田里、别堵建筑门口。洒水器、稻草人本来就该放田里。</summary>
         private static string PlacementProblem(GameLocation loc, Item item, Point tile)
         {

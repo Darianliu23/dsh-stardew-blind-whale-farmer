@@ -124,6 +124,41 @@ namespace BlindWhaleFarmer
             return changes.Count > 0 ? string.Join("；", changes) : null;
         }
 
+        /// <summary>
+        /// 领任务的金币奖励。游戏里任务做完后钱不会自动到账：要打开日志、点开那个任务、再点一下奖励。
+        /// 这里做的事和点那一下一样（加钱、把任务标成可以移除），普通任务和特别订单都算。返回领了什么，没有可领的返回 null。
+        /// </summary>
+        public static string ClaimQuestRewards()
+        {
+            if (!StardewModdingAPI.Context.IsWorldReady || Game1.eventUp || Game1.activeClickableMenu != null)
+                return null;
+            var quests = new List<StardewValley.Quests.IQuest>();
+            quests.AddRange(Player.questLog);
+            quests.AddRange(Player.team.specialOrders);
+            var got = new List<string>();
+            foreach (var q in quests)
+            {
+                try
+                {
+                    if (!q.ShouldDisplayAsComplete() || !q.HasMoneyReward())
+                        continue;
+                    int money = q.GetMoneyReward();
+                    Player.Money += money;
+                    q.OnMoneyRewardClaimed();
+                    got.Add($"{q.GetName()} {money}g");
+                }
+                catch
+                {
+                    // 个别任务类型取不到奖励信息就跳过，不影响别的
+                }
+            }
+            // 领完的任务游戏是在关日志界面时移走的，这里也移走，免得状态里一直挂着“已完成”
+            for (int i = Player.questLog.Count - 1; i >= 0; i--)
+                if (Player.questLog[i].destroy.Value)
+                    Player.questLog.RemoveAt(i);
+            return got.Count > 0 ? "领了任务奖励：" + string.Join("、", got) + $"，现在有 {Player.Money}g" : null;
+        }
+
         /// <summary>背包满时直接穿上的装备，等下一次 AutoEquip 一起报给 AI。</summary>
         private static readonly List<string> pendingGearNotes = new();
 

@@ -823,12 +823,121 @@ namespace BlindWhaleFarmer
         /// 自动下矿：打附近的怪、敲石头找楼梯、下楼，直到下了 levels 层或者体力/生命/时间不够。
         /// 在矿洞入口（Mine）时会先下到第 1 层，或者用电梯到 start_level（必须是 5 的倍数且到过）。
         /// </summary>
-        public IEnumerable<object> ExploreMine(int levels, int? startLevel)
+        /// <summary>血量到这个数才跳竖井：一次最多连降 15 层、掉 45 点血，跳完还要剩三成血应付下面的怪。</summary>
+        private static int ShaftSafeHealth => 45 + (int)(Player.maxHealth * 0.3f);
+
+        /// <summary>矿层怎么称呼：骷髅洞穴的层在游戏里是 121 起，对玩家说“骷髅洞穴第 N 层”。</summary>
+        private static string MineLevelName(int level) => level > 120 ? $"骷髅洞穴第 {level - 120} 层" : $"第 {level} 层";
+
+        /// <summary>
+        /// 跳竖井（骷髅洞穴里的洞，图块 174）：点它会问“要不要跳下去”，选“是”后连降几层、每层掉 3 点血（不会摔死，最少剩 1）。
+        /// 落地后游戏弹一句“你掉了 N 层”，这里顺手关掉。成功返回 true（已经在新的一层）。
+        /// </summary>
+        private IEnumerable<object> JumpDownShaft(MineShaft mine, Point shaft, Outcome o)
+        {
+            foreach (var s in GoAdjacent(shaft, o))
+                yield return s;
+            if (!o.Ok)
+                yield break;
+            mine.checkAction(new xLocation(shaft.X, shaft.Y), Game1.viewport, Player);
+            foreach (var s in WaitTicks(10))
+                yield return s;
+            if (Game1.activeClickableMenu is DialogueBox { isQuestion: true } ask)
+            {
+                int yes = Array.FindIndex(ask.responses, r => r.responseKey is "Jump" or "Yes"); // 游戏里这个问题的选项是 Jump / Do（跳下去 / 算了）
+                if (yes < 0)
+                {
+                    ask.closeDialogue();
+                    o.Fail("竖井的问题里没找到“跳下去”这个选项：" + string.Join("/", ask.responses.Select(r => r.responseKey)));
+                    yield break;
+                }
+                foreach (var s in Dialogue(yes))
+                    if (s is not ActionResult)
+                        yield return s;
+            }
+            // 选完以后游戏马上弹一句“你掉了 N 层”，要等这句话关掉才真的换到下面的楼层，所以在这里就把它关了
+            for (int t = 0; t < 900 && Loc == mine; t++)
+            {
+                if (Game1.activeClickableMenu is DialogueBox { isQuestion: false } fellMsg)
+                    fellMsg.closeDialogue();
+                yield return null;
+            }
+            if (Loc == mine)
+            {
+                o.Fail("选了跳下去，但是没有掉下去");
+                yield break;
+            }
+            // 掉落动画放完、落地的提示出来再继续；提示是普通对话框，关掉就行
+            for (int t = 0; t < 600; t++)
+            {
+                if (Game1.activeClickableMenu is DialogueBox { isQuestion: false } landedMsg)
+                {
+                    landedMsg.closeDialogue(); // 用对话框自己的关闭：直接退菜单会留下 dialogueUp，人就动不了了
+                    break;
+                }
+                if (t > 120 && Loc is MineShaft landed && !landed.isFallingDownShaft && Player.CanMove && !Game1.fadeToBlack && !Game1.isWarping)
+                    break;
+                yield return null;
+            }
+            foreach (var s in WaitTicks(20))
+                yield return s;
+            o.Succeed();
+        }
+
+        public IEnumerable<object> ExploreMine(int levels, int? startLevel, string whichMine = null)
         {
             var o = new Outcome();
             // 出门带了下矿用不上的东西，结束时提醒一句（下次出门前整理）
             string clutter = TripClutterHint("mine");
-            if (Loc is not MineShaft)
+            // 去哪个矿：明说 skull，或者人已经在沙漠 / 骷髅洞穴入口，就是骷髅洞穴
+            whichMine = whichMine?.Trim().ToLowerInvariant();
+            bool skull = whichMine is "skull" or "skullcave" or "skull_cavern" or "骷髅" or "骷髅洞穴"
+                || (string.IsNullOrEmpty(whichMine) && Loc.Name is "SkullCave" or "Desert");
+            if (Loc is not MineShaft && skull)
+            {
+                if (!Player.hasSkullKey)
+                {
+                    yield return ActionResult.Fail("没有骷髅钥匙，进不了骷髅洞穴（普通矿洞下到 120 层会拿到）");
+                    yield break;
+                }
+                if (Loc.Name != "SkullCave")
+                {
+                    foreach (var s in TravelInner("SkullCave", o))
+                        yield return s;
+                    if (!o.Ok)
+                    {
+                        yield return ActionResult.Fail("去骷髅洞穴入口失败（在沙漠的西北角，要先坐巴士到沙漠）：" + o.Message);
+                        yield break;
+                    }
+                }
+                var door = FindTileAction(Loc, "SkullDoor");
+                if (!door.HasValue)
+                {
+                    yield return ActionResult.Fail("在骷髅洞穴入口没找到那扇门");
+                    yield break;
+                }
+                foreach (var s in GoAdjacent(door.Value, o))
+                    yield return s;
+                // 第一次点是用钥匙开锁（弹一句话），第二次才进去
+                for (int attempt = 0; attempt < 3 && Loc is not MineShaft; attempt++)
+                {
+                    Loc.checkAction(new xLocation(door.Value.X, door.Value.Y), Game1.viewport, Player);
+                    for (int t = 0; t < 240 && Loc is not MineShaft; t++)
+                    {
+                        if (Game1.activeClickableMenu is DialogueBox { isQuestion: false } unlockMsg)
+                            unlockMsg.closeDialogue();
+                        yield return null;
+                    }
+                }
+                foreach (var s in WaitSceneSettled())
+                    yield return s;
+                if (Loc is not MineShaft)
+                {
+                    yield return ActionResult.Fail("没能进入骷髅洞穴");
+                    yield break;
+                }
+            }
+            else if (Loc is not MineShaft)
             {
                 if (!Loc.Name.Equals("Mine", StringComparison.OrdinalIgnoreCase))
                 {
@@ -887,7 +996,9 @@ namespace BlindWhaleFarmer
             var chestNotes = new List<string>();
             var skippedChests = new HashSet<Point>();
             var skippedBoulders = new HashSet<Point>();
-            int boulders = 0;
+            // 走不过去的竖井，和当时已经敲掉了多少块石头：再敲掉几块以后路可能通了，到时再试
+            var skippedShafts = new Dictionary<Point, int>();
+            int boulders = 0, shaftJumps = 0;
             while (descended < levels && guard++ < 400)
             {
                 if (Loc is not MineShaft mine)
@@ -926,6 +1037,26 @@ namespace BlindWhaleFarmer
                 {
                     stop = "已经 23 点了，该回家睡觉";
                     break;
+                }
+
+                // 0) 有竖井（骷髅洞穴里的洞）就先跳，不跟怪纠缠：一次连降几层，比打完怪再找楼梯快，也安全。每层掉 3 点血，一次最多掉 45 点，所以要求跳完还能剩三成血；这一层有没开的宝箱时先开宝箱
+                var shaft = NearestMineTile(mine, 174);
+                if (shaft.HasValue && !MineChests(mine).Any(c => !skippedChests.Contains(c.tile)) && (!skippedShafts.TryGetValue(shaft.Value, out int rocksThen) || rocks >= rocksThen + 2) && Player.health >= ShaftSafeHealth)
+                {
+                    int levelBefore = mine.mineLevel;
+                    foreach (var s in JumpDownShaft(mine, shaft.Value, o))
+                        yield return s;
+                    if (o.Ok && Loc is MineShaft below && below.mineLevel > levelBefore)
+                    {
+                        descended += below.mineLevel - levelBefore;
+                        shaftJumps++;
+                        lastHp = Player.health; // 摔的那几点血不算挨打
+                        continue;
+                    }
+                    skippedShafts[shaft.Value] = rocks; // 走不过去或者没跳成：先照常敲石头，敲掉两块以后再试
+                    o.Succeed();
+                    if (Loc != mine)
+                        continue;
                 }
 
                 // 1) 清理靠近的怪（先保命再干活）。上一轮挨了打、身边却没有怪：多半是骷髅扔骨头、暗影萨满放法术这种远程怪，
@@ -991,7 +1122,9 @@ namespace BlindWhaleFarmer
                 var stones = mine.objects.Pairs.Where(p => p.Value.IsBreakableStone())
                     .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
                 bool hit = false;
-                foreach (var stone in stones.OrderBy(p => Util.Manhattan(p, Player.TilePoint)).Take(6))
+                // 有竖井但被石头围着：优先敲通往竖井那个方向的石头，而不是只敲离自己最近的
+                Point? digToward = shaft.HasValue && skippedShafts.ContainsKey(shaft.Value) ? shaft : null;
+                foreach (var stone in stones.OrderBy(p => Util.Manhattan(p, Player.TilePoint) + (digToward.HasValue ? Util.Manhattan(p, digToward.Value) : 0)).Take(6))
                 {
                     foreach (var s in GoAdjacent(stone, o))
                         yield return s;
@@ -1078,12 +1211,14 @@ namespace BlindWhaleFarmer
                     if (NearestMineTile(mine, 173).HasValue)
                         continue;
                 }
-                stop = "这一层找不到楼梯，也没有能走到的石头了（可以试试 use_tool 敲别处，或者 interact 竖井/出口）";
+                stop = NearestMineTile(mine, 174).HasValue
+                    ? "这一层只有竖井，没有楼梯，也没有能走到的石头了。现在生命 " + Player.health + "，不到 " + ShaftSafeHealth + "，没敢跳（每降一层掉 3 点血，一次最多掉 45 点）：先 eat 回血再 explore_mine，或者 travel_to 出去"
+                    : "这一层找不到楼梯，也没有能走到的石头了（可以试试 use_tool 敲别处，或者 travel_to 出去）";
                 break;
             }
 
             int now = Loc is MineShaft m2 ? m2.mineLevel : 0;
-            string msg = $"从第 {startLvl} 层下到第 {(now > 0 ? now.ToString() : "?")} 层（下了 {descended} 层），敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
             if (boulders > 0)
                 msg += $"；敲碎了 {boulders} 块挡路的矿石巨石";
             if (loot.Count > 0)

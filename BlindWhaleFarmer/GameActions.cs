@@ -393,7 +393,8 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>选中背包某格并对 target 使用一次工具（会播放动画、消耗体力，和手动一样）。</summary>
-        private IEnumerable<object> UseToolOnce(int toolIndex, Point target, Outcome o)
+        /// <param name="power">蓄力几档（0 = 不蓄力，只作用一格）。升级过的锄头、水壶蓄力后一次能作用一排或一片，最高档等于工具等级。</param>
+        private IEnumerable<object> UseToolOnce(int toolIndex, Point target, Outcome o, int power = 0)
         {
             foreach (var _ in WaitPlayerFree())
                 yield return null;
@@ -435,15 +436,52 @@ namespace BlindWhaleFarmer
             yield return null;
             yield return null;
 
-            // 升级过的工具会进入“蓄力”状态，等待松开按键；这里直接松开，只作用一格
+            // 升级过的工具会进入“蓄力”状态，等待松开按键。玩家是按住不放一档一档蓄上去的，这里直接把档位设好再松开，
+            // 效果一样：游戏松开时按 toolPower 算作用范围（Tool.tilesAffected）、扣对应的体力和水
             if (tool is not MeleeWeapon && Player.UsingTool && Player.canReleaseTool)
+            {
+                if (power > 0)
+                    Player.toolPower.Value = Math.Min(power, tool.UpgradeLevel);
                 Player.EndUsingTool();
+            }
 
             for (int i = 0; i < 180 && (Player.UsingTool || Player.FarmerSprite.isUsingWeapon()); i++)
                 yield return null;
             foreach (var _ in WaitTicks(4))
                 yield return null;
             o.Succeed();
+        }
+
+        /// <summary>
+        /// 站好、面朝 target 以后，升级过的锄头/水壶该蓄几档。游戏自己算每一档会作用到哪些格子（铜：前方一排 3 格，钢：5 格，
+        /// 金：3x3，铱：6x3），这里挑“用得上的格子最多”的那一档；有一格是 harmful（比如会锄到不该开垦的地方）的档位不用。
+        /// 只多照顾到一格以下就不蓄力（返回 0）。maxPower 用来限制水壶：蓄力浇水更费水。
+        /// </summary>
+        private int BestToolPower(Tool tool, Point target, Func<Point, bool> wanted, Func<Point, bool> harmful, int maxPower)
+        {
+            int best = 0, bestUseful = 1;
+            for (int power = 1; power <= Math.Min(tool.UpgradeLevel, maxPower); power++)
+            {
+                List<Vector2> affected;
+                try
+                {
+                    affected = reflection.GetMethod(tool, "tilesAffected").Invoke<List<Vector2>>(new Vector2(target.X, target.Y), power, Player);
+                }
+                catch
+                {
+                    break; // 游戏改了这个方法就老老实实一格一格来
+                }
+                var pts = affected.Select(v => new Point((int)v.X, (int)v.Y)).ToList();
+                if (harmful != null && pts.Any(harmful))
+                    continue;
+                int useful = pts.Count(wanted);
+                if (useful > bestUseful)
+                {
+                    best = power;
+                    bestUseful = useful;
+                }
+            }
+            return best;
         }
 
         /// <summary>till_area 一格都开不了时，数一数区域里都是些什么格子，告诉 AI 下一步该干什么。</summary>
@@ -1123,6 +1161,13 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"{problem}。{MachineAreaHint(Loc)}。{ForceHint}");
                 yield break;
             }
+            // 洒水器放歪了等于白放：浇不到耕地，或者田里有明显更好的位置时先拦下来，告诉她放哪
+            int sprinklerGain = 0;
+            if (!force && SprinklerProblem(Loc, Player.Items[idx], new Point(x, y), out sprinklerGain) is string badSpot)
+            {
+                yield return ActionResult.Fail($"{badSpot}。{ForceHint}");
+                yield break;
+            }
             var o = new Outcome();
             var target = new Point(x, y);
             foreach (var s in GoAdjacent(target, o))
@@ -1135,11 +1180,12 @@ namespace BlindWhaleFarmer
             Player.CurrentToolIndex = idx;
             var item = (SObject)Player.Items[idx];
             string name = item.DisplayName;
+            bool isSprinkler = item.IsSprinkler();
             bool placed = Utility.tryToPlaceItem(Loc, item, x * 64 + 32, y * 64 + 32);
             foreach (var s in WaitTicks(10))
                 yield return s;
             yield return placed
-                ? ActionResult.Success($"已在 ({x},{y}) 放置/种下 {name}")
+                ? ActionResult.Success($"已在 ({x},{y}) 放置/种下 {name}" + (isSprinkler ? $"，能浇到 {sprinklerGain} 格耕地" : ""))
                 : ActionResult.Fail($"不能在 ({x},{y}) 放置 {name}（种子需要空耕地且当季可种；物品需要空地）");
         }
 
@@ -1184,11 +1230,19 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("区域内没有可以开垦的空地：" + WhyNotTillable(loc, x1, y1, x2, y2));
                 yield break;
             }
-            int done = 0;
             string err = null;
             var o = new Outcome();
+            var todo = new HashSet<Point>(tiles);
+            bool IsTilled(Point t) => loc.terrainFeatures.TryGetValue(new Vector2(t.X, t.Y), out var f) && f is HoeDirt;
+            // 蓄力时会多锄到的格子：能开垦、却不在这次要开垦的范围里的空地，不能碰
+            bool WouldTillOutside(Point t) => !todo.Contains(t) && !IsTilled(t)
+                && loc.doesTileHaveProperty(t.X, t.Y, "Diggable", "Back") != null
+                && !loc.Objects.ContainsKey(new Vector2(t.X, t.Y)) && !loc.terrainFeatures.ContainsKey(new Vector2(t.X, t.Y));
+            int charged = 0;
             foreach (var p in Util.NearestOrder(Player.TilePoint, tiles))
             {
+                if (IsTilled(p))
+                    continue; // 前面蓄力的一锄头已经顺带开了
                 foreach (var s in GoAdjacent(p, o))
                     yield return s;
                 if (!o.Ok)
@@ -1198,17 +1252,21 @@ namespace BlindWhaleFarmer
                         break;
                     continue;
                 }
-                foreach (var s in UseToolOnce(hoe, p, o))
+                // 升级过的锄头蓄力，一次开一排或一片
+                int power = Player.Items[hoe] is Hoe h && h.UpgradeLevel > 0
+                    ? BestToolPower(h, p, t => todo.Contains(t) && !IsTilled(t), WouldTillOutside, 4) : 0;
+                if (power > 0)
+                    charged++;
+                foreach (var s in UseToolOnce(hoe, p, o, power))
                     yield return s;
                 if (!o.Ok)
                 {
                     err = o.Message;
                     break;
                 }
-                if (loc.terrainFeatures.TryGetValue(new Vector2(p.X, p.Y), out var tf) && tf is HoeDirt)
-                    done++;
             }
-            string msg = $"开垦了 {done}/{tiles.Count} 格，剩余体力 {(int)Player.Stamina}";
+            int done = tiles.Count(IsTilled);
+            string msg = $"开垦了 {done}/{tiles.Count} 格{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，剩余体力 {(int)Player.Stamina}";
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；部分失败：" + err : "")) : ActionResult.Fail(msg + "；" + err);
         }
 
@@ -1355,11 +1413,14 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Success("这里没有需要浇水的作物");
                 yield break;
             }
-            int done = 0;
             string err = null;
             var o = new Outcome();
+            bool Thirsty(Point t) => loc.terrainFeatures.TryGetValue(new Vector2(t.X, t.Y), out var f) && f is HoeDirt d && Observer.NeedsWater(d);
+            int charged = 0;
             foreach (var p in Util.NearestOrder(Player.TilePoint, tiles).Take(Math.Clamp(max, 1, 300)))
             {
+                if (!Thirsty(p))
+                    continue; // 前面蓄力的一壶水已经顺带浇到了
                 if (Player.Items[canIdx] is WateringCan can && can.WaterLeft <= 0)
                 {
                     foreach (var s in RefillWateringCan(canIdx, o))
@@ -1379,18 +1440,22 @@ namespace BlindWhaleFarmer
                         break;
                     continue;
                 }
-                foreach (var s in UseToolOnce(canIdx, p, o))
+                // 升级过的水壶蓄力，一次浇一排或一片（多浇到的空地没坏处）。蓄几档就多费几格水，水不够就少蓄
+                int power = Player.Items[canIdx] is WateringCan wc && wc.UpgradeLevel > 0
+                    ? BestToolPower(wc, p, Thirsty, null, wc.WaterLeft - 1) : 0;
+                if (power > 0)
+                    charged++;
+                foreach (var s in UseToolOnce(canIdx, p, o, power))
                     yield return s;
                 if (!o.Ok)
                 {
                     err = o.Message;
                     break;
                 }
-                if (loc.terrainFeatures.TryGetValue(new Vector2(p.X, p.Y), out var tf) && tf is HoeDirt hd && hd.isWatered())
-                    done++;
             }
             int left = loc.terrainFeatures.Pairs.Count(p => p.Value is HoeDirt hd && Observer.NeedsWater(hd));
-            string msg = $"浇了 {done} 株，还剩 {left} 株没浇，剩余体力 {(int)Player.Stamina}";
+            int done = tiles.Count - tiles.Count(Thirsty);
+            string msg = $"浇了 {done} 株{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，还剩 {left} 株没浇，剩余体力 {(int)Player.Stamina}";
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
         }
 
