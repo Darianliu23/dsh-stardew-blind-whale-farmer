@@ -340,6 +340,11 @@ namespace BlindWhaleFarmer
             // 钓上来的大半是垃圾：这片水里没什么鱼（标准农场的小池塘就是这样），继续钓只是白花体力和时间
             if (caught.Count >= 2 && junk * 2 > caught.Count)
                 summary += $"。⚠ 在 {Loc.NameOrUniqueName} 这里钓上来的大半是垃圾（{junk}/{caught.Count}），这片水没什么鱼，别在这里钓了：用 travel_to 去 Beach（海边）、Mountain（山上的湖）或 Town / Forest（河）再 fish";
+            // 落点离岸近（浅水）：游戏按离岸距离算鱼的大小和品质，太近垃圾也多
+            else if (spot.Clear <= 2)
+                summary += $"。提示：落点离岸只有 {spot.Clear} 格，是浅水，鱼小、品质低、垃圾多（离岸 5 格最好）。"
+                    + (x.HasValue ? "fish 不传坐标，我会找离岸更远的点；" : "附近找不到更深的点了，")
+                    + "去码头、栈桥尽头或者伸进湖里的岸边，往开阔水面抛";
             yield return caught.Count > 0 || misses > 0 ? ActionResult.Success(summary) : ActionResult.Fail(summary);
         }
 

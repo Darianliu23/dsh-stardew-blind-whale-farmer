@@ -106,7 +106,8 @@ namespace BlindWhaleFarmer
                 Monitor.Log("AI 笔记：" + Agent.Notes, LogLevel.Info);
             });
             helper.ConsoleCommands.Add("dsai_tokens", "查看本次运行消耗的 token。", (_, _) =>
-                Monitor.Log($"输入 {Agent.TotalPromptTokens} tokens，输出 {Agent.TotalCompletionTokens} tokens", LogLevel.Info));
+                Monitor.Log($"输入 {Agent.TotalPromptTokens} tokens（其中命中缓存 {Agent.TotalCacheHitTokens}，"
+                    + $"{(Agent.TotalPromptTokens > 0 ? Agent.TotalCacheHitTokens * 100 / Agent.TotalPromptTokens : 0)}%），输出 {Agent.TotalCompletionTokens} tokens", LogLevel.Info));
 
             Monitor.Log($"大肥鱼种白饭 Blind Whale Farmer 已加载。进入存档后按 {Config.ToggleKey} 启动/停止 AI。", LogLevel.Info);
 

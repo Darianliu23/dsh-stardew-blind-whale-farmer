@@ -902,17 +902,25 @@ namespace BlindWhaleFarmer
                     break;
 
                 default:
-                    sb.AppendLine($"菜单：{menu.GetType().Name}。如果不需要，用 close_menu 关闭。可点击的元素（menu_click 传序号）：");
-                    var comps = MenuComponents(menu);
-                    for (int i = 0; i < comps.Count && i < 40; i++)
-                    {
-                        var c = comps[i];
-                        string label = string.Join(" / ", new[] { c.name, c.label, (c as ClickableTextureComponent)?.hoverText }.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct());
-                        sb.AppendLine($"  {i}: {label}");
-                    }
+                    sb.AppendLine($"菜单：{menu.GetType().Name}。如果不需要，用 close_menu 关闭。可点击的元素（menu_click 传序号 index，或者传名字 name）：");
+                    sb.AppendLine(ListComponents(menu));
                     break;
             }
             return sb.ToString().TrimEnd();
+        }
+
+        /// <summary>一个可点击元素给 AI 看的名字：name / label / 悬停提示。</summary>
+        public static string ComponentLabel(ClickableComponent c) =>
+            string.Join(" / ", new[] { c.name, c.label, (c as ClickableTextureComponent)?.hoverText }.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct());
+
+        /// <summary>界面里可点击的元素，一行一个“序号: 名字”（最多 40 个）。</summary>
+        public static string ListComponents(IClickableMenu menu)
+        {
+            var comps = MenuComponents(menu);
+            var lines = new List<string>();
+            for (int i = 0; i < comps.Count && i < 40; i++)
+                lines.Add($"  {i}: {ComponentLabel(comps[i])}");
+            return lines.Count == 0 ? "  （没有可点击的元素）" : string.Join("\n", lines);
         }
 
         public static List<ClickableComponent> MenuComponents(IClickableMenu menu)

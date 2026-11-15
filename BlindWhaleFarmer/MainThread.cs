@@ -111,6 +111,12 @@ namespace BlindWhaleFarmer
             {
                 if (current != null && preemptWhenStuck && Safe(() => StardewValley.Game1.eventUp || StardewValley.Game1.activeClickableMenu != null))
                     Finish("失败：被剧情/界面打断，已中止（先处理剧情或界面，再重新执行）");
+                // 同一步里连发两个 wait（MCP 客户端会并行调用）：第二个不报“还在执行”，并进正在跑的那个，一起返回
+                if (current != null && name == "wait" && currentName == "wait")
+                {
+                    waitFollowers.Add(tcs);
+                    return;
+                }
                 if (current != null)
                 {
                     int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
@@ -211,6 +217,33 @@ namespace BlindWhaleFarmer
             });
         }
 
+        /// <summary>并进正在跑的 wait 的其他 wait 调用，等它结束时一起返回。</summary>
+        private readonly List<TaskCompletionSource<string>> waitFollowers = new();
+
+        /// <summary>中止正在执行的动作（cancel_action）：返回中止了什么、跑了多久。</summary>
+        public Task<string> CancelForTool()
+        {
+            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            queue.Enqueue(() =>
+            {
+                if (current == null)
+                {
+                    tcs.SetResult("成功：现在没有正在执行的动作，不用中止");
+                    return;
+                }
+                int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
+                string what = currentName ?? "动作";
+                Finish("失败：被 cancel_action 中止了，动作可能只做了一半。先 get_state 看看现在的情况");
+                Safe(() =>
+                {
+                    StardewValley.Game1.player?.Halt();
+                    return true;
+                });
+                tcs.SetResult($"成功：已中止 {what}（跑了 {sec / 60} 分 {sec % 60} 秒）。它可能只做了一半，先 get_state 看看现在的情况再决定接下来做什么");
+            });
+            return tcs.Task;
+        }
+
         private void Finish(string message)
         {
             var tcs = currentTcs;
@@ -218,6 +251,13 @@ namespace BlindWhaleFarmer
             current = null;
             currentTcs = null;
             tcs?.TrySetResult(message);
+            if (waitFollowers.Count > 0)
+            {
+                string merged = message.StartsWith("成功：") ? "成功：（和同时发出的上一个 wait 合并成了一次）" + message.Substring(3) : message;
+                foreach (var f in waitFollowers)
+                    f.TrySetResult(merged);
+                waitFollowers.Clear();
+            }
         }
     }
 }

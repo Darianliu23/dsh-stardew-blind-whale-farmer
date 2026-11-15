@@ -56,7 +56,10 @@ namespace BlindWhaleFarmer
         public volatile bool IsThinking;
         public string Notes = "";
         public long TotalPromptTokens;
+        public long TotalCacheHitTokens;
         public long TotalCompletionTokens;
+        /// <summary>一共记过多少条行动记录（log 只留最近 200 条，这个数一直往上加）。</summary>
+        private long totalLogged;
 
         public bool Running => loop != null && !loop.IsCompleted;
 
@@ -104,6 +107,7 @@ namespace BlindWhaleFarmer
             lock (logLock)
             {
                 log.Add(line);
+                totalLogged++;
                 if (log.Count > 200)
                     log.RemoveRange(0, log.Count - 200);
             }
@@ -113,14 +117,27 @@ namespace BlindWhaleFarmer
         public void ClearLog()
         {
             lock (logLock)
+            {
                 log.Clear();
+                totalLogged = 0;
+            }
         }
 
+        /// <summary>
+        /// 最近的行动记录。为了让 DeepSeek 的前缀缓存多命中：窗口的起点不是每步往后挪一条（那样从记录第一行起每步都变，缓存只能命中到笔记为止），
+        /// 而是攒够一块（HistoryLines 的一半）才整块往后挪。这期间每一步的提示词开头（规则 + 攻略 + 笔记 + 旧记录）都一样，只有末尾的新记录和游戏状态是新的。
+        /// 所以实际给出的条数在 HistoryLines 到 HistoryLines + 块大小 - 1 之间。
+        /// </summary>
         private string RecentLog()
         {
             lock (logLock)
             {
-                var lines = log.Skip(Math.Max(0, log.Count - mod.Config.HistoryLines)).ToList();
+                int keep = Math.Max(1, mod.Config.HistoryLines);
+                int block = Math.Max(5, keep / 2);
+                long firstAbs = totalLogged - log.Count;
+                long startAbs = Math.Max(0, totalLogged - keep) / block * block;
+                int skip = (int)Math.Clamp(startAbs - firstAbs, 0, log.Count);
+                var lines = log.Skip(skip).ToList();
                 return lines.Count == 0 ? "（还没有行动记录）" : string.Join("\n", lines);
             }
         }
@@ -229,6 +246,7 @@ namespace BlindWhaleFarmer
                     }
 
                     TotalPromptTokens += reply.PromptTokens;
+                    TotalCacheHitTokens += reply.CacheHitTokens;
                     TotalCompletionTokens += reply.CompletionTokens;
 
                     string stamp = mod.CurrentStamp;

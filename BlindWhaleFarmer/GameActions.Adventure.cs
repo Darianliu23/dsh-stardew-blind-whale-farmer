@@ -826,6 +826,21 @@ namespace BlindWhaleFarmer
         /// <summary>血量到这个数才跳竖井：一次最多连降 15 层、掉 45 点血，跳完还要剩三成血应付下面的怪。</summary>
         private static int ShaftSafeHealth => 45 + (int)(Player.maxHealth * 0.3f);
 
+        /// <summary>
+        /// 敲了会掉矿石、宝石、晶球、煤炭的“石头”（和普通石头一样 IsBreakableStone，只是编号不同，见 GameLocation.breakStone）：
+        /// 铜 751/849、铁 290/850、金 764、铱 765、放射性 95、煤炭节点、宝石 2~14/44、神秘石 46、晶球 75/76/77/819、贻贝 25、熔岩碎片 843/844、火山 816~818。
+        /// </summary>
+        private static readonly HashSet<string> ValuableNodeIds = new()
+        {
+            "751", "849", "290", "850", "764", "765", "95", "VolcanoGoldNode",
+            "BasicCoalNode0", "BasicCoalNode1", "VolcanoCoalNode0", "VolcanoCoalNode1",
+            "2", "4", "6", "8", "10", "12", "14", "44", "46",
+            "75", "76", "77", "819", "25", "843", "844", "816", "817", "818"
+        };
+
+        /// <summary>值钱的节点多远也先敲：比最近的普通石头远这么多格以内就先去敲它。</summary>
+        private const int ValuableNodeDetour = 8;
+
         /// <summary>矿层怎么称呼：骷髅洞穴的层在游戏里是 121 起，对玩家说“骷髅洞穴第 N 层”。</summary>
         private static string MineLevelName(int level) => level > 120 ? $"骷髅洞穴第 {level - 120} 层" : $"第 {level} 层";
 
@@ -986,7 +1001,7 @@ namespace BlindWhaleFarmer
 
             levels = Math.Clamp(levels, 1, 20);
             int startLvl = ((MineShaft)Loc).mineLevel;
-            int descended = 0, rocks = 0;
+            int descended = 0, rocks = 0, oreNodes = 0;
             var st = new FightStats();
             string stop = null;
             int pick = Util.FindTool<Pickaxe>();
@@ -1124,13 +1139,14 @@ namespace BlindWhaleFarmer
                     o.Succeed();
                 }
 
-                // 3) 敲最近的石头找楼梯
+                // 3) 敲最近的石头找楼梯。矿石、宝石、晶球节点也是“石头”，只是值钱：多走几步也先敲它们
                 var stones = mine.objects.Pairs.Where(p => p.Value.IsBreakableStone())
-                    .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
+                    .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), valuable: ValuableNodeIds.Contains(p.Value.ItemId))).ToList();
                 bool hit = false;
-                // 有竖井但被石头围着：优先敲通往竖井那个方向的石头，而不是只敲离自己最近的
+                // 有竖井但被石头围着：优先敲通往竖井那个方向的石头，而不是只敲离自己最近的（这时不挑矿）
                 Point? digToward = shaft.HasValue && skippedShafts.ContainsKey(shaft.Value) ? shaft : null;
-                foreach (var stone in stones.OrderBy(p => Util.Manhattan(p, Player.TilePoint) + (digToward.HasValue ? Util.Manhattan(p, digToward.Value) : 0)).Take(6))
+                foreach (var (stone, valuable) in stones.OrderBy(t => Util.Manhattan(t.pt, Player.TilePoint)
+                             + (digToward.HasValue ? Util.Manhattan(t.pt, digToward.Value) : t.valuable ? -ValuableNodeDetour : 0)).Take(6))
                 {
                     foreach (var s in GoAdjacent(stone, o))
                         yield return s;
@@ -1153,7 +1169,11 @@ namespace BlindWhaleFarmer
                             break;
                     }
                     if (!mine.objects.ContainsKey(new Vector2(stone.X, stone.Y)))
+                    {
                         rocks++;
+                        if (valuable)
+                            oreNodes++;
+                    }
                     hit = true;
                     break;
                 }
@@ -1224,7 +1244,7 @@ namespace BlindWhaleFarmer
             }
 
             int now = Loc is MineShaft m2 ? m2.mineLevel : 0;
-            string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {rocks} 块石头{(oreNodes > 0 ? $"（其中矿石/宝石节点 {oreNodes} 个）" : "")}，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
             if (boulders > 0)
                 msg += $"；敲碎了 {boulders} 块挡路的矿石巨石";
             if (loot.Count > 0)

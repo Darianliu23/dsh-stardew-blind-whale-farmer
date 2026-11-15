@@ -2165,7 +2165,7 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success("对话已推进。当前界面：" + observer.DescribeMenu());
         }
 
-        public IEnumerable<object> MenuClick(int index)
+        public IEnumerable<object> MenuClick(int? index, string name = null)
         {
             var menu = Game1.activeClickableMenu;
             if (menu == null)
@@ -2174,12 +2174,38 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var comps = Observer.MenuComponents(menu);
-            if (index < 0 || index >= comps.Count)
+            string elements = $"当前界面 {menu.GetType().Name} 可点击的元素：\n{Observer.ListComponents(menu)}";
+            if (index == null && string.IsNullOrWhiteSpace(name))
             {
-                yield return ActionResult.Fail("没有这个元素");
+                yield return ActionResult.Fail("要传 index（元素序号）或 name（元素名字）。" + elements);
                 yield break;
             }
-            var c = comps[index];
+            if (index == null)
+            {
+                // 按名字找：先找名字完全一样的，没有再找包含这个词的
+                string want = name.Trim();
+                var exact = Enumerable.Range(0, comps.Count)
+                    .Where(i => Observer.ComponentLabel(comps[i]).Split(" / ").Any(p => p.Equals(want, StringComparison.OrdinalIgnoreCase))).ToList();
+                var hits = exact.Count > 0 ? exact
+                    : Enumerable.Range(0, comps.Count).Where(i => Observer.ComponentLabel(comps[i]).Contains(want, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (hits.Count == 0)
+                {
+                    yield return ActionResult.Fail($"界面里没有名字带“{want}”的元素。{elements}");
+                    yield break;
+                }
+                if (hits.Count > 1)
+                {
+                    yield return ActionResult.Fail($"名字带“{want}”的元素有 {hits.Count} 个：{string.Join("；", hits.Take(10).Select(i => $"{i}: {Observer.ComponentLabel(comps[i])}"))}。用 index 传序号点其中一个");
+                    yield break;
+                }
+                index = hits[0];
+            }
+            if (index < 0 || index >= comps.Count)
+            {
+                yield return ActionResult.Fail($"没有序号 {index} 的元素。{elements}");
+                yield break;
+            }
+            var c = comps[index.Value];
             menu.receiveLeftClick(c.bounds.Center.X, c.bounds.Center.Y);
             foreach (var s in WaitTicks(20))
                 yield return s;

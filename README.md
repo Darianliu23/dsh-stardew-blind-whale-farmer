@@ -44,7 +44,7 @@ SMAPI 控制台命令（调试用）：
 | `dsai_state` | 打印当前发给 AI 的文字状态（不调用 API，可以先看看它"看到"了什么） |
 | `dsai_do <工具> <JSON>` | 手动执行一个工具，例如 `dsai_do travel_to {"location":"SeedShop"}`、`dsai_do water_crops {}` |
 | `dsai_notes [内容]` | 查看 / 改写 AI 的长期笔记 |
-| `dsai_tokens` | 本次运行消耗的 token 数 |
+| `dsai_tokens` | 本次运行消耗的 token 数，以及输入里命中缓存的比例 |
 
 每次运行的完整行动记录在 `Mods\BlindWhaleFarmer\logs\transcript-*.log`。AI 的笔记按存档保存在 `Mods\BlindWhaleFarmer\data\`。
 
@@ -132,7 +132,7 @@ SMAPI 控制台命令（调试用）：
 - 背包里能捐给博物馆的东西、能交给社区中心收集包的材料
 - 附近能不能钓鱼；矿洞层数、下楼梯/竖井/电梯/出口的坐标
 
-## AI 能做什么（54 个工具）
+## AI 能做什么（55 个工具）
 
 | 类别 | 工具 |
 |---|---|
@@ -142,15 +142,15 @@ SMAPI 控制台命令（调试用）：
 | 钓鱼 | `fish`（自动找岸边、按钓鱼等级算抛竿力度、等咬钩、提竿、自动玩钓鱼小游戏、收宝箱，一次最多连钓 20 竿） |
 | 动物 | `care_animals`（自动进每个鸡舍/畜棚：捡蛋和羊毛、清空自动采集器、食槽放干草、摸动物、挤奶/剪毛；可开关动物门） |
 | 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托） |
-| 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，可坐电梯直达） |
+| 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，附近有矿石宝石节点会先敲，可坐电梯直达） |
 | 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵） |
 | 联机 | `say`（在游戏聊天里说话）、`set_mode`（换联机模式）、`wait_chat`（等别人说话）、`follow`（跟着别的玩家走）、`propose`（拿结婚戒指向别的玩家求婚） |
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
 | 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
-| 界面 | `dialogue`、`menu_click`、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
-| 时间 | `sleep`（自动回家上床）、`wait`（一次最多两小时） |
+| 界面 | `dialogue`、`menu_click`（按序号或名字点）、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
+| 时间 | `sleep`（自动回家上床）、`wait`（一次最多两小时）、`cancel_action`（中止正在执行的长动作） |
 | 记忆 | `update_notes` |
 
 工具执行都走游戏自己的逻辑（`BeginUsingTool`、`checkAction`、`tryToPlaceItem`、出货箱 `shipItem` 等），体力消耗、动画、掉落都和手动操作一致；走路是逐格移动并播放走路动画。
@@ -200,7 +200,7 @@ AI 收到的提示分两部分：
 
 ## 费用估计
 
-每一步请求大约 10k～14k 输入 token（系统提示 + 43 个工具定义约 7.5k，固定不变，能命中 DeepSeek 的缓存；游戏状态 3k～6k），输出几百 token。AI 大约每 10～20 秒一步，所以每小时大约一两百万输入 token。具体价格以 DeepSeek 官网为准，可以用 `dsai_tokens` 查看实际消耗。
+每一步请求大约 10k～14k 输入 token（系统提示 + 43 个工具定义约 7.5k，固定不变，能命中 DeepSeek 的缓存；行动记录整块往后挪，大部分也能命中；游戏状态 3k～6k），输出几百 token。AI 大约每 10～20 秒一步，所以每小时大约一两百万输入 token。具体价格以 DeepSeek 官网为准，可以用 `dsai_tokens` 查看实际消耗。
 
 ## 已知限制
 

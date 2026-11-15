@@ -22,6 +22,8 @@ namespace BlindWhaleFarmer
         public string Content = "";
         public List<ToolCall> ToolCalls = new();
         public int PromptTokens;
+        /// <summary>输入里命中缓存的 token（DeepSeek 是 prompt_cache_hit_tokens，OpenAI 兼容接口是 prompt_tokens_details.cached_tokens），价格低很多。</summary>
+        public int CacheHitTokens;
         public int CompletionTokens;
         /// <summary>输出到 max_tokens 被截断了（finish_reason = length）：工具调用可能没写完或者根本没写出来。</summary>
         public bool Truncated;
@@ -105,6 +107,8 @@ namespace BlindWhaleFarmer
             {
                 Content = msg?["content"]?.GetValue<string>() ?? "",
                 PromptTokens = root?["usage"]?["prompt_tokens"]?.GetValue<int>() ?? 0,
+                CacheHitTokens = root?["usage"]?["prompt_cache_hit_tokens"]?.GetValue<int>()
+                                 ?? root?["usage"]?["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0,
                 CompletionTokens = root?["usage"]?["completion_tokens"]?.GetValue<int>() ?? 0,
                 Truncated = root?["choices"]?[0]?["finish_reason"]?.GetValue<string>() == "length"
             };

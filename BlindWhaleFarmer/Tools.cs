@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 
@@ -165,9 +166,10 @@ namespace BlindWhaleFarmer
                 j => () => a.Dialogue(OptInt(j, "choice")),
                 P("choice", "integer", "选项序号（选择题才需要）", false));
 
-            Add("menu_click", "点击当前界面里的某个可点击元素（序号见“当前界面”）。", 20,
-                j => () => a.MenuClick(Int(j, "index")),
-                P("index", "integer", "元素序号"));
+            Add("menu_click", "点击当前界面里的某个可点击元素：传序号 index，或者传名字 name（按“当前界面”列出的名字找，包含这个词就算）。", 20,
+                j => () => a.MenuClick(OptInt(j, "index"), OptStr(j, "name")),
+                P("index", "integer", "元素序号", false),
+                P("name", "string", "元素名字（和 index 二选一）", false));
 
             Add("close_menu", "关闭当前界面/信件/商店，或确认提示。", 20,
                 j => () => a.CloseMenu());
@@ -290,6 +292,8 @@ namespace BlindWhaleFarmer
             Schema = BuildSchema();
             Schema.Add(Fn("update_notes", "覆盖写入你的长期笔记（会在每一步提示给你）：写下当前目标、计划、重要发现（商店位置、NPC喜好、已开垦区域坐标等）。保持简洁，200字以内。",
                 new[] { P("notes", "string", "完整的新笔记内容") }));
+            Schema.Add(Fn("cancel_action", "中止正在执行的长动作（钓鱼、下矿、wait、走路……）。动作卡住、或者你改主意了想先做别的时用；被中止的动作可能只做了一半，之后先 get_state 看看情况。",
+                Array.Empty<Param>()));
         }
 
         private static Param P(string name, string type, string desc, bool required = true) => new(name, type, desc, required);
@@ -334,7 +338,7 @@ namespace BlindWhaleFarmer
             };
         }
 
-        public bool IsKnown(string name) => name == "update_notes" || specs.ContainsKey(name);
+        public bool IsKnown(string name) => name is "update_notes" or "cancel_action" || specs.ContainsKey(name);
 
         /// <summary>只查信息、马上出结果的工具：内置 AI 在跑的时候 MCP 也能用（不占动作队列，不会打断它）。</summary>
         public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests" };
@@ -346,7 +350,7 @@ namespace BlindWhaleFarmer
                 return $"失败：{name} 不是只读工具";
             try
             {
-                var args = string.IsNullOrWhiteSpace(arguments) ? new JsonObject() : JsonNode.Parse(arguments) as JsonObject ?? new JsonObject();
+                var args = ParseArgs(arguments, out _);
                 string argProblem = NormalizeArgs(spec, args);
                 if (argProblem != null)
                     return "失败：" + argProblem;
@@ -369,14 +373,19 @@ namespace BlindWhaleFarmer
         public async Task<string> Execute(string name, string arguments)
         {
             JsonObject args;
+            string jsonFixed = null;
             try
             {
-                args = string.IsNullOrWhiteSpace(arguments) ? new JsonObject() : JsonNode.Parse(arguments) as JsonObject ?? new JsonObject();
+                args = ParseArgs(arguments, out jsonFixed);
             }
             catch (Exception ex)
             {
-                return "失败：参数不是合法 JSON：" + ex.Message;
+                return $"失败：参数不是合法 JSON，没能自动修好（{ex.Message}）。参数要写成 {{\"名字\": 值}}，字符串用双引号，数字不加引号，最后一项后面不加逗号";
             }
+
+            // 中止当前动作：不排队（动作通道正被占着），也不受游玩时长限制
+            if (name == "cancel_action")
+                return await main.CancelForTool().ConfigureAwait(false);
 
             if (Session != null)
             {
@@ -452,7 +461,70 @@ namespace BlindWhaleFarmer
             {
                 // 世界未就绪等情况下不提醒
             }
+            if (jsonFixed != null)
+                result += "\n" + jsonFixed;
             return warning == null ? result : result + "\n" + warning;
+        }
+
+        /// <summary>
+        /// 解析工具参数。模型偶尔写出坏 JSON（数字后面多个引号 {"x":50"}、最后一项后面多逗号、单引号、键名没引号、少个右括号、包在 ```json 里），
+        /// 直接报错的话它下一步多半原样再发一次。这里按顺序一步步修，每修一步试着解析一次；修好了 fixNote 说明一句，修不好抛出原来的错误。
+        /// </summary>
+        internal static JsonObject ParseArgs(string arguments, out string fixNote)
+        {
+            fixNote = null;
+            if (string.IsNullOrWhiteSpace(arguments))
+                return new JsonObject();
+            JsonException original;
+            try
+            {
+                return AsObject(JsonNode.Parse(arguments));
+            }
+            catch (JsonException ex)
+            {
+                original = ex;
+            }
+
+            string s = arguments.Trim();
+            var steps = new List<(string what, Func<string, string> fix)>
+            {
+                ("去掉了代码块标记", t => System.Text.RegularExpressions.Regex.Replace(t, @"^```(?:json)?\s*|\s*```$", "")),
+                ("去掉了数字后面多余的引号", t => System.Text.RegularExpressions.Regex.Replace(t, @"(:\s*-?\d+(?:\.\d+)?)""(?=\s*[,}\]])", "$1")),
+                ("去掉了多余的逗号", t => System.Text.RegularExpressions.Regex.Replace(t, @",\s*([}\]])", "$1")),
+                ("把单引号换成了双引号", t => t.Contains('"') ? t : t.Replace('\'', '"')),
+                ("给键名加了引号", t => System.Text.RegularExpressions.Regex.Replace(t, @"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", "$1\"$2\":")),
+                ("补上了缺的右括号", t => t + new string('}', Math.Max(0, t.Count(c => c == '{') - t.Count(c => c == '}')))),
+            };
+            var done = new List<string>();
+            foreach (var (what, fix) in steps)
+            {
+                string next = fix(s);
+                if (next == s)
+                    continue;
+                s = next;
+                done.Add(what);
+                try
+                {
+                    var obj = AsObject(JsonNode.Parse(s));
+                    fixNote = $"（参数 JSON 写错了，已自动修好：{string.Join("、", done)}。下次注意格式）";
+                    return obj;
+                }
+                catch (JsonException)
+                {
+                    // 接着修下一处
+                }
+            }
+            throw original;
+        }
+
+        /// <summary>参数应该是对象；有的模型会把整个对象再包成一个字符串，拆开它。</summary>
+        private static JsonObject AsObject(JsonNode node)
+        {
+            if (node is JsonObject obj)
+                return obj;
+            if (node is JsonValue v && v.TryGetValue(out string inner) && inner.TrimStart().StartsWith("{"))
+                return JsonNode.Parse(inner) as JsonObject ?? new JsonObject();
+            return new JsonObject();
         }
 
         /// <summary>模型常顺手带上的说明性字段，不算参数，直接去掉。</summary>
