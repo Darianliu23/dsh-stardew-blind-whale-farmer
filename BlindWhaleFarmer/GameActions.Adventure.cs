@@ -968,6 +968,11 @@ namespace BlindWhaleFarmer
         public IEnumerable<object> ExploreMine(int levels, int? startLevel, string whichMine = null)
         {
             var o = new Outcome();
+            if (Blocked(out string blockedWhy))
+            {
+                yield return ActionResult.Fail(blockedWhy);
+                yield break;
+            }
             // 出门带了下矿用不上的东西，结束时提醒一句（下次出门前整理）
             string clutter = TripClutterHint("mine");
             // 去哪个矿：明说 skull，或者人已经在沙漠 / 骷髅洞穴入口，就是骷髅洞穴
@@ -1041,6 +1046,12 @@ namespace BlindWhaleFarmer
                         yield return ActionResult.Fail("去矿洞入口失败（春季第5天后才开放）：" + o.Message);
                         yield break;
                     }
+                }
+                // 第一次进矿洞会放马龙的剧情：剧情在入口地图上播，这时进矿洞会把人带走、剧情卡在入口，人困在地图外
+                if (Blocked(out string sceneWhy))
+                {
+                    yield return ActionResult.Fail("到了矿洞入口，但" + sceneWhy + "。先用 dialogue 推进（或 skip_event 跳过），剧情放完再 explore_mine");
+                    yield break;
                 }
                 var entry = FindTileAction(Loc, target > 1 ? "MineElevator" : "Mine");
                 if (entry.HasValue)

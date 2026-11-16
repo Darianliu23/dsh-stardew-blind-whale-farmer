@@ -439,7 +439,9 @@ namespace BlindWhaleFarmer
                 // 拿不到就不提醒
             }
             bool interruptOnDamage = !CombatTools.Contains(name) && !InterfaceTools.Contains(name);
-            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name, !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name)).ConfigureAwait(false);
+            // 本来就在剧情里用的（对话、跳过、关界面）、本来就要进剧情的（节日、睡觉时的夜间事件和婚礼）以外，途中冒出剧情就停下
+            bool stopOnScene = !InterfaceTools.Contains(name) && name is not ("festival" or "sleep");
+            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name, !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name), stopOnScene).ConfigureAwait(false);
             if (name == "sleep")
             {
                 // 睡前顺手收纳了战利品就说一声

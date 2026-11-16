@@ -100,13 +100,16 @@ namespace BlindWhaleFarmer
         private bool currentInterruptOnChat;
         /// <summary>动作还没开始跑就在等过场（游戏冻结操作）的帧数；开始跑以后为 -1。</summary>
         private int currentFreezeWait;
+        /// <summary>途中冒出剧情就停下（开始时就在剧情里的不算）；连续看到剧情的帧数，防抖用。</summary>
+        private bool currentStopOnScene;
+        private int currentSceneTicks;
 
         /// <summary>
         /// 在主线程上逐帧运行一个动作协程，返回其结果文字。
         /// preemptWhenStuck：处理界面的动作（dialogue、skip_event 等）在剧情/界面打开时可以打断正在跑的动作——
         /// 那个动作被剧情挡住本来也走不动，不打断的话两边互相等，会卡死。
         /// </summary>
-        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false, string name = null, bool interruptOnChat = false)
+        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false, string name = null, bool interruptOnChat = false, bool stopOnScene = false)
         {
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             queue.Enqueue(() =>
@@ -136,6 +139,8 @@ namespace BlindWhaleFarmer
                     currentMaxTicks = Math.Max(1, maxSeconds) * 60;
                     currentInterruptOnChat = interruptOnChat;
                     currentFreezeWait = 0;
+                    currentStopOnScene = stopOnScene && !Safe(() => StardewValley.Game1.eventUp, false);
+                    currentSceneTicks = 0;
                     currentStartHealth = interruptOnDamage ? Safe(() => StardewValley.Game1.player?.health ?? -1, -1) : -1;
                 }
                 catch (Exception ex)
@@ -179,6 +184,19 @@ namespace BlindWhaleFarmer
             {
                 Finish("失败：动作超时，已中止");
                 return;
+            }
+            // 走进某个地方、和东西互动时触发了剧情（心事件、第一次进矿洞/社区中心……）：马上停下。
+            // 接着走路、传送会把人带离放剧情的地图，剧情卡在原地、人困在地图外
+            if (currentStopOnScene)
+            {
+                string scene = Safe(() => GameActions.SceneStartedNote(), null);
+                if (scene == null)
+                    currentSceneTicks = 0;
+                else if (++currentSceneTicks >= 5)
+                {
+                    Finish("失败：" + scene);
+                    return;
+                }
             }
             // 联机时有人说话：先停下听（结果后面会附上说了什么）
             if (currentInterruptOnChat && Safe(() => GameActions.ChatWantsAttention(), false))

@@ -620,6 +620,12 @@ namespace BlindWhaleFarmer
                 }
                 if (Loc.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 {
+                    // 到达时触发了剧情（比如第一次进矿洞马龙来打招呼）：人被剧情藏到地图外，坐标是 (-99,-99) 之类，别让 AI 以为到了就接着干活
+                    if (Game1.eventUp && Game1.CurrentEvent is { isFestival: false })
+                    {
+                        o.Succeed($"已到达 {targetName}，但一进来就触发了剧情：用 dialogue 推进对话，或者 skip_event 跳过；剧情放完之前别做别的事");
+                        yield break;
+                    }
                     var t = Player.TilePoint;
                     o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : "") + doorWaitNote);
                     yield break;
@@ -2449,11 +2455,39 @@ namespace BlindWhaleFarmer
             var ev = Game1.CurrentEvent;
             if (Game1.eventUp && ev == null)
             {
-                yield return ActionResult.Fail(StuckEventHint);
+                // 剧情挂在别的地图上（人被带离了放剧情的地图），这里找不到它，跳不了：剩下的对话说完，
+                // 再等模组自己把剧情标记解开、把人送回地图里（每样 5 秒），不用 AI 自己 wait
+                for (int i = 0; i < 20 && Game1.activeClickableMenu is DialogueBox; i++)
+                    foreach (var s in Dialogue(null))
+                        if (s is not ActionResult)
+                            yield return s;
+                for (int t = 0; t < 60 * 15; t++)
+                {
+                    var at = Player.TilePoint;
+                    if (!Game1.eventUp && Loc.isTileOnMap(at.X, at.Y) && Game1.activeClickableMenu == null)
+                        break;
+                    yield return null;
+                }
+                var now = Player.TilePoint;
+                yield return !Game1.eventUp && Loc.isTileOnMap(now.X, now.Y)
+                    ? ActionResult.Success($"剧情没在这张地图上，跳不了；已经把剩下的对话说完、解开了剧情标记，人回到了 {Loc.NameOrUniqueName} ({now.X},{now.Y})")
+                    : ActionResult.Fail(StuckEventHint);
                 yield break;
             }
             if (!Game1.eventUp || ev == null)
             {
+                // 剧情已经结束了，但人还被藏在地图外面（剧情没把她送回来）：等模组把她送回地图里
+                var off = Player.TilePoint;
+                if (!Loc.isTileOnMap(off.X, off.Y))
+                {
+                    for (int t = 0; t < 60 * 10 && !Loc.isTileOnMap(Player.TilePoint.X, Player.TilePoint.Y); t++)
+                        yield return null;
+                    var back = Player.TilePoint;
+                    yield return Loc.isTileOnMap(back.X, back.Y)
+                        ? ActionResult.Success($"剧情已经结束了，人被剧情留在了地图外面，已经送回 {Loc.NameOrUniqueName} ({back.X},{back.Y})")
+                        : ActionResult.Fail("剧情已经结束了，但人还在地图外面，没能送回来：试试 travel_to Farm");
+                    yield break;
+                }
                 yield return ActionResult.Fail("现在没有剧情事件");
                 yield break;
             }
@@ -2465,7 +2499,11 @@ namespace BlindWhaleFarmer
             ev.skipEvent();
             for (int i = 0; i < 300 && Game1.eventUp; i++)
                 yield return null;
-            yield return ActionResult.Success("已跳过事件");
+            // 跳过以后游戏还要淡出淡入、把人送回去：等画面稳定再返回，不然下一个动作会被“正在切换场景”挡掉
+            foreach (var s in WaitSceneSettled())
+                yield return s;
+            var p = Player.TilePoint;
+            yield return ActionResult.Success($"已跳过事件，现在在 {Loc.NameOrUniqueName} ({p.X},{p.Y})");
         }
 
         /// <summary>离开节日：和手动走出节日地图边界一样，弹出“要离开节日吗”并确认（Event.forceEndFestival）。</summary>
@@ -2732,13 +2770,42 @@ namespace BlindWhaleFarmer
 
         private int stuckEventTicks;
 
-        private const string StuckEventHint = "游戏的剧情标记卡住了（其实没有剧情在播），模组会在几秒内自动解开：wait 1 分钟再试，不用换别的动作";
+        /// <summary>
+        /// 正在播放的普通剧情（不算节日、夜里的农场事件）给 AI 看的说明：在哪、有谁、怎么推进。没有返回 null。
+        /// 动作途中冒出剧情时用它停下动作（MainThread）。
+        /// </summary>
+        internal static string SceneStartedNote()
+        {
+            if (!Game1.eventUp || Game1.farmEvent != null)
+                return null;
+            var ev = Game1.CurrentEvent;
+            if (ev is { isFestival: true })
+                return null;
+            var who = ev?.actors.Where(a => a != null).Select(a => a.displayName).Distinct().Take(3).ToList() ?? new List<string>();
+            return $"在 {Loc?.DisplayName ?? "这里"} 触发了剧情{(who.Count > 0 ? "（" + string.Join("、", who) + "）" : "")}，刚才的动作停下了，没做完。"
+                + "用 dialogue 推进对话，或者 skip_event 跳过；剧情放完、人回到地图上以后再接着做";
+        }
+
+        private const string StuckEventHint = "游戏的剧情标记卡住了（其实没有剧情在播），模组会在几秒内自动解开：用 skip_event（它会把剩下的对话说完、等标记解开），或者 wait 1 分钟再试，不用换别的动作";
 
         /// <summary>
         /// Game1.eventUp 开着，但当前地图没有剧情、没有界面、也不在切场景/淡入淡出：游戏自己不会再关掉它，
         /// 所有动作都会被“正在播放剧情事件”挡住，时间也停住（冬8日冰雪节路上在镇子里就卡成这样）。
         /// 持续 5 秒就记下现场（以便查原因），再用游戏自己结束剧情的 Game1.eventFinished() 收尾。每帧调用。
         /// </summary>
+        /// <summary>
+        /// 人被带离了放剧情的地图（比如马龙的剧情还在矿洞入口播，人已经进了第 1 层）：那段剧情留在原地图上，
+        /// 下次回去会接着播一半。剧情卡住、人被困地图外时一起收拾：别的地图上的普通剧情直接丢掉（节日不动）。
+        /// </summary>
+        private static void DropOrphanEvents(StardewModdingAPI.IMonitor monitor)
+        {
+            foreach (var l in Game1.locations.Where(l => l != Loc && l.currentEvent is { isFestival: false }).ToList())
+            {
+                monitor.Log($"丢掉留在 {l.NameOrUniqueName} 上没播完的剧情 {l.currentEvent.id}（人已经不在那里）", StardewModdingAPI.LogLevel.Info);
+                l.currentEvent = null;
+            }
+        }
+
         public void RecoverStuckEvent(StardewModdingAPI.IMonitor monitor)
         {
             bool stuck = Game1.eventUp && Game1.CurrentEvent == null && Game1.farmEvent == null
@@ -2755,6 +2822,7 @@ namespace BlindWhaleFarmer
             stuckEventTicks = 0;
             var withEvent = Game1.locations.Where(l => l.currentEvent != null)
                 .Select(l => $"{l.NameOrUniqueName}:{l.currentEvent.id}{(l.currentEvent.isFestival ? "(节日)" : "")}").ToList();
+            DropOrphanEvents(monitor);
             monitor.Log($"剧情标记卡住了：eventUp=true 但 {Loc?.NameOrUniqueName} 没有剧情；位置 {Player.TilePoint}，eventOver={Game1.eventOver}，"
                 + $"有剧情的地图：{(withEvent.Count > 0 ? string.Join("、", withEvent) : "无")}，时间 {Util.Stamp()}。已用 eventFinished 解开。",
                 StardewModdingAPI.LogLevel.Warn);
@@ -2816,6 +2884,7 @@ namespace BlindWhaleFarmer
                             if (Math.Max(Math.Abs(dx), Math.Abs(dy)) == r && Standable(new Point(anchor.X + dx, anchor.Y + dy)))
                                 to = new Point(anchor.X + dx, anchor.Y + dy);
             }
+            DropOrphanEvents(monitor);
             monitor.Log($"人在地图外面：{Loc.NameOrUniqueName} ({at.X},{at.Y})，没有剧情在播；剧情前的位置记的是 ({before.X},{before.Y})，时间 {Util.Stamp()}。"
                 + (to is Point t ? $"已送回 ({t.X},{t.Y})。" : "找不到能站的格子，没有动她。"), StardewModdingAPI.LogLevel.Warn);
             if (to is Point target)
