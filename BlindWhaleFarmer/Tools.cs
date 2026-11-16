@@ -37,6 +37,9 @@ namespace BlindWhaleFarmer
         /// <summary>有人说话也不从外面打断的工具：本身就在等人或者很短；钓鱼半路断了鱼竿还在水里，它自己在两竿之间停。</summary>
         private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide" };
 
+        /// <summary>会往背包里攒东西的工具：做完在外面背包快满时提醒一句“回农场会自动收纳”。</summary>
+        private static readonly HashSet<string> LootTools = new() { "fish", "forage", "explore_mine", "fight", "move_to", "travel_to", "interact", "check_crab_pots", "clear_area", "use_tool" };
+
         /// <summary>打怪类工具：本来就会挨打，不因掉血中断。</summary>
         private static readonly HashSet<string> CombatTools = new() { "fight", "explore_mine" };
         private readonly Func<string, string> updateNotes;
@@ -110,7 +113,7 @@ namespace BlindWhaleFarmer
                 P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false),
                 P("force", "boolean", "要交的东西也照样出货（一般不要用）", false));
 
-            Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就用本地点最近的箱子。", 120,
+            Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就自动挑箱子：同样的东西放进已经有它的箱子（叠在一起），没有就放进装着同类东西的箱子，再没有才放最近的。", 120,
                 j => () => a.StoreItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
                 P("items", "string", "要存的物品名，多个用逗号分隔；不传或 all 表示除工具外全部存", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
@@ -429,7 +432,12 @@ namespace BlindWhaleFarmer
             bool interruptOnDamage = !CombatTools.Contains(name) && !InterfaceTools.Contains(name);
             string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name, !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name)).ConfigureAwait(false);
             if (name == "sleep")
-                return result;
+            {
+                // 睡前顺手收纳了战利品就说一声
+                string slept = null;
+                try { slept = StardewModdingAPI.Context.IsWorldReady ? await main.Invoke(GameActions.TakeStoredLootNote).ConfigureAwait(false) : null; } catch { }
+                return slept == null ? result : result + "\n" + slept;
+            }
             if (result.Contains("背包满了") && name != "store_items" && name != "take_items")
                 result += "\n" + BagFullAdvice;
             // 拿到更好的鞋子、戒指就自动换上（宝箱、商店、任务奖励都可能给）；
@@ -453,7 +461,7 @@ namespace BlindWhaleFarmer
                         // 这次结果里有新的话就先不催，等下一步
                         string chat = GameActions.TakeChat();
                         string replyReminder = chat == null && name != "get_guide" ? GameActions.TakeReplyReminder() : null;
-                        var parts = new[] { moved, equipped != null ? "🎽 " + equipped : null, claimed != null ? "💰 " + claimed : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
+                        var parts = new[] { moved, equipped != null ? "🎽 " + equipped : null, claimed != null ? "💰 " + claimed : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.TakeStoredLootNote(), LootTools.Contains(name) ? GameActions.LootReminder() : null, GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
                         return parts.Count > 0 ? string.Join("\n", parts) : null;
                     }).ConfigureAwait(false);
             }

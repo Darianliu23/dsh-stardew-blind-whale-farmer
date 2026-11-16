@@ -67,6 +67,13 @@ namespace BlindWhaleFarmer
         /// <summary>把背包里的东西存进箱子（工具和武器只存点了全名的，比如“训练用鱼竿”）。和箱子界面里点背包物品一样：chest.addItem，全放进去才从背包移除。</summary>
         public IEnumerable<object> StoreItems(string items, int? x, int? y)
         {
+            // 没指定箱子：同样的东西存到已经放着它的箱子里，不是一律塞进最近的那个
+            if (!x.HasValue || !y.HasValue)
+            {
+                foreach (var s in StoreItemsSorted(items))
+                    yield return s;
+                yield break;
+            }
             var chest = FindChest(x, y, out var tile, out string error);
             if (chest == null)
             {
@@ -112,6 +119,37 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             yield return ActionResult.Success($"存进 ({tile.X},{tile.Y}) 的箱子：{string.Join("、", stored)}{(full ? "；箱子满了，剩下的还在背包里" : "")}。{ChestSummary(chest)}");
+        }
+
+        /// <summary>
+        /// 不指定箱子的 store_items：每样东西放进已经有它的箱子（能叠就叠），没有就放进装着同一类东西的箱子，再没有才放最近的有空位的箱子。
+        /// </summary>
+        private IEnumerable<object> StoreItemsSorted(string items)
+        {
+            if (!PlayerChests(Loc).Any())
+            {
+                yield return ActionResult.Fail("这里没有箱子。先 craft Chest（50 木材），再 place_item 放在农场上（比如出货箱旁边）；箱子在别的地方就先 travel_to 过去");
+                yield break;
+            }
+            var filter = ItemFilter(items);
+            // 工具和武器只存点了全名的（“剑”这种模糊的名字会把手上最好的武器也存掉）
+            var toolNames = string.IsNullOrWhiteSpace(items) ? new HashSet<string>()
+                : items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            bool Wanted(Item i) => i is Tool ? toolNames.Contains(i.DisplayName) || toolNames.Contains(i.Name) : filter(i);
+            var toStore = Player.Items.Where(i => i != null && Wanted(i)).ToList();
+            if (toStore.Count == 0)
+            {
+                yield return ActionResult.Fail("背包里没有符合的东西可存（工具要写全名才存）");
+                yield break;
+            }
+            var stored = new List<string>();
+            foreach (var s in StoreIntoChests(toStore, stored))
+                yield return s;
+            var left = toStore.Where(i => Player.Items.Contains(i)).Select(i => i.DisplayName).Distinct().ToList();
+            string rest = left.Count > 0 ? $"；箱子都满了（或者走不过去），{string.Join("、", left)} 还在背包里：craft Chest（50 木材）再放一个箱子" : "";
+            yield return stored.Count > 0
+                ? ActionResult.Success($"存进了 {string.Join("；", stored)}{rest}。背包空位 {Player.freeSpotsInInventory()} 个")
+                : ActionResult.Fail("一样也没存进去" + rest);
         }
 
         /// <summary>从箱子取东西回背包。和箱子界面里点箱子物品一样：先确认背包装得下再从箱子移除。</summary>

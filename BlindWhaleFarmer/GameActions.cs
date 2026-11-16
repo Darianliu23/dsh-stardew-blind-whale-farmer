@@ -584,6 +584,10 @@ namespace BlindWhaleFarmer
             var o = new Outcome();
             foreach (var s in TravelInner(name, o, askBeforeDetour: !detour))
                 yield return s;
+            // 回到农场：背包快满或者战利品攒多了，顺手收进箱子（收了什么由 Tools 接在结果后面）
+            if (o.Ok)
+                foreach (var s in StoreLootHere(storedLootNotes))
+                    yield return s;
             yield return o.Ok ? ActionResult.Success(o.Message) : ActionResult.Fail(o.Message);
         }
 
@@ -1219,10 +1223,13 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             // 洒水器放歪了等于白放：浇不到耕地，或者田里有明显更好的位置时先拦下来，告诉她放哪
-            int sprinklerGain = 0;
-            if (!force && SprinklerProblem(Loc, Player.Items[idx], new Point(x, y), out sprinklerGain) is string badSpot)
+            // force 时也算一遍，成功消息里的“能浇到 N 格”要准
+            string badSpot = SprinklerProblem(Loc, Player.Items[idx], new Point(x, y), out int sprinklerGain);
+            if (!force && badSpot != null)
             {
-                yield return ActionResult.Fail($"{badSpot}。{ForceHint}");
+                // 种着作物的格子 force 也放不上去，不提 force
+                bool onCrop = Loc.terrainFeatures.TryGetValue(new Vector2(x, y), out var under) && under is HoeDirt { crop: not null };
+                yield return ActionResult.Fail(onCrop ? badSpot : $"{badSpot}。{ForceHint}");
                 yield break;
             }
             var o = new Outcome();
@@ -2381,6 +2388,9 @@ namespace BlindWhaleFarmer
             // 联机时已经躺下在等别人的话，接着等就行
             if (Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" })
             {
+                // 睡前在农场（或农舍里）有箱子的话，把今天攒的战利品收进去
+                foreach (var s in StoreLootHere(storedLootNotes))
+                    yield return s;
                 foreach (var s in GetIntoBed(o))
                     yield return s;
                 if (!o.Ok)

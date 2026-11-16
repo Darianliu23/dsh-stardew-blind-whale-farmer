@@ -19,7 +19,7 @@
    - 解压后运行安装程序（Windows 是 `install on Windows.bat`），按提示选择游戏目录
    - Steam 里给星露谷设置启动选项：`"<游戏目录>\StardewModdingAPI.exe" %command%`
 2. **安装本模组**（三选一）：
-   - **用 DSH 的话最省事**：在 DSH 的插件市场装 dsh-stardew-blind-whale-farmer。插件自带编译好的模组，会自动装进游戏的 `Mods`（游戏开着时等关了再装）；以后在插件市场点“更新”，插件和模组一起更新。找不到游戏目录时，在插件的配置卡片里填“星露谷目录”。
+   - **用 DSH 的话最省事**：在 DSH 的插件市场装 dsh-stardew-blind-whale-farmer。插件自带编译好的模组，会自动装进游戏的 `Mods`（游戏开着时等关了再装）；以后在插件市场点“更新”，插件和模组一起更新。找不到游戏目录时，在插件的配置卡片里填“星露谷目录”。插件会把你改过的设置另存一份到 DSH 目录下的 `dsh-stardew-blind-whale-farmer/settings-backup.json`；更新插件后设置如果回到了默认值，会自动从这份备份恢复。
    - 从 GitHub Releases 下载压缩包，把里面的 `BlindWhaleFarmer` 文件夹放进游戏目录的 `Mods` 里。
    从源码安装的话，在仓库根目录运行（会自动在 Steam / GOG 的安装位置找游戏，包括装在其他盘的 Steam 库）：
    ```bash
@@ -79,6 +79,7 @@ SMAPI 控制台命令（调试用）：
 **用 DeepSeek Harness（DSH）玩：** 装上本仓库的 [DSH 插件](docs/dsh-plugin.md)（`dsh-stardew-blind-whale-farmer`）。它会：
 - 提供一个 **“大肥鱼种白饭”会话预设**（默认关闭，在插件的配置页里打开）：新建会话时选它，那个会话才连上游戏、拿到玩游戏的工具；其他会话里完全没有这些工具和说明，不占上下文；已经对话过的会话不能再换预设（DSH 的规定），要玩请新建会话；AI 的长期笔记会出现在 get_state 最前面，新会话能接着玩。
 - 也可以在所有会话（包括老会话）里提供一个很小的 **stardew 入口工具**（默认关闭）：不用换预设，常驻上下文只多一个工具的简短说明，AI 要玩时先 `action="help"` 再按需调用各个动作。
+- **AI 能自己开游戏**：游戏没开时，预设会话里的 AI 用 `stardew_launch_game` 工具、入口工具用 `action="launch_game"`，会通过 SMAPI 启动星露谷，在标题画面读存档（可以指定存档名，不指定读最近玩的那个），进了游戏才返回。游戏已经开着就什么都不做。需要先装好 SMAPI 和模组；找不到游戏目录时在插件设置里填“星露谷目录”。
 - 在 DSH 左侧边栏「插件」→ dsh-stardew-blind-whale-farmer → 点组件名旁边的「配置 ›」 里提供设置：**每次玩几个游戏日 / 多少分钟**、思考时冻结时间、给 AI 的额外要求、攻略文件等，改了自动推送到游戏，不用重启。
 
 桌面版和网页版用不同的 profile，各自都要装。不要再在 profile 里全局挂 `@deepseek-ai/dsh-mcp-client` 连星露谷，否则每个会话都会带上这些工具。
@@ -148,7 +149,7 @@ SMAPI 控制台命令（调试用）：
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
-| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
+| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取；不指定箱子时同样的东西存到已经有它的箱子里）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。背包快满或者战利品（矿石、宝石、晶球、采集品、怪物掉落……）攒多了，`travel_to` 回到农场和睡觉前会自动收进箱子，鱼和作物留在身上。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
 | 界面 | `dialogue`、`menu_click`（按序号或名字点）、`close_menu`、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
 | 时间 | `sleep`（自动回家上床）、`wait`（一次最多两小时）、`cancel_action`（中止正在执行的长动作） |
 | 记忆 | `update_notes` |

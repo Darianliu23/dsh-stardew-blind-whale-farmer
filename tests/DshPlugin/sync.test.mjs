@@ -4,6 +4,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 
+// 设置备份写到临时目录，别动真的 DSH 目录
+const { tmpdir } = await import('node:os')
+process.env.DSH_STARDEW_BACKUP = (await import('node:path')).join(tmpdir(), `bwf-sync-test-${process.pid}.json`)
+// 同版本的空备份：插件就不会去读本机游戏里模组的 config.json 来恢复设置（测试要的是默认值）
+{
+  const fs = await import('node:fs')
+  const version = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
+  fs.writeFileSync(process.env.DSH_STARDEW_BACKUP, JSON.stringify({ version, settings: {} }))
+}
 const plugin = await import('../../lib/index.js')
 
 function fakeGame() {

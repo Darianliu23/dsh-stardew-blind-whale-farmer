@@ -123,41 +123,12 @@ namespace BlindWhaleFarmer
             }
 
             var stored = new List<string>();
-            foreach (var (tile, chest) in chests)
-            {
-                var pending = toStore.Where(i => Player.Items.Contains(i)).ToList();
-                if (pending.Count == 0)
-                    break;
-                // 先看这个箱子还装不装得下（有空格，或者有同类可以叠）
-                if (chest.GetItemsForPlayer().Count(i => i != null) >= chest.GetActualCapacity()
-                    && !pending.Any(p => chest.GetItemsForPlayer().Any(c => c != null && c.canStackWith(p) && c.Stack < c.maximumStackSize())))
-                    continue;
-                foreach (var s in GoAdjacent(tile, o))
-                    yield return s;
-                if (!o.Ok)
-                {
-                    o.Succeed();
-                    continue;
-                }
-                foreach (var item in pending)
-                {
-                    int before = item.Stack;
-                    string name = item.DisplayName;
-                    var left = chest.addItem(item);
-                    if (left == null)
-                    {
-                        Player.removeItemFromInventory(item);
-                        stored.Add(before > 1 ? $"{name}x{before}" : name);
-                    }
-                    else if (left.Stack < before)
-                        stored.Add($"{name}x{before - left.Stack}");
-                }
-                chest.clearNulls();
-            }
+            foreach (var s in StoreIntoChests(toStore, stored))
+                yield return s;
 
             var leftover = toStore.Where(i => Player.Items.Contains(i)).Select(i => i.DisplayName).ToList();
             var kept = Player.Items.Where(i => i != null).Select(i => i.DisplayName).ToList();
-            string msg = stored.Count > 0 ? $"存起来了：{string.Join("、", stored)}" : "一样也没存进去";
+            string msg = stored.Count > 0 ? $"存起来了：{string.Join("；", stored)}" : "一样也没存进去";
             msg += $"。身上留着：{string.Join("、", kept)}（空位 {Player.freeSpotsInInventory()} 个）";
             if (leftover.Count > 0)
                 msg += $"。箱子都满了，还剩 {string.Join("、", leftover)} 没地方放：craft Chest（50 木材）再放一个箱子";
@@ -166,6 +137,207 @@ namespace BlindWhaleFarmer
             if (missing != null)
                 msg += "。" + missing;
             yield return stored.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
+        }
+
+        /// <summary>
+        /// 把 toStore 里的东西存进当前地点的箱子，存进去的按箱子记在 stored 里（“(x,y)：铁矿石x6、铜矿石x4”）。
+        /// 同样的东西归到一起：先放进已经有这种东西的箱子（能叠就叠），再放进装着同一类东西的箱子，都没有才放进最近的有空位的箱子。
+        /// 按计划一个箱子一个箱子走过去放；计划的箱子放不下了（比如格子算错），剩下的再按远近找有空位的箱子。走不到的箱子跳过。
+        /// </summary>
+        private IEnumerable<object> StoreIntoChests(List<Item> toStore, List<string> stored)
+        {
+            var o = new Outcome();
+            var chests = PlayerChests(Loc).ToList();
+            var plan = PlanChests(toStore.Where(i => Player.Items.Contains(i)).ToList(), chests);
+            var perChest = new Dictionary<Chest, List<string>>();
+            var tiles = chests.ToDictionary(c => c.chest, c => c.tile);
+
+            // 第一轮按计划放：从近到远，走到一个箱子就把分给它的东西都放进去
+            var order = plan.Keys.ToList();
+            var at = Player.TilePoint;
+            while (order.Count > 0)
+            {
+                var next = order.OrderBy(c => Util.Manhattan(tiles[c], at)).First();
+                order.Remove(next);
+                var items = plan[next].Where(i => Player.Items.Contains(i)).ToList();
+                if (items.Count == 0)
+                    continue;
+                foreach (var s in GoAdjacent(tiles[next], o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    o.Succeed();
+                    continue;
+                }
+                at = Player.TilePoint;
+                PutInto(next, items, perChest);
+            }
+
+            // 第二轮：计划里的箱子没放下的，按远近找还有空位的箱子
+            foreach (var (tile, chest) in chests.OrderBy(c => Util.Manhattan(c.tile, Player.TilePoint)).ToList())
+            {
+                var pending = toStore.Where(i => Player.Items.Contains(i)).ToList();
+                if (pending.Count == 0)
+                    break;
+                if (!pending.Any(p => ChestHasRoomFor(chest, p)))
+                    continue;
+                foreach (var s in GoAdjacent(tile, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    o.Succeed();
+                    continue;
+                }
+                PutInto(chest, pending, perChest);
+            }
+            foreach (var (chest, names) in perChest)
+                stored.Add($"({tiles[chest].X},{tiles[chest].Y}) 的箱子：{string.Join("、", names)}");
+        }
+
+        /// <summary>把东西放进箱子，放进去多少记在 perChest 里。</summary>
+        private static void PutInto(Chest chest, List<Item> items, Dictionary<Chest, List<string>> perChest)
+        {
+            foreach (var item in items)
+            {
+                int before = item.Stack;
+                string name = item.DisplayName;
+                var left = chest.addItem(item);
+                int moved = left == null ? before : before - left.Stack;
+                if (left == null)
+                    Player.removeItemFromInventory(item);
+                if (moved > 0)
+                {
+                    if (!perChest.TryGetValue(chest, out var names))
+                        perChest[chest] = names = new List<string>();
+                    names.Add(moved > 1 ? $"{name}x{moved}" : name);
+                }
+            }
+            chest.clearNulls();
+        }
+
+        /// <summary>箱子还放不放得下这样东西：有空格，或者里面有同样的东西还没叠满。</summary>
+        private static bool ChestHasRoomFor(Chest chest, Item item)
+        {
+            var inside = chest.GetItemsForPlayer();
+            return inside.Count(i => i != null) < chest.GetActualCapacity()
+                || inside.Any(c => c != null && c.canStackWith(item) && c.Stack < c.maximumStackSize());
+        }
+
+        /// <summary>
+        /// 每样东西放哪个箱子：已经有同样东西的箱子 → 装着同一类东西（同一个 Category）的箱子 → 离人最近的有空位的箱子。
+        /// 一边分一边扣掉要占的空格，免得都分给一个其实放不下的箱子。放不下的不分（留给第二轮）。
+        /// </summary>
+        private static Dictionary<Chest, List<Item>> PlanChests(List<Item> items, List<(Point tile, Chest chest)> chests)
+        {
+            var plan = new Dictionary<Chest, List<Item>>();
+            var free = chests.ToDictionary(c => c.chest, c => c.chest.GetActualCapacity() - c.chest.GetItemsForPlayer().Count(i => i != null));
+            var me = Player.TilePoint;
+            foreach (var item in items)
+            {
+                int category = item is SObject so ? so.Category : 0;
+                bool Same((Point tile, Chest chest) c) => c.chest.GetItemsForPlayer().Any(i => i != null && i.canStackWith(item))
+                    || (plan.TryGetValue(c.chest, out var planned) && planned.Any(p => p.canStackWith(item)));
+                bool SameKind((Point tile, Chest chest) c) => category != 0
+                    && c.chest.GetItemsForPlayer().Any(i => i is SObject other && other.Category == category);
+                // 能直接叠进去（同样的东西还没叠满）就不占新格子
+                bool Stacks((Point tile, Chest chest) c) => c.chest.GetItemsForPlayer().Any(i => i != null && i.canStackWith(item) && i.Stack + item.Stack <= i.maximumStackSize());
+                var pick = chests
+                    .Where(c => Stacks(c) || free[c.chest] > 0)
+                    .OrderBy(c => Same(c) ? 0 : SameKind(c) ? 1 : 2)
+                    .ThenBy(c => Util.Manhattan(c.tile, me))
+                    .Select(c => c.chest)
+                    .FirstOrDefault();
+                if (pick == null)
+                    continue;
+                bool stacks = chests.Any(c => c.chest == pick && Stacks(c));
+                bool sharesPlanned = plan.TryGetValue(pick, out var already) && already.Any(p => p.canStackWith(item));
+                if (!stacks && !sharesPlanned)
+                    free[pick]--;
+                if (!plan.TryGetValue(pick, out var list))
+                    plan[pick] = list = new List<Item>();
+                list.Add(item);
+            }
+            return plan;
+        }
+
+        // ───────────────────────── 主动收纳 ─────────────────────────
+
+        /// <summary>
+        /// 出门攒下的战利品：矿石、宝石、晶球、石头木材、煤、怪物掉落、垃圾、野菜贝壳这类采集品、古物。
+        /// 鱼、作物、料理、加工品不算（可能要出货、送礼、做菜），身上该留的（工具、种子、鱼饵、炸弹、回血食物……）
+        /// 和任务、收集包要交的（背包里标【留着】的）也不算。
+        /// </summary>
+        internal static List<Item> LootToStore()
+        {
+            var keep = ItemsToKeep(_ => false);
+            var reserved = ReservedChecker();
+            return Player.Items.Where(i => i is SObject o && !keep.Contains(i) && reserved(i) == null && IsLoot(o)).ToList();
+        }
+
+        private static readonly HashSet<string> LootIds = new() { "(O)535", "(O)536", "(O)537", "(O)749", "(O)275", "(O)791", "(O)MysteryBox", "(O)GoldenMysteryBox" };
+
+        private static bool IsLoot(SObject o) =>
+            o.Category is SObject.GemCategory or SObject.mineralsCategory or SObject.metalResources or SObject.buildingResources
+                or SObject.monsterLootCategory or SObject.junkCategory or SObject.GreensCategory or SObject.sellAtFishShopCategory
+            || o.Type == "Arch"
+            || LootIds.Contains(o.QualifiedItemId);
+
+        /// <summary>该不该顺手收纳：背包空位不多了，或者战利品攒得多了。</summary>
+        private static bool ShouldStoreLoot(List<Item> loot) =>
+            loot.Count > 0 && (Player.freeSpotsInInventory() <= 4 || loot.Count >= 6);
+
+        /// <summary>
+        /// 回到农场（或在农舍里）时把战利品存进这里的箱子：返回说明，没存返回 null。
+        /// 只在当前地点有箱子时做，不会为了收纳专门跑一趟。
+        /// </summary>
+        private IEnumerable<object> StoreLootHere(List<string> note)
+        {
+            if (Loc is not (Farm or StardewValley.Locations.FarmHouse) || !PlayerChests(Loc).Any())
+                yield break;
+            var loot = LootToStore();
+            if (!ShouldStoreLoot(loot))
+                yield break;
+            var stored = new List<string>();
+            foreach (var s in StoreIntoChests(loot, stored))
+                yield return s;
+            if (stored.Count > 0)
+                note.Add($"🎒 回到农场顺手把战利品收进了箱子：{string.Join("；", stored)}（背包空位 {Player.freeSpotsInInventory()} 个）");
+        }
+
+        /// <summary>这次动作里顺手收纳了什么（travel_to 回农场、sleep 前），由 Tools 接在结果后面。</summary>
+        private static readonly List<string> storedLootNotes = new();
+
+        public static string TakeStoredLootNote()
+        {
+            if (storedLootNotes.Count == 0)
+                return null;
+            string text = string.Join("\n", storedLootNotes);
+            storedLootNotes.Clear();
+            return text;
+        }
+
+        private static string lastLootReminder;
+
+        /// <summary>
+        /// 在外面背包快满、身上又有战利品时提醒一句（同样的情况只提醒一次）。在农场上不提醒（回农场会自动收）。
+        /// </summary>
+        public static string LootReminder()
+        {
+            if (!StardewModdingAPI.Context.IsWorldReady || Loc is Farm or StardewValley.Locations.FarmHouse)
+                return null;
+            int free = Player.freeSpotsInInventory();
+            var loot = LootToStore();
+            if (free > 2 || loot.Count == 0)
+            {
+                lastLootReminder = null;
+                return null;
+            }
+            string key = free + "|" + loot.Count;
+            if (key == lastLootReminder)
+                return null;
+            lastLootReminder = key;
+            return $"🎒 背包只剩 {free} 格，身上有 {string.Join("、", loot.Take(6).Select(i => i.DisplayName))}{(loot.Count > 6 ? $" 等 {loot.Count} 样" : "")}可以收进箱子。"
+                + "用 travel_to Farm 回农场时会自动收进箱子；在外面实在装不下了，先回去一趟再出来";
         }
 
         /// <summary>某地点里玩家自己放的箱子（不含开局礼物箱）。</summary>

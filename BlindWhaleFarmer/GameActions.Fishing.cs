@@ -513,6 +513,11 @@ namespace BlindWhaleFarmer
                 treasure = true;
                 dropped.AddRange(GrabAll(late, loot));
             }
+            // 宝箱里第一次拿到的东西会弹一句说明（“你发现了一个晶球！铁匠可以帮你敲开它”）。这不是要做选择的对话，
+            // 不关掉的话下一竿抛不出去、整个钓鱼动作停下，AI 只看到“有界面打开了”。关掉，把说明接在结果后面
+            var found = new List<string>();
+            foreach (var s in CloseInfoDialogs(found))
+                yield return s;
             // 宝箱里有鱼本身（背包满时）就不重复算
             if (loot.Count > 0 && loot[0].StartsWith(fishName))
                 loot.RemoveAt(0);
@@ -520,13 +525,40 @@ namespace BlindWhaleFarmer
             // 有小游戏时看进度条是否满；没有小游戏（垃圾等）看有没有“举起物品”
             bool success = sawBar ? lastProgress >= 0.9f : sawCaught;
             string chest = treasure ? (loot.Count > 0 ? $"+宝箱[{string.Join("、", loot)}]" : "+宝箱") : "";
-            string drop = dropped.Count > 0 ? $"（背包满，{string.Join("、", dropped)} 掉在脚边了，空出位置再走过去能捡回来）" : "";
+            string drop = (dropped.Count > 0 ? $"（背包满，{string.Join("、", dropped)} 掉在脚边了，空出位置再走过去能捡回来）" : "")
+                + (found.Count > 0 ? $"（{string.Join("；", found)}）" : "");
             if (success)
                 o.Succeed(fishName + (sawBar && perfect ? "(完美)" : "") + chest + drop);
             else if (treasure && loot.Count > 0)
                 o.Succeed("宝箱[" + string.Join("、", loot) + "]" + drop); // 鱼跑了但宝箱拿到了
             else
                 o.Fail(sawBar ? $"{fishName} 跑掉了" : "提竿失败");
+        }
+
+        /// <summary>
+        /// 拿到东西后游戏弹的说明对话框（第一次拿到晶球、矿石之类的提示，不是选择题）：等几帧，有就记下文字、关掉。
+        /// 选择题和剧情对话不碰，留给 AI。
+        /// </summary>
+        private IEnumerable<object> CloseInfoDialogs(List<string> texts)
+        {
+            // 第一次拿到晶球这类说明，游戏是“等玩家空下来”才演：先把东西举过头顶，再弹对话框（要一两秒）。
+            // 所以先等她空下来（举东西时动不了），再多等半秒看有没有新的
+            for (int t = 0, idle = 0; t < 600 && idle < 30; t++)
+            {
+                idle = Player.CanMove && !Player.UsingTool && Game1.activeClickableMenu == null ? idle + 1 : 0;
+                if (Game1.activeClickableMenu is DialogueBox { isQuestion: false } box && Game1.CurrentEvent == null && Game1.currentSpeaker == null)
+                {
+                    string text = box.getCurrentString()?.Trim();
+                    if (!string.IsNullOrEmpty(text) && !texts.Contains(text))
+                        texts.Add(text);
+                    box.closeDialogue();
+                    t = 0;
+                }
+                // 选择题、剧情、别的界面不归这里管，交给后面的流程（钓鱼会停下来让 AI 处理）
+                else if (Game1.activeClickableMenu != null || Game1.CurrentEvent != null)
+                    yield break;
+                yield return null;
+            }
         }
 
         /// <summary>拿走物品界面里的东西，返回拿不下、丢在地上的物品名；taken 不为 null 时记下拿到的每一样。</summary>

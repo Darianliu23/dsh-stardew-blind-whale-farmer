@@ -333,6 +333,8 @@ namespace BlindWhaleFarmer
                 sb.Append($"；零散耕地 {scattered} 格" + (scatteredCrops > 0 ? $"（其中 {scatteredCrops} 株作物，收完别再往这里种）" : "")
                     + "，plant_seeds 不会往零散耕地上种，空着的过几天会自己消失");
             sb.Append("。种子种进已有的田、新田挨着老田开，作物集中好浇水、好放洒水器");
+            if (SprinklerSpareTiles(loc) is string spare)
+                sb.Append("；" + spare);
             if (SuggestFieldExpansion(loc) is string ext && big.Sum(f => f.Empty) < 6)
                 sb.Append("；" + ext);
             return sb.ToString();
@@ -430,6 +432,74 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>
+        /// 现在压着作物、收完以后能放洒水器的格子里，能新浇到最多耕地的那个。比 nowBest 明显多（多 2 格以上、而且 nowBest 不到它的四分之三）时，
+        /// 返回“等 (x,y) 的某作物收完放那儿能浇 N 格”的说明；否则 null。
+        /// </summary>
+        private static string SprinklerAfterHarvest(GameLocation loc, SObject sprinkler, HashSet<Vector2> covered, int nowBest)
+        {
+            Point? best = null;
+            int bestGain = 0;
+            Crop bestCrop = null;
+            foreach (var f in Fields(loc))
+                foreach (var p in f.Tiles)
+                {
+                    var v = new Vector2(p.X, p.Y);
+                    if (loc.Objects.ContainsKey(v) || loc.terrainFeatures[v] is not HoeDirt { crop: { } crop })
+                        continue;
+                    int g = SprinklerGain(loc, sprinkler, p, covered);
+                    if (g > bestGain)
+                    {
+                        best = p;
+                        bestGain = g;
+                        bestCrop = crop;
+                    }
+                }
+            if (!best.HasValue || bestGain < nowBest + 2 || nowBest * 4 >= bestGain * 3)
+                return null;
+            string cropName = bestCrop.dead.Value ? "枯死的作物"
+                : ItemRegistry.GetDataOrErrorItem("(O)" + bestCrop.indexOfHarvest.Value).DisplayName;
+            return $"这块田的好位置都种着作物：({best.Value.X},{best.Value.Y}) 上的{cropName}{HarvestWhen(bestCrop)}，到时把洒水器放在那里能浇到 {bestGain} 格，比现在能放的位置多 {bestGain - nowBest} 格";
+        }
+
+        /// <summary>这株作物什么时候能腾出格子。</summary>
+        private static string HarvestWhen(Crop c)
+        {
+            if (c.dead.Value)
+                return "已经枯死了，用镰刀清掉就能放";
+            if (c.RegrowsAfterHarvest())
+                return "收了还会再长，要等这一季结束才腾得出来（或者趁换季重新规划这块田）";
+            if (c.fullyGrown.Value || c.currentPhase.Value >= c.phaseDays.Count - 1)
+                return "已经能收了，收了就能放";
+            int left = -c.dayOfCurrentPhase.Value;
+            for (int i = c.currentPhase.Value; i < c.phaseDays.Count - 1; i++)
+                left += c.phaseDays[i];
+            return $"大约 {Math.Max(1, left)} 天后成熟，收了就能放";
+        }
+
+        /// <summary>
+        /// 洒水器浇得到、但还空着的格子：没开垦的（till_area）和空耕地（plant_seeds）。冬天户外种不了东西，不提。没有洒水器或者都种上了返回 null。
+        /// </summary>
+        internal static string SprinklerSpareTiles(GameLocation loc)
+        {
+            var covered = SprinklerCovered(loc);
+            if (covered.Count == 0 || (loc.IsOutdoors && loc.GetSeason() == Season.Winter))
+                return null;
+            var untilled = covered.Select(v => new Point((int)v.X, (int)v.Y)).Where(p => Tillable(loc, p)).ToList();
+            int emptyDirt = covered.Count(v => !loc.Objects.ContainsKey(v) && loc.terrainFeatures.TryGetValue(v, out var f) && f is HoeDirt { crop: null });
+            if (untilled.Count == 0 && emptyDirt == 0)
+                return null;
+            var parts = new List<string>();
+            if (untilled.Count > 0)
+            {
+                int x1 = untilled.Min(p => p.X), y1 = untilled.Min(p => p.Y), x2 = untilled.Max(p => p.X), y2 = untilled.Max(p => p.Y);
+                parts.Add($"{untilled.Count} 格还没开垦（till_area {x1},{y1},{x2},{y2} 会只开能开的格子）");
+            }
+            if (emptyDirt > 0)
+                parts.Add($"{emptyDirt} 格是空耕地（plant_seeds 会补种）");
+            return "洒水器浇得到、但还空着的格子：" + string.Join("，", parts) + "。种在这些格子上就不用自己浇水";
+        }
+
+        /// <summary>
         /// 洒水器放得对不对：放在 tile 一格耕地都浇不到，或者田里有明显更好的位置（能多浇不少格）时返回原因和建议坐标；没问题返回 null。
         /// gain 是放在 tile 能新浇到的耕地格数。
         /// </summary>
@@ -461,14 +531,22 @@ namespace BlindWhaleFarmer
                     }
             }
             string name = o.DisplayName;
-            if (loc.terrainFeatures.TryGetValue(new Vector2(tile.X, tile.Y), out var tf) && tf is HoeDirt { crop: not null })
-                return $"({tile.X},{tile.Y}) 上种着作物，放不了{name}" + (best.HasValue ? $"。放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格耕地" : "");
+            // 田种满了：中间的好位置都压着作物，上面只能找到边上的位置。看看把作物收了以后最好能放哪，明显更好就告诉她等一等
+            bool onCrop = loc.terrainFeatures.TryGetValue(new Vector2(tile.X, tile.Y), out var tf) && tf is HoeDirt { crop: not null };
+            // 选的格子种着作物时那个位置本身放不了，只和现在真能放的位置比
+            string later = SprinklerAfterHarvest(loc, o, covered, onCrop ? bestGain : Math.Max(gain, bestGain));
+            string laterNote = later != null ? "。" + later : "";
+            if (onCrop)
+                return $"({tile.X},{tile.Y}) 上种着作物，放不了{name}" + (best.HasValue ? $"。现在能放的位置里最好的是 ({best.Value.X},{best.Value.Y})，能浇到 {bestGain} 格耕地" : "") + laterNote;
             if (gain == 0)
-                return best.HasValue
+                return (best.HasValue
                     ? $"{name}放在 ({tile.X},{tile.Y}) 一格耕地都浇不到（周围没有耕地，或者都已经被别的洒水器浇到了）。放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格"
-                    : $"{name}放在 ({tile.X},{tile.Y}) 一格耕地都浇不到，而且现在所有耕地都已经有洒水器浇了，这只先留着，等开了新田再放";
+                    : $"{name}放在 ({tile.X},{tile.Y}) 一格耕地都浇不到，而且现在所有耕地都已经有洒水器浇了，这只先留着，等开了新田再放") + laterNote;
             if (best.HasValue && bestGain >= gain + 2 && gain * 4 < bestGain * 3)
-                return $"{name}放在 ({tile.X},{tile.Y}) 只能浇到 {gain} 格耕地，放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格";
+                return $"{name}放在 ({tile.X},{tile.Y}) 只能浇到 {gain} 格耕地，放在 ({best.Value.X},{best.Value.Y}) 能浇到 {bestGain} 格" + laterNote;
+            // 位置本身是现在能放的里面不错的，但收完作物以后有明显更好的位置：先拦一下，让她选现在放还是等
+            if (later != null)
+                return $"{name}放在 ({tile.X},{tile.Y}) 能浇到 {gain} 格耕地，这已经是现在能放的位置里比较好的了。{later}。不急的话先留着，收完再放";
             return null;
         }
 
