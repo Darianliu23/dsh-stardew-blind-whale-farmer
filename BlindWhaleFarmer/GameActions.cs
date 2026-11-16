@@ -1255,7 +1255,48 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 批量农活 ─────────────────────────
 
-        public IEnumerable<object> TillArea(int x1, int y1, int x2, int y2, bool force = false)
+        /// <summary>
+        /// till_area 入口：给了矩形就开矩形；只给 count（或什么都不给）就挨着最大的田往空地最多的一边扩 count 格。
+        /// 农场、温室这些种得了庄稼的地方以外不开（锄了也种不了，force 才开）。
+        /// </summary>
+        public IEnumerable<object> TillArea(int? x1, int? y1, int? x2, int? y2, int? count, bool force)
+        {
+            var loc = Loc;
+            bool canPlant = loc.IsFarm || loc.IsGreenhouse || (loc.GetData()?.CanPlantHere ?? false);
+            if (!canPlant && !force)
+            {
+                yield return ActionResult.Fail($"{loc.DisplayName} 种不了庄稼（只有农场、温室、姜岛农场这类地方能播种），在这里锄地没用。要开田先 travel_to Farm。{ForceHint}");
+                yield break;
+            }
+            if (x1.HasValue && y1.HasValue && x2.HasValue && y2.HasValue)
+            {
+                foreach (var s in TillArea(x1.Value, y1.Value, x2.Value, y2.Value))
+                    yield return s;
+                yield break;
+            }
+            if (x1.HasValue || y1.HasValue || x2.HasValue || y2.HasValue)
+            {
+                yield return ActionResult.Fail("坐标要给全 x1,y1,x2,y2；或者都不给、只给 count，挨着现有的田自动扩");
+                yield break;
+            }
+            var main = Fields(loc).FirstOrDefault(f => f.Tiles.Count >= 4);
+            if (main == null)
+            {
+                yield return ActionResult.Fail("这里还没有成片的田，没法“挨着扩”：第一块田要给坐标 x1,y1,x2,y2（挑离家、出货箱近，方方正正的空地）");
+                yield break;
+            }
+            int want = Math.Clamp(count ?? 20, 1, 80);
+            var best = BestExpansion(loc, main, want);
+            if (best.n == 0)
+            {
+                yield return ActionResult.Fail($"最大的田 {main.Describe()}，四周都是树、大树桩大石头或者不能开垦的地面，没法挨着扩：给坐标另挑地方开一块");
+                yield break;
+            }
+            foreach (var s in TillArea(best.r.Left, best.r.Top, best.r.Right - 1, best.r.Bottom - 1))
+                yield return s is ActionResult { Ok: true } r ? ActionResult.Success($"挨着田往{best.side}扩。" + r.Message.Substring(3)) : s;
+        }
+
+        public IEnumerable<object> TillArea(int x1, int y1, int x2, int y2)
         {
             int hoe = Util.FindTool<Hoe>();
             if (hoe < 0)
@@ -1264,13 +1305,33 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var loc = Loc;
+            // 先把区域里的杂草、长草、小石头、树枝、树桩、小树苗清掉，不然这些格子会被跳过，田中间留洞（树和大树桩大石头不动）
+            string clearNote = null;
+            if (RectTiles(x1, y1, x2, y2, 80).Any(p => FieldClutter(loc, p)))
+            {
+                ActionResult cleared = null;
+                foreach (var s in ClearArea(x1, y1, x2, y2, includeTrees: false))
+                {
+                    if (s is ActionResult r)
+                        cleared = r;
+                    else
+                        yield return s;
+                }
+                if (cleared != null)
+                    clearNote = "先清理了区域里的杂物：" + cleared.Message.Substring(3) + "。";
+                if (Blocked(out _))
+                {
+                    yield return ActionResult.Fail(clearNote + "清理时被打断了");
+                    yield break;
+                }
+            }
             // 新田不必挨着老田：不同作物可以分块种，每块挑方便的地方。只是另开一块时老田还空着不少，提醒一句（空耕地几天不种会消失）
             string emptyFieldNote = null;
             if (loc is Farm)
             {
                 var want = new Rectangle(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1) + 1, Math.Abs(y2 - y1) + 1);
                 var fields = Fields(loc).Where(f => f.Tiles.Count >= 4).ToList();
-                int empty = fields.Where(f => RectGap(want, f.Box) > 0).Sum(f => f.Empty);
+                int empty = fields.Where(f => RectGap(want, f.Box) > 1).Sum(f => f.Empty); // 隔一格以内会并成同一块田（和 Fields 的分法一致）
                 if (empty >= 6)
                     emptyFieldNote = $"（别的田里还有 {empty} 格空耕地没种，记得种上，空着几天会自己消失）";
             }
@@ -1281,7 +1342,7 @@ namespace BlindWhaleFarmer
                 && Pathfinder.IsPassable(loc, p.X, p.Y)).ToList();
             if (tiles.Count == 0)
             {
-                yield return ActionResult.Fail("区域内没有可以开垦的空地：" + WhyNotTillable(loc, x1, y1, x2, y2));
+                yield return ActionResult.Fail(clearNote + "区域内没有可以开垦的空地：" + WhyNotTillable(loc, x1, y1, x2, y2));
                 yield break;
             }
             string err = null;
@@ -1320,7 +1381,18 @@ namespace BlindWhaleFarmer
                 }
             }
             int done = tiles.Count(IsTilled);
-            string msg = $"开垦了 {done}/{tiles.Count} 格{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，剩余体力 {(int)Player.Stamina}";
+            var tilled = tiles.Where(IsTilled).ToList();
+            string range = tilled.Count > 0 ? $"，范围 ({tilled.Min(t => t.X)},{tilled.Min(t => t.Y)})-({tilled.Max(t => t.X)},{tilled.Max(t => t.Y)})" : "";
+            string msg = clearNote + $"开垦了 {done}/{tiles.Count} 格{range}{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，剩余体力 {(int)Player.Stamina}";
+            // 区域里还有没锄上的格子（树、大树桩、大石头、走不到的）：说清楚在哪、为什么，免得 AI 以为整块都开好了
+            var holes = RectTiles(x1, y1, x2, y2, 80)
+                .Where(p => loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null && !IsTilled(p)
+                    // 洒水器、稻草人、箱子、小路、果树是故意放的，不算洞
+                    && Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).ch is not ('X' or '&' or '_' or 'F'))
+                .Select(p => (p, what: HoleName(loc, p))).ToList();
+            if (holes.Count > 0)
+                msg += "；区域里有 " + holes.Count + " 格没开出来：" + string.Join("、", holes.GroupBy(h => h.what).Select(g => $"{g.Key} {string.Join(" ", g.Take(4).Select(h => $"({h.p.X},{h.p.Y})"))}{(g.Count() > 4 ? "…" : "")}"))
+                    + "（树要砍就 clear_area include_trees=true；大树桩、大石头要升级过的斧头镐子）";
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；部分失败：" + err : "") + emptyFieldNote) : ActionResult.Fail(msg + "；" + err);
         }
 
@@ -1433,6 +1505,10 @@ namespace BlindWhaleFarmer
             int seedsLeft = Player.Items[idx] is { } rest && rest.DisplayName == seedName ? rest.Stack : 0;
             if (apartNote != null && seedsLeft > 0)
                 msg += $"；还剩 {seedsLeft} 颗{seedName}：" + apartNote;
+            // 新种下的当天也要浇水才算长了一天：AI 常常早上浇完一轮、下午买了种子种下就不管了
+            int thirsty = loc.terrainFeatures.Pairs.Count(p => p.Value is HoeDirt hd && Observer.NeedsWater(hd));
+            if (done > 0 && thirsty > 0)
+                msg += $"。这里有 {thirsty} 株没浇水（包括刚种的），今天浇了才算长一天：water_crops";
             if (done == 0 && err == null)
                 err = "没有能种的耕地" + (loc is Farm && SuggestFieldExpansion(loc) is string ext ? "，" + ext : "");
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
@@ -1534,17 +1610,39 @@ namespace BlindWhaleFarmer
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
         }
 
+        /// <summary>
+        /// 收完菜、清完地以后的下一步提示：背包里能卖的作物多少、空位多少。AI 常常收完就去干别的，东西一直堆在背包里。
+        /// </summary>
+        private static string AfterGatherNote()
+        {
+            var crops = Player.Items.OfType<SObject>().Where(i => i.Category is SObject.VegetableCategory or SObject.FruitsCategory
+                or SObject.flowersCategory or SObject.GreensCategory).ToList();
+            int free = Player.freeSpotsInInventory();
+            var parts = new List<string> { $"背包空位 {free} 个" };
+            if (crops.Count > 0)
+                parts.Add($"身上有 {crops.Sum(c => c.Stack)} 个作物/野菜（{string.Join("、", crops.Select(c => c.DisplayName).Distinct().Take(6))}）：今天要卖的 ship_items 放出货箱，留着做菜送礼的 tidy_backpack 存箱子");
+            else if (free <= 4)
+                parts.Add("背包快满了，tidy_backpack 存一下");
+            return string.Join("；", parts);
+        }
+
         public IEnumerable<object> HarvestCrops(int max)
         {
             var loc = Loc;
             var tiles = loc.terrainFeatures.Pairs
                 .Where(p => p.Value is HoeDirt hd && hd.crop != null && hd.readyForHarvest())
                 .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
+            // 季节种子（野生种子）成熟时游戏把作物删掉，在耕地上换成一个采集物：按作物找不到，一起捡
+            bool WildOnSoil(Point t) => loc.objects.TryGetValue(new Vector2(t.X, t.Y), out var w) && IsGrabbable(w)
+                && loc.terrainFeatures.TryGetValue(new Vector2(t.X, t.Y), out var under) && under is HoeDirt;
+            var wild = loc.objects.Keys.Select(k => new Point((int)k.X, (int)k.Y)).Where(WildOnSoil).ToList();
+            tiles.AddRange(wild);
             if (tiles.Count == 0)
             {
                 yield return ActionResult.Success("这里没有可以收获的作物");
                 yield break;
             }
+            int wildPicked = 0;
             int scythe = Util.FindTool<MeleeWeapon>(w => w.isScythe());
             int done = 0;
             string err = null;
@@ -1557,6 +1655,26 @@ namespace BlindWhaleFarmer
                     break;
                 }
                 var v = new Vector2(p.X, p.Y);
+                if (WildOnSoil(p))
+                {
+                    foreach (var s in GoAdjacent(p, o))
+                        yield return s;
+                    if (!o.Ok)
+                    {
+                        err = o.Message;
+                        if (Blocked(out _))
+                            break;
+                        continue;
+                    }
+                    Player.Halt();
+                    Face(p);
+                    loc.checkAction(new xLocation(p.X, p.Y), Game1.viewport, Player);
+                    foreach (var s in WaitPlayerFree(60))
+                        yield return s;
+                    if (!loc.objects.ContainsKey(v))
+                        wildPicked++;
+                    continue;
+                }
                 if (!loc.terrainFeatures.TryGetValue(v, out var tf) || tf is not HoeDirt hd || hd.crop == null || !hd.readyForHarvest())
                     continue;
                 foreach (var s in GoAdjacent(p, o))
@@ -1596,7 +1714,12 @@ namespace BlindWhaleFarmer
                 if (!(loc.terrainFeatures.TryGetValue(v, out var after) && after is HoeDirt hd2 && hd2.crop != null && hd2.readyForHarvest()))
                     done++;
             }
-            string msg = $"收获了 {done} 株";
+            string msg = done > 0 || wildPicked == 0 ? $"收获了 {done} 株" : "";
+            if (wildPicked > 0)
+                msg += (msg.Length > 0 ? "，" : "") + $"捡了 {wildPicked} 个季节种子长出来的野菜";
+            if (done + wildPicked > 0)
+                msg += "。" + AfterGatherNote();
+            done += wildPicked;
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
         }
 
@@ -1712,7 +1835,7 @@ namespace BlindWhaleFarmer
                     case '?': jobs.Add((p, hoe, 2)); break;
                     case 'd': jobs.Add((p, scythe >= 0 ? scythe : axe, 2)); break;
                     case '"': if (scythe >= 0) jobs.Add((p, scythe, 2)); break;
-                    case 't': jobs.Add((p, axe, 4)); break;
+                    case 't': jobs.Add((p, axe, 8)); break; // 长到第 3、4 阶段的树苗有 10 点血，初始斧头一下 2 点，要 5 下
                     case 'S': jobs.Add((p, axe, 10)); break;
                     case 'T': if (includeTrees) jobs.Add((p, axe, 25)); break;
                 }
@@ -1777,6 +1900,9 @@ namespace BlindWhaleFarmer
                 if (pickup.Count > 0)
                     msg += "；" + string.Join("；", pickup);
             }
+            // 清出来的木头、石头、纤维一直堆在背包里，下一件事就没地方装了
+            if (cleared > 0 && Player.freeSpotsInInventory() <= 4)
+                msg += $"；背包空位只剩 {Player.freeSpotsInInventory()} 个，用 tidy_backpack 把木头石头这些存进箱子";
             yield return cleared > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
         }
 

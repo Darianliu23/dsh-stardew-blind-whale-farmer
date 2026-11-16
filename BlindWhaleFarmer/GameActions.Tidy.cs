@@ -131,7 +131,7 @@ namespace BlindWhaleFarmer
             string msg = stored.Count > 0 ? $"存起来了：{string.Join("；", stored)}" : "一样也没存进去";
             msg += $"。身上留着：{string.Join("、", kept)}（空位 {Player.freeSpotsInInventory()} 个）";
             if (leftover.Count > 0)
-                msg += $"。箱子都满了，还剩 {string.Join("、", leftover)} 没地方放：craft Chest（50 木材）再放一个箱子";
+                msg += $"。还剩 {string.Join("、", leftover)} 没放下：" + ChestRoomNote(Loc, toStore.Where(i => Player.Items.Contains(i)).ToList());
             if (purpose != null)
                 msg = $"按{PurposeName[purpose]}整理。" + msg;
             if (missing != null)
@@ -341,6 +341,37 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>某地点里玩家自己放的箱子（不含开局礼物箱）。</summary>
+        /// <summary>
+        /// 东西没放下时告诉 AI 还能放哪：这里还有空位却没走到的箱子、别的地方（屋里、棚子、地窖……）还有空位的箱子，
+        /// 都没有才让它做新箱子。
+        /// </summary>
+        private static string ChestRoomNote(GameLocation here, List<Item> pending)
+        {
+            static int Free(Chest c) => c.GetActualCapacity() - c.GetItemsForPlayer().Count(i => i != null);
+            var parts = new List<string>();
+            var stuck = PlayerChests(here).Where(c => pending.Any(p => ChestHasRoomFor(c.chest, p))).ToList();
+            if (stuck.Count > 0)
+                parts.Add("这里这些箱子还有空位，但走不过去（被东西围住了？）：" + string.Join("、", stuck.Take(4).Select(c => $"({c.tile.X},{c.tile.Y}) 空 {Free(c.chest)} 格")));
+            var elsewhere = new List<string>();
+            Utility.ForEachLocation(loc =>
+            {
+                if (loc == here || elsewhere.Count >= 5)
+                    return true;
+                foreach (var (tile, chest) in PlayerChests(loc))
+                {
+                    int free = Free(chest);
+                    if (free > 0)
+                        elsewhere.Add($"{loc.DisplayName}（{loc.NameOrUniqueName}）({tile.X},{tile.Y}) 空 {free} 格");
+                }
+                return true;
+            });
+            if (elsewhere.Count > 0)
+                parts.Add("别处还有空位的箱子：" + string.Join("、", elsewhere.Take(5)) + "。travel_to 过去再 tidy_backpack（或 store_items）");
+            if (parts.Count == 0)
+                parts.Add("所有箱子都满了：craft Chest（50 木材）再 place_item 放一个");
+            return string.Join("；", parts);
+        }
+
         private static IEnumerable<(Point tile, Chest chest)> PlayerChests(GameLocation loc) =>
             loc.objects.Pairs
                 .Where(p => p.Value is Chest c && c.playerChest.Value && !c.giftbox.Value)

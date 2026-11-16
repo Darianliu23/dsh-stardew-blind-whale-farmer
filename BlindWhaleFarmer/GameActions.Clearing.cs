@@ -20,6 +20,15 @@ namespace BlindWhaleFarmer
         private static bool InDungeon => Loc is MineShaft || Loc is VolcanoDungeon;
 
         /// <summary>
+        /// 地上能直接拿起来的东西：野生采集物（含季节种子长出来的野菜），和矿洞里地上的石英、地晶这类矿物宝石
+        /// （游戏不算它们“采集物”，但一样按交互键就拿起来）。任务专用的不算。
+        /// </summary>
+        internal static bool IsGrabbable(StardewValley.Object obj) =>
+            obj != null && obj.IsSpawnedObject && !obj.questItem.Value && !obj.bigCraftable.Value && obj is not BreakableContainer
+            && !obj.IsBreakableStone() && !obj.IsWeeds()
+            && (obj.isForage() || obj.Category is StardewValley.Object.GemCategory or StardewValley.Object.mineralsCategory);
+
+        /// <summary>
         /// 这格挡路的东西能不能清掉。杂草、木桶（游戏里 isHeavyHitter 的工具都能打：武器、镰刀、镐子、斧头、锄头）、
         /// 能敲的石头（镐子）、地上能捡的采集物（洞穴萝卜、蘑菇、水晶之类，捡起来就不挡了）。
         /// </summary>
@@ -29,13 +38,13 @@ namespace BlindWhaleFarmer
                 return false;
             // 矿洞外面只清杂草、捡野菜（不花体力，也不会砸掉玩家摆的东西）；石头、木桶只在矿洞里清
             if (!InDungeon)
-                return obj.IsWeeds() || (obj.IsSpawnedObject && obj.isForage() && !obj.questItem.Value);
+                return obj.IsWeeds() || IsGrabbable(obj);
             // 墙上不会有这些东西，保险起见：Buildings 层有图块的格子清了也走不了
             if (Loc.map?.GetLayer("Buildings")?.Tiles[p.X, p.Y] != null)
                 return false;
             if (obj.IsBreakableStone())
                 return Util.FindTool<Pickaxe>() >= 0;
-            return obj.IsWeeds() || obj is BreakableContainer || (obj.IsSpawnedObject && obj.isForage());
+            return obj.IsWeeds() || obj is BreakableContainer || IsGrabbable(obj);
         }
 
         /// <summary>清掉 p 上的障碍（她已经站在旁边）。maxHits 是最多挥几下；打怪时只挥一两下就回去重新判断。</summary>
@@ -48,7 +57,7 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             string name = obj.DisplayName;
-            if (obj.IsSpawnedObject && obj.isForage())
+            if (IsGrabbable(obj))
             {
                 Face(p);
                 Loc.checkAction(new xLocation(p.X, p.Y), Game1.viewport, Player);
@@ -122,7 +131,7 @@ namespace BlindWhaleFarmer
                     var me = Player.TilePoint;
                     var next = loc.objects.Pairs
                         .Select(kv => (p: new Point((int)kv.Key.X, (int)kv.Key.Y), obj: kv.Value))
-                        .Where(t => t.obj.IsSpawnedObject && t.obj.isForage() && !t.obj.questItem.Value && !tried.Contains(t.p) && InRange(t.p))
+                        .Where(t => IsGrabbable(t.obj) && !tried.Contains(t.p) && InRange(t.p))
                         .OrderBy(t => Util.Manhattan(t.p, me))
                         .FirstOrDefault();
                     if (next.obj == null)
@@ -200,7 +209,7 @@ namespace BlindWhaleFarmer
         /// <summary>这格是不是现在就能顺手采的野生采集物（有村民站着的不算：交互会变成和他说话，手里拿着礼物还会送出去）。</summary>
         private static bool PickableForage(GameLocation loc, Point p)
         {
-            if (!loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || !obj.IsSpawnedObject || !obj.isForage()
+            if (!loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || !IsGrabbable(obj)
                 || obj.questItem.Value || !Player.couldInventoryAcceptThisItem(obj))
                 return false;
             var rect = new Rectangle(p.X * 64, p.Y * 64, 64, 64);

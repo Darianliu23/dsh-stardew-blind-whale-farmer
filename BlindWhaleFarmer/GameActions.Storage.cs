@@ -146,7 +146,7 @@ namespace BlindWhaleFarmer
             foreach (var s in StoreIntoChests(toStore, stored))
                 yield return s;
             var left = toStore.Where(i => Player.Items.Contains(i)).Select(i => i.DisplayName).Distinct().ToList();
-            string rest = left.Count > 0 ? $"；箱子都满了（或者走不过去），{string.Join("、", left)} 还在背包里：craft Chest（50 木材）再放一个箱子" : "";
+            string rest = left.Count > 0 ? $"；{string.Join("、", left)} 还在背包里：" + ChestRoomNote(Loc, toStore.Where(i => Player.Items.Contains(i)).ToList()) : "";
             yield return stored.Count > 0
                 ? ActionResult.Success($"存进了 {string.Join("；", stored)}{rest}。背包空位 {Player.freeSpotsInInventory()} 个")
                 : ActionResult.Fail("一样也没存进去" + rest);

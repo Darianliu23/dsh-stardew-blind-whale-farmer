@@ -413,6 +413,8 @@ namespace BlindWhaleFarmer
             }
 
             var deposited = new List<string>();
+            var keptForQuest = new List<string>();
+            var questReserve = QuestReserve();
             var completed = new List<string>();
             var rewards = new List<string>();
             var rewardDrops = new List<string>();
@@ -471,6 +473,18 @@ namespace BlindWhaleFarmer
                         {
                             if (item == null || slot.item != null || !bundle.canAcceptThisItem(item, slot))
                                 continue;
+                            // 任务、特别订单要交的先留够，只交多出来的
+                            var (reserve, reserveWhy) = questReserve(item);
+                            if (reserve > 0)
+                            {
+                                int take = bundle.ingredients.Where(d => !d.completed && bundle.IsValidItemForThisIngredientDescription(item, d))
+                                    .Select(d => d.stack).DefaultIfEmpty(1).Max();
+                                if (reserve == int.MaxValue || item.Stack - take < reserve)
+                                {
+                                    keptForQuest.Add($"{item.DisplayName}（{reserveWhy}）");
+                                    break;
+                                }
+                            }
                             string name = item.DisplayName;
                             item = bundle.tryToDepositThisItem(item, slot, "LooseSprites\\JunimoNote", menu);
                             Player.Items[i] = item;
@@ -506,9 +520,13 @@ namespace BlindWhaleFarmer
                 // 关掉便条；如果整个区域完成了，关闭时会播放祝尼魔修复房间的过场
                 if (Game1.activeClickableMenu is JunimoNoteMenu open)
                     open.exitThisMenu();
-                for (int t = 0; t < 60 * 30; t++)
+                // 修复过场是关掉便条以后才开始的，开始后游戏冻结操作（freezeControls）十几秒：先等它起来，再等它播完
+                foreach (var s in WaitTicks(20))
+                    yield return s;
+                for (int t = 0; t < 60 * 60; t++)
                 {
-                    if (Game1.activeClickableMenu == null && !Game1.eventUp && !Game1.fadeToBlack && Player.CanMove)
+                    if (Game1.activeClickableMenu == null && !Game1.eventUp && !Game1.fadeToBlack && !Game1.globalFade && !Game1.freezeControls
+                        && !Game1.isViewportOnCustomPath() && Player.CanMove)
                         break;
                     yield return null;
                 }
@@ -516,6 +534,8 @@ namespace BlindWhaleFarmer
 
             var msg = new List<string>();
             msg.Add(deposited.Count > 0 ? $"交了 {deposited.Count} 样：{string.Join("、", deposited)}" : "没有交上材料");
+            if (keptForQuest.Count > 0)
+                msg.Add("这些收集包也要、但先留给任务没交：" + string.Join("、", keptForQuest.Distinct()) + "。交完任务、或者再弄到更多，再 donate_bundles");
             if (completed.Count > 0)
                 msg.Add("完成收集包：" + string.Join("、", completed.Distinct()));
             if (rewards.Count > 0)

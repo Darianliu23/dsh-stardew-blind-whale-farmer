@@ -25,6 +25,73 @@ namespace BlindWhaleFarmer
         /// </summary>
         internal static Func<Item, string> ReservedChecker()
         {
+            var needs = QuestNeeds();
+            if (Knowledge.CommunityCenterUnavailable() == null)
+            {
+                foreach (var b in Knowledge.Bundles().Where(b => !b.Complete))
+                {
+                    foreach (var ing in b.Ingredients.Where(i => !i.completed))
+                    {
+                        var ingredient = ing;
+                        // 任意一类（比如“任意鸡蛋”）的不算：同类东西太多，留不过来
+                        if (ingredient.category.HasValue)
+                            continue;
+                        needs.Add((i => Knowledge.Matches(i, ingredient, ignoreStack: true), ingredient.stack, $"社区中心“{b.DisplayName}”要交"));
+                    }
+                }
+            }
+            return item =>
+            {
+                if (item == null)
+                    return null;
+                if (item is SObject o && o.questItem.Value)
+                    return "任务物品";
+                foreach (var (match, count, why) in needs)
+                {
+                    try
+                    {
+                        if (match(item) && item.Stack <= count)
+                            return why;
+                    }
+                    catch
+                    {
+                        // 个别物品取不到标签，跳过
+                    }
+                }
+                return null;
+            };
+        }
+
+        /// <summary>
+        /// 任务和特别订单要留几个这件东西（不算收集包；任务专用物品算无穷多）。交收集包时用：任务要的那份留着，只交多出来的。
+        /// </summary>
+        internal static Func<Item, (int count, string why)> QuestReserve()
+        {
+            var needs = QuestNeeds();
+            return item =>
+            {
+                if (item is SObject o && o.questItem.Value)
+                    return (int.MaxValue, "任务物品");
+                (int count, string why) best = (0, null);
+                foreach (var (match, count, why) in needs)
+                {
+                    try
+                    {
+                        if (match(item) && count > best.count)
+                            best = (count, why);
+                    }
+                    catch
+                    {
+                        // 个别物品取不到标签，跳过
+                    }
+                }
+                return best;
+            };
+        }
+
+        /// <summary>任务、特别订单要交的东西：怎么认、要几个、为什么。</summary>
+        private static List<(Func<Item, bool> match, int count, string why)> QuestNeeds()
+        {
             var needs = new List<(Func<Item, bool> match, int count, string why)>();
             foreach (var q in Game1.player.questLog)
             {
@@ -62,40 +129,7 @@ namespace BlindWhaleFarmer
                         Math.Max(1, obj.GetMaxCount() - obj.GetCount()), why));
                 }
             }
-            if (Knowledge.CommunityCenterUnavailable() == null)
-            {
-                foreach (var b in Knowledge.Bundles().Where(b => !b.Complete))
-                {
-                    foreach (var ing in b.Ingredients.Where(i => !i.completed))
-                    {
-                        var ingredient = ing;
-                        // 任意一类（比如“任意鸡蛋”）的不算：同类东西太多，留不过来
-                        if (ingredient.category.HasValue)
-                            continue;
-                        needs.Add((i => Knowledge.Matches(i, ingredient, ignoreStack: true), ingredient.stack, $"社区中心“{b.DisplayName}”要交"));
-                    }
-                }
-            }
-            return item =>
-            {
-                if (item == null)
-                    return null;
-                if (item is SObject o && o.questItem.Value)
-                    return "任务物品";
-                foreach (var (match, count, why) in needs)
-                {
-                    try
-                    {
-                        if (match(item) && item.Stack <= count)
-                            return why;
-                    }
-                    catch
-                    {
-                        // 个别物品取不到标签，跳过
-                    }
-                }
-                return null;
-            };
+            return needs;
         }
 
         private static string SafeQuestName(Quest q)
@@ -228,6 +262,8 @@ namespace BlindWhaleFarmer
         {
             public List<Point> Tiles = new();
             public int Crops, Empty;
+            /// <summary>季节种子长成的野菜（游戏已经把作物换成了地上的采集物）。</summary>
+            public int WildReady;
             public Rectangle Box;
             /// <summary>田里种的作物：名字 → 株数（多的在前）。</summary>
             public Dictionary<string, int> CropNames = new();
@@ -236,6 +272,7 @@ namespace BlindWhaleFarmer
             public string Describe() =>
                 $"({Box.Left},{Box.Top})-({Box.Right - 1},{Box.Bottom - 1}) 共 {Tiles.Count} 格耕地：作物 {Crops}"
                 + (CropNames.Count > 0 ? $"（{string.Join("、", CropNames.OrderByDescending(kv => kv.Value).Take(4).Select(kv => $"{kv.Key} {kv.Value}"))}）" : "")
+                + (WildReady > 0 ? $"，长成的野菜 {WildReady} 个（不算作物，harvest_crops 或 forage 会捡）" : "")
                 + $"，空 {Empty}";
         }
 
@@ -280,12 +317,39 @@ namespace BlindWhaleFarmer
                         if (!string.IsNullOrEmpty(hd.crop.netSeedIndex.Value))
                             field.SeedIds.Add(hd.crop.netSeedIndex.Value);
                     }
-                    else if (!loc.Objects.ContainsKey(new Vector2(p.X, p.Y)))
+                    else if (loc.Objects.TryGetValue(new Vector2(p.X, p.Y), out var onSoil))
+                    {
+                        if (IsGrabbable(onSoil))
+                            field.WildReady++;
+                    }
+                    else
                         field.Empty++;
                 }
                 fields.Add(field);
             }
             return fields.OrderByDescending(f => f.Tiles.Count).ToList();
+        }
+
+        /// <summary>
+        /// 锄地前 till_area 会自己清掉的杂物（和 clear_area 不带 include_trees 时清的一样）：杂草、长草、小石头、树枝、
+        /// 树桩、小树苗、远古斑点、枯死的作物。只算能开垦的地面上的。
+        /// </summary>
+        internal static bool FieldClutter(GameLocation loc, Point p) =>
+            loc.isTileOnMap(p.X, p.Y) && loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null
+            && Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).ch is 'w' or '"' or 'o' or '/' or '?' or 't' or 'S' or 'd';
+
+        /// <summary>锄不上的格子是什么挡着（结果里告诉 AI）。</summary>
+        internal static string HoleName(GameLocation loc, Point p)
+        {
+            string name = Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).name;
+            if (name != null)
+                return name;
+            var px = new Point(p.X * 64 + 32, p.Y * 64 + 32);
+            if (loc.resourceClumps.Any(c => c.getBoundingBox().Contains(px)))
+                return "大型障碍（大树桩/大石头/原木）";
+            if (loc.largeTerrainFeatures.Any(f => f.getBoundingBox().Contains(px)))
+                return "灌木";
+            return "走不过去的空地";
         }
 
         /// <summary>和 till_area 一样的“能直接开垦”判断。</summary>
@@ -305,6 +369,19 @@ namespace BlindWhaleFarmer
             var main = Fields(loc).FirstOrDefault(f => f.Tiles.Count >= 4);
             if (main == null)
                 return null;
+            var best = BestExpansion(loc, main, want);
+            if (best.n == 0)
+                return $"最大的田 {main.Describe()}，四周都是树、大树桩大石头或者不能开垦的地面，没法挨着扩，另挑地方开一块";
+            return $"挨着最大的田往{best.side}扩：till_area {best.r.Left},{best.r.Top},{best.r.Right - 1},{best.r.Bottom - 1}（能开 {best.n} 格"
+                + (best.clutter > 0 ? $"，其中 {best.clutter} 格有杂草石头，till_area 会先清掉" : "") + "；也可以只传 count 让它自己挨着扩）";
+        }
+
+        /// <summary>
+        /// 挨着一块田往上下左右哪边扩最好：扩出的矩形、方向、里面能开的格数（空地加上 till_area 会先清掉的杂物格）、其中杂物格数。
+        /// 能开的多的优先；杂物格要花时间体力清，按 0.7 格算，差不多大时挑杂物少的。
+        /// </summary>
+        internal static (Rectangle r, string side, int n, int clutter) BestExpansion(GameLocation loc, Field main, int want)
+        {
             var b = main.Box;
             var options = new List<(Rectangle r, string side)>();
             int rows = Math.Clamp((int)Math.Ceiling(want / (double)b.Width), 1, 4);
@@ -313,19 +390,20 @@ namespace BlindWhaleFarmer
             options.Add((new Rectangle(b.Left, b.Top - rows, b.Width, rows), "上"));
             options.Add((new Rectangle(b.Right, b.Top, cols, b.Height), "右"));
             options.Add((new Rectangle(b.Left - cols, b.Top, cols, b.Height), "左"));
-            var best = options.Select(o => (o.r, o.side, n: o.r.Width * o.r.Height == 0 ? 0
-                    : Enumerable.Range(o.r.Left, o.r.Width).SelectMany(x => Enumerable.Range(o.r.Top, o.r.Height).Select(y => new Point(x, y))).Count(p => Tillable(loc, p))))
-                .OrderByDescending(o => o.n).First();
-            if (best.n == 0)
-                return $"最大的田 {main.Describe()}，四周没有能直接开垦的空地（先 clear_area 清一清田边）";
-            return $"挨着最大的田往{best.side}扩：till_area {best.r.Left},{best.r.Top},{best.r.Right - 1},{best.r.Bottom - 1}（能直接开垦 {best.n} 格）";
+            return options.Select(o =>
+                {
+                    var pts = Enumerable.Range(o.r.Left, o.r.Width).SelectMany(x => Enumerable.Range(o.r.Top, o.r.Height).Select(y => new Point(x, y))).ToList();
+                    int free = pts.Count(p => Tillable(loc, p)), clutter = pts.Count(p => FieldClutter(loc, p));
+                    return (o.r, o.side, n: free + clutter, clutter, score: free + 0.7 * clutter);
+                })
+                .OrderByDescending(o => o.score).Select(o => (o.r, o.side, o.n, o.clutter)).First();
         }
 
-        /// <summary>矩形离某块田的距离（格，0 = 挨着或重叠）。</summary>
+        /// <summary>矩形离某块田隔着几格（0 = 挨着或重叠）。Rectangle 的 Right/Bottom 是开区间。</summary>
         private static int RectGap(Rectangle a, Rectangle b)
         {
-            int dx = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right) + 1);
-            int dy = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom) + 1);
+            int dx = Math.Max(0, Math.Max(a.Left - b.Right, b.Left - a.Right));
+            int dy = Math.Max(0, Math.Max(a.Top - b.Bottom, b.Top - a.Bottom));
             return Math.Max(dx, dy);
         }
 
@@ -363,7 +441,7 @@ namespace BlindWhaleFarmer
             var field = fieldBoxes ?? Fields(farm).Where(f => f.Tiles.Count >= 4).Select(f => f.Box).ToList();
             var footprint = new Rectangle(tile.X, tile.Y, size.X, size.Y);
             foreach (var box in field)
-                if (RectGap(footprint, box) <= 2)
+                if (RectGap(footprint, box) <= 1)
                     return $"紧挨着田 ({box.Left},{box.Top})-({box.Right - 1},{box.Bottom - 1})，以后没法往这边扩田，也挡洒水器";
             // 别的建筑门口（下方两行）也要空着
             foreach (var b in farm.buildings)

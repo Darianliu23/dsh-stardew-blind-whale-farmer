@@ -893,6 +893,20 @@ namespace BlindWhaleFarmer
         /// <summary>值钱的节点多远也先敲：比最近的普通石头远这么多格以内就先去敲它。</summary>
         private const int ValuableNodeDetour = 8;
 
+        /// <summary>下楼前顺手处理的东西最远多少格（曼哈顿距离）：再远就不绕了。</summary>
+        private const int MineExtraRange = 8;
+
+        /// <summary>这一层附近能捡的矿物/采集物和能劈的木箱木桶，近的在前。</summary>
+        private static IEnumerable<(Point p, SObject obj)> MineExtras(MineShaft mine, HashSet<Point> skipped)
+        {
+            var me = Player.TilePoint;
+            return mine.objects.Pairs
+                .Select(kv => (p: new Point((int)kv.Key.X, (int)kv.Key.Y), obj: kv.Value))
+                .Where(t => !skipped.Contains(t.p) && Util.Manhattan(t.p, me) <= MineExtraRange
+                    && (t.obj is BreakableContainer || IsGrabbable(t.obj) && Player.couldInventoryAcceptThisItem(t.obj)))
+                .OrderBy(t => Util.Manhattan(t.p, me));
+        }
+
         /// <summary>矿层怎么称呼：骷髅洞穴的层在游戏里是 121 起，对玩家说“骷髅洞穴第 N 层”。</summary>
         private static string MineLevelName(int level) => level > 120 ? $"骷髅洞穴第 {level - 120} 层" : $"第 {level} 层";
 
@@ -1072,6 +1086,10 @@ namespace BlindWhaleFarmer
             // 走不过去的竖井，和当时已经敲掉了多少块石头：再敲掉几块以后路可能通了，到时再试
             var skippedShafts = new Dictionary<Point, int>();
             int boulders = 0, shaftJumps = 0;
+            // 下楼前顺手捡的矿物/采集物、劈开的木箱木桶；走不过去或弄不掉的格子记下来不再试
+            var grabbed = new List<string>();
+            int containers = 0;
+            var skippedExtras = new HashSet<Point>();
             while (descended < levels && guard++ < 400)
             {
                 if (Loc is not MineShaft mine)
@@ -1166,6 +1184,35 @@ namespace BlindWhaleFarmer
                         skippedChests.Add(chestTile);
                         chestNotes.Add(chestNote);
                     }
+                    continue;
+                }
+
+                // 2.5) 附近地上的石英、地晶、洞穴萝卜之类捡起来，木箱木桶用武器劈开（不费体力），掉出来的东西捡走。每轮处理一个，处理完回到开头先看有没有怪
+                if (NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
+                    && MineExtras(mine, skippedExtras).FirstOrDefault() is var extra && extra.obj != null)
+                {
+                    bool box = extra.obj is BreakableContainer;
+                    string extraName = extra.obj.DisplayName;
+                    foreach (var s in GoAdjacent(extra.p, o))
+                        yield return s;
+                    if (o.Ok)
+                    {
+                        foreach (var s in ClearObstacle(extra.p, o, maxHits: 12))
+                            yield return s;
+                    }
+                    bool gone = !mine.objects.ContainsKey(new Vector2(extra.p.X, extra.p.Y));
+                    if (!gone)
+                        skippedExtras.Add(extra.p);
+                    else if (box)
+                    {
+                        containers++;
+                        var drops = new List<string>();
+                        foreach (var s in CollectDebris(new Rectangle(extra.p.X - 2, extra.p.Y - 2, 5, 5), drops, 30))
+                            yield return s;
+                    }
+                    else
+                        grabbed.Add(extraName);
+                    o.Succeed();
                     continue;
                 }
 
@@ -1301,6 +1348,10 @@ namespace BlindWhaleFarmer
                 msg += "。" + mummyNote;
             if (boulders > 0)
                 msg += $"；敲碎了 {boulders} 块挡路的矿石巨石";
+            if (grabbed.Count > 0)
+                msg += "；顺手捡了：" + string.Join("、", grabbed.GroupBy(n => n).Select(g => g.Count() > 1 ? $"{g.Key}×{g.Count()}" : g.Key));
+            if (containers > 0)
+                msg += $"；劈开了 {containers} 个木箱/木桶";
             if (loot.Count > 0)
                 msg += "；开宝箱拿到：" + string.Join("、", loot);
             if (chestNotes.Count > 0)

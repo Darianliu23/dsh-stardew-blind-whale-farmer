@@ -76,11 +76,12 @@ namespace BlindWhaleFarmer
                 P("item", "string", "物品名称或背包序号"), P("x", "integer", "x"), P("y", "integer", "y"),
                 P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false));
 
-            Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）。区域里有石头杂草的格子会跳过，先用 clear_area。"
+            Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）；不给坐标只给 count 就挨着最大的田自动扩。只能在农场、温室这类种得了庄稼的地方用。区域里的杂草、石头、树枝、树桩、小树苗会先自己清掉再锄；树和大树桩大石头不动，没开出来的格子结果里会列出来。"
                 + "不同作物可以分开开几块田，每块田挑方便的地方开（状态“作物”一节的“农田”行有每块田的位置、种了什么和扩田建议）。", 300,
-                j => () => a.TillArea(Int(j, "x1"), Int(j, "y1"), Int(j, "x2"), Int(j, "y2"), OptBool(j, "force") ?? false),
-                P("x1", "integer", "左上 x"), P("y1", "integer", "左上 y"), P("x2", "integer", "右下 x"), P("y2", "integer", "右下 y"),
-                P("force", "boolean", "现在不用传（以前离老田远要传，留着兼容）", false));
+                j => () => a.TillArea(OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "count"), OptBool(j, "force") ?? false),
+                P("x1", "integer", "左上 x", false), P("y1", "integer", "左上 y", false), P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false),
+                P("count", "integer", "不给坐标时用：挨着最大的田自动往空地最多的一边扩大约这么多格（默认 20，最多 80）", false),
+                P("force", "boolean", "在种不了庄稼的地方（农场、温室以外）也照样锄（一般不要用）", false));
 
             Add("plant_seeds", "在空耕地上批量播种（或施肥）。不给区域时按田来种：先种已经种着同样作物的田，再种空着的田（新作物自己占一块），一行一行种，零散的一两格耕地不种；想种在哪块田就传那块田的区域。", 300,
                 j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200),
@@ -176,6 +177,9 @@ namespace BlindWhaleFarmer
 
             Add("close_menu", "关闭当前界面/信件/商店，或确认提示。", 20,
                 j => () => a.CloseMenu());
+
+            Add("read_mail", "走到信箱把所有未读的信一次读完：返回每封信的内容，附带的物品、钱、配方、任务都自动收下。状态里说有未读信件时用它，不用 interact 信箱一封封开。", 120,
+                j => () => a.ReadMail());
 
             Add("choose_profession", "升级时选择职业。", 20,
                 j => () => a.ChooseProfession(Str(j, "side")),

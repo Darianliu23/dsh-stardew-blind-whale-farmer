@@ -80,7 +80,7 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(bed);
             });
             if (player.mailbox.Count > 0)
-                sb.AppendLine($"邮箱里有 {player.mailbox.Count} 封未读信件：邮箱在 Farm 的 ({player.getMailboxPosition().X},{player.getMailboxPosition().Y})，interact 这个坐标阅读。信里常有任务、物品，有的剧情要先读信才会触发（比如威利送鱼竿）");
+                sb.AppendLine($"邮箱里有 {player.mailbox.Count} 封未读信件：邮箱在 Farm 的 ({player.getMailboxPosition().X},{player.getMailboxPosition().Y})，用 read_mail 一次读完（会自己走过去）。信里常有任务、物品，有的剧情要先读信才会触发（比如威利送鱼竿）");
 
             Safe(sb, () =>
             {

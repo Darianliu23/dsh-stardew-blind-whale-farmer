@@ -98,6 +98,8 @@ namespace BlindWhaleFarmer
         }
 
         private bool currentInterruptOnChat;
+        /// <summary>动作还没开始跑就在等过场（游戏冻结操作）的帧数；开始跑以后为 -1。</summary>
+        private int currentFreezeWait;
 
         /// <summary>
         /// 在主线程上逐帧运行一个动作协程，返回其结果文字。
@@ -133,6 +135,7 @@ namespace BlindWhaleFarmer
                     currentTicks = 0;
                     currentMaxTicks = Math.Max(1, maxSeconds) * 60;
                     currentInterruptOnChat = interruptOnChat;
+                    currentFreezeWait = 0;
                     currentStartHealth = interruptOnDamage ? Safe(() => StardewValley.Game1.player?.health ?? -1, -1) : -1;
                 }
                 catch (Exception ex)
@@ -157,6 +160,18 @@ namespace BlindWhaleFarmer
             {
                 Finish("失败：游戏世界未就绪（可能回到了标题画面）");
                 return;
+            }
+
+            // 社区中心修复房间之类的过场：游戏冻结操作（freezeControls），这时走路会被我们直接设位置硬拖着走、卡在半路。
+            // 动作开始前先等过场播完（最多 60 秒，不算进动作自己的时限）
+            if (currentFreezeWait >= 0)
+            {
+                if (currentFreezeWait < 60 * 60 && Safe(() => StardewValley.Game1.freezeControls && StardewValley.Game1.activeClickableMenu == null && !StardewValley.Game1.eventUp, false))
+                {
+                    currentFreezeWait++;
+                    return;
+                }
+                currentFreezeWait = -1;
             }
 
             currentTicks++;
