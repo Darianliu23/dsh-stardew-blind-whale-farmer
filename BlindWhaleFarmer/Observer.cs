@@ -401,7 +401,9 @@ namespace BlindWhaleFarmer
                 var t = npc.TilePoint;
                 string extra = "";
                 if (npc is Monster m)
-                    extra = $" [怪物 HP {m.Health}]";
+                    extra = m is StardewValley.Monsters.Mummy { reviveTimer.Value: > 0 } downed
+                        ? $" [倒在地上，{(downed.reviveTimer.Value + 999) / 1000} 秒后满血爬起来；武器砍不动，只有炸弹能炸死]"
+                        : $" [怪物 HP {m.Health}]";
                 else if (npc is Pet)
                     extra = " [宠物]";
                 else if (npc is Horse)

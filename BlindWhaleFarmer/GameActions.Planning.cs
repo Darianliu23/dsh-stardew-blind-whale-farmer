@@ -229,8 +229,14 @@ namespace BlindWhaleFarmer
             public List<Point> Tiles = new();
             public int Crops, Empty;
             public Rectangle Box;
+            /// <summary>田里种的作物：名字 → 株数（多的在前）。</summary>
+            public Dictionary<string, int> CropNames = new();
+            /// <summary>田里作物的种子 id（plant_seeds 把同样的种子种到同一块田）。</summary>
+            public HashSet<string> SeedIds = new();
             public string Describe() =>
-                $"({Box.Left},{Box.Top})-({Box.Right - 1},{Box.Bottom - 1}) 共 {Tiles.Count} 格耕地：作物 {Crops}，空 {Empty}";
+                $"({Box.Left},{Box.Top})-({Box.Right - 1},{Box.Bottom - 1}) 共 {Tiles.Count} 格耕地：作物 {Crops}"
+                + (CropNames.Count > 0 ? $"（{string.Join("、", CropNames.OrderByDescending(kv => kv.Value).Take(4).Select(kv => $"{kv.Key} {kv.Value}"))}）" : "")
+                + $"，空 {Empty}";
         }
 
         /// <summary>
@@ -267,7 +273,13 @@ namespace BlindWhaleFarmer
                 {
                     var hd = (HoeDirt)loc.terrainFeatures[new Vector2(p.X, p.Y)];
                     if (hd.crop != null)
+                    {
                         field.Crops++;
+                        string cropName = hd.crop.dead.Value ? "枯死的作物" : ItemRegistry.GetDataOrErrorItem("(O)" + hd.crop.indexOfHarvest.Value).DisplayName;
+                        field.CropNames[cropName] = field.CropNames.GetValueOrDefault(cropName) + 1;
+                        if (!string.IsNullOrEmpty(hd.crop.netSeedIndex.Value))
+                            field.SeedIds.Add(hd.crop.netSeedIndex.Value);
+                    }
                     else if (!loc.Objects.ContainsKey(new Vector2(p.X, p.Y)))
                         field.Empty++;
                 }
@@ -332,7 +344,7 @@ namespace BlindWhaleFarmer
             if (scattered > 0)
                 sb.Append($"；零散耕地 {scattered} 格" + (scatteredCrops > 0 ? $"（其中 {scatteredCrops} 株作物，收完别再往这里种）" : "")
                     + "，plant_seeds 不会往零散耕地上种，空着的过几天会自己消失");
-            sb.Append("。种子种进已有的田、新田挨着老田开，作物集中好浇水、好放洒水器");
+            sb.Append("。一块田种一种作物（或者同一季、一起收的几种），不同作物可以分开开几块田；新田挑方便的地方开（离家、出货箱、水边近，留出走的路和放洒水器的位置），不用非挨着老田；每块田开得方方正正，好浇水、好放洒水器");
             if (SprinklerSpareTiles(loc) is string spare)
                 sb.Append("；" + spare);
             if (SuggestFieldExpansion(loc) is string ext && big.Sum(f => f.Empty) < 6)

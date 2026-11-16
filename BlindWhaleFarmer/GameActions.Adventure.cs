@@ -222,6 +222,12 @@ namespace BlindWhaleFarmer
         private sealed class FightStats
         {
             public int Kills, Swings, Eaten;
+            /// <summary>打倒木乃伊的次数（它倒地 10 秒后会满血爬起来，不算真的打死）。</summary>
+            public int MummyDowns;
+            /// <summary>用炸弹炸死的倒地木乃伊、用掉的炸弹。</summary>
+            public int MummiesBombed, BombsUsed;
+            /// <summary>这次打架里放炸弹没放成（来不及跑开之类），别再反复试。</summary>
+            public bool BombGaveUp;
             /// <summary>要在结果里告诉 AI 的事（比如迫不得已吃了要交的东西）。</summary>
             public readonly List<string> Notes = new();
             /// <summary>找不到路走过去、等了也没过来的怪。</summary>
@@ -231,7 +237,34 @@ namespace BlindWhaleFarmer
         }
 
         private static IEnumerable<Monster> LiveMonsters(GameLocation loc) =>
-            loc.characters.OfType<Monster>().Where(m => m.Health > 0 && !m.IsInvisible);
+            loc.characters.OfType<Monster>().Where(m => m.Health > 0 && !m.IsInvisible && !IsDownedMummy(m));
+
+        /// <summary>
+        /// 倒在地上的木乃伊（Mummy.takeDamage：血打到 0 时不死，血回满、倒地 10 秒再爬起来）。倒地期间不动、碰到不扣血，
+        /// 武器打不动（只有爆炸能一下炸死）。所以不算活怪：不去空砍它、不当威胁、不算“附近还剩几只”。
+        /// </summary>
+        private static bool IsDownedMummy(Monster m) => m is Mummy mummy && mummy.reviveTimer.Value > 0;
+
+        /// <summary>附近倒地的木乃伊（结果里提醒“它会爬起来”）。</summary>
+        private static int DownedMummiesNear(int radius) => Loc == null ? 0
+            : Loc.characters.OfType<Monster>().Count(m => IsDownedMummy(m) && Util.Manhattan(m.TilePoint, Player.TilePoint) <= radius);
+
+        /// <summary>木乃伊的说明：打倒了几次、附近还躺着几只，以及怎样才能彻底消灭。没打倒过也没躺着的返回 null。</summary>
+        private static string MummyNote(FightStats st, int radius)
+        {
+            int downed = DownedMummiesNear(radius);
+            if (st.MummyDowns == 0 && downed == 0 && st.MummiesBombed == 0)
+                return null;
+            bool crusader = BestWeapon() is int w && w >= 0 && Player.Items[w] is MeleeWeapon mw && mw.hasEnchantmentOfType<CrusaderEnchantment>();
+            string bombed = st.MummiesBombed > 0 ? $"用了 {st.BombsUsed} 颗炸弹炸死 {st.MummiesBombed} 只木乃伊" : null;
+            if (downed == 0)
+                return bombed;
+            return (bombed != null ? bombed + "；" : "") + (st.MummyDowns > 0 ? $"木乃伊打倒了 {st.MummyDowns} 次" : "")
+                + (downed > 0 ? $"{(st.MummyDowns > 0 ? "，" : "")}附近还有 {downed} 只倒在地上" : "")
+                + "：木乃伊倒地 10 秒后会满血爬起来，武器砍倒地的木乃伊没用。"
+                + (crusader ? "你的武器有十字军附魔，再打倒就会直接死。" : "只有趁它倒地时用炸弹（樱桃炸弹、炸弹、超级炸弹）炸，或者用带十字军附魔的武器，才能彻底消灭。")
+                + "没炸弹就别跟它耗，趁它倒着赶紧找楼梯或跳竖井";
+        }
 
         /// <summary>radius 格内最近的活怪（会主动打人的）；没有返回 null。</summary>
         private static Monster NearestThreat(int radius)
@@ -544,7 +577,19 @@ namespace BlindWhaleFarmer
                     .ThenBy(m => Vector2.Distance(m.GetBoundingBox().Center.ToVector2(), Player.StandingPixel.ToVector2()))
                     .FirstOrDefault();
                 if (target == null)
+                {
+                    // 只剩倒在地上的木乃伊：身上有炸弹就趁它们倒着炸掉（武器砍不动，10 秒后又会爬起来）
+                    if (!st.BombGaveUp && BombsInBag().Count > 0 && DownedMummiesNear(radius) > 0)
+                    {
+                        int usedBefore = st.BombsUsed;
+                        foreach (var s in BombDownedMummies(radius, st, st.Notes))
+                            yield return s;
+                        if (st.BombsUsed > usedBefore)
+                            continue;
+                        st.BombGaveUp = true;
+                    }
                     break;
+                }
                 if (IsHealer(target))
                     chasing = target;
 
@@ -576,6 +621,8 @@ namespace BlindWhaleFarmer
                     st.Swings++;
                     if (target.Health <= 0 || !Loc.characters.Contains(target))
                         st.Kills++;
+                    else if (IsDownedMummy(target))
+                        st.MummyDowns++;
                     else
                         NoteSwing(target, hpBefore);
                     continue;
@@ -596,6 +643,8 @@ namespace BlindWhaleFarmer
                     st.Swings++;
                     if (target.Health <= 0 || !Loc.characters.Contains(target))
                         st.Kills++;
+                    else if (IsDownedMummy(target))
+                        st.MummyDowns++;
                     else
                         NoteSwing(target, hpBefore);
                     continue;
@@ -666,9 +715,10 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(why);
                 yield break;
             }
-            if (!LiveMonsters(Loc).Any())
+            // 只剩倒地的木乃伊、身上又有炸弹时照样进去：FightInner 会去炸它们
+            if (!LiveMonsters(Loc).Any() && !(BombsInBag().Count > 0 && DownedMummiesNear(Math.Clamp(radius, 2, 40)) > 0))
             {
-                yield return ActionResult.Success("附近没有怪物");
+                yield return ActionResult.Success("附近没有能打的怪物" + (MummyNote(new FightStats(), radius) is string onlyMummies ? "。" + onlyMummies : ""));
                 yield break;
             }
             var st = new FightStats();
@@ -677,6 +727,8 @@ namespace BlindWhaleFarmer
                 yield return s;
             int left = LiveMonsters(Loc).Count(m => Util.Manhattan(m.TilePoint, Player.TilePoint) <= radius);
             string msg = $"挥了 {st.Swings} 下，打倒 {st.Kills} 只，吃了 {st.Eaten} 次东西，生命 {Player.health}/{Player.maxHealth}，附近还剩 {left} 只";
+            if (MummyNote(st, radius) is string mummyNote)
+                msg += "。" + mummyNote;
             if (st.Notes.Count > 0)
                 msg += "。" + string.Join("；", st.Notes.Distinct());
             var blocked = st.Unreachable.Where(m => m.Health > 0 && Loc.characters.Contains(m)).ToList();
@@ -1245,6 +1297,8 @@ namespace BlindWhaleFarmer
 
             int now = Loc is MineShaft m2 ? m2.mineLevel : 0;
             string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {rocks} 块石头{(oreNodes > 0 ? $"（其中矿石/宝石节点 {oreNodes} 个）" : "")}，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            if (MummyNote(st, 12) is string mummyNote)
+                msg += "。" + mummyNote;
             if (boulders > 0)
                 msg += $"；敲碎了 {boulders} 块挡路的矿石巨石";
             if (loot.Count > 0)

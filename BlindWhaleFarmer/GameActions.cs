@@ -1264,25 +1264,15 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var loc = Loc;
-            // 农场上已经有田、田里还空着不少，又要在离田很远的地方另开一块：作物会东一块西一块，先种满老田或者挨着它扩
-            if (!force && loc is Farm)
+            // 新田不必挨着老田：不同作物可以分块种，每块挑方便的地方。只是另开一块时老田还空着不少，提醒一句（空耕地几天不种会消失）
+            string emptyFieldNote = null;
+            if (loc is Farm)
             {
                 var want = new Rectangle(Math.Min(x1, x2), Math.Min(y1, y2), Math.Abs(x2 - x1) + 1, Math.Abs(y2 - y1) + 1);
                 var fields = Fields(loc).Where(f => f.Tiles.Count >= 4).ToList();
-                if (fields.Count > 0 && fields.All(f => RectGap(want, f.Box) > 3))
-                {
-                    int empty = fields.Sum(f => f.Empty);
-                    string where = string.Join("；", fields.Take(3).Select(f => f.Describe()));
-                    if (empty >= 6)
-                    {
-                        yield return ActionResult.Fail($"老田里还有 {empty} 格空耕地没种（{where}），先 plant_seeds 种满它们，别在离田远的地方另开一块。{ForceHint}");
-                        yield break;
-                    }
-                    yield return ActionResult.Fail($"这块地离现有的田（{where}）太远，作物分散了浇水收菜都要满农场跑。"
-                        + (SuggestFieldExpansion(loc, want.Width * want.Height) is string ext ? ext + "。" : "")
-                        + $"真要另开一块新田（比如老田四周没地方了）就传 force=true");
-                    yield break;
-                }
+                int empty = fields.Where(f => RectGap(want, f.Box) > 0).Sum(f => f.Empty);
+                if (empty >= 6)
+                    emptyFieldNote = $"（别的田里还有 {empty} 格空耕地没种，记得种上，空着几天会自己消失）";
             }
             var tiles = RectTiles(x1, y1, x2, y2, 80).Where(p =>
                 loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null
@@ -1331,7 +1321,7 @@ namespace BlindWhaleFarmer
             }
             int done = tiles.Count(IsTilled);
             string msg = $"开垦了 {done}/{tiles.Count} 格{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，剩余体力 {(int)Player.Stamina}";
-            yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；部分失败：" + err : "")) : ActionResult.Fail(msg + "；" + err);
+            yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；部分失败：" + err : "") + emptyFieldNote) : ActionResult.Fail(msg + "；" + err);
         }
 
         public IEnumerable<object> PlantSeeds(string seedSpec, int? x1, int? y1, int? x2, int? y2, int max)
@@ -1360,21 +1350,28 @@ namespace BlindWhaleFarmer
 
             // 没给区域时按田来种：先把已经有作物的田补满、再种大块的田，一块种完再换下一块；零散的一两格耕地不种。
             // 以前是从近到远挑空耕地，种子会撒得到处都是，浇水收菜都要满农场跑。
-            string skippedNote = null;
+            string skippedNote = null, apartNote = null;
             List<Point> order;
             if (!x1.HasValue && seed.Category == SObject.SeedsCategory)
             {
                 var set = new HashSet<Point>(tiles);
                 var fields = Fields(loc);
+                // 同样的作物种在一块：先种已经种着这种作物的田，再种空着的田（新作物自己占一块），最后才往种着别的作物的田里补
+                string seedId = seed.ItemId;
                 var ranked = fields.Where(f => f.Tiles.Any(set.Contains))
                     .OrderByDescending(f => f.Tiles.Count >= 4)
-                    .ThenByDescending(f => f.Crops > 0)
+                    .ThenByDescending(f => f.SeedIds.Contains(seedId))
+                    .ThenByDescending(f => f.Crops == 0)
                     .ThenByDescending(f => f.Tiles.Count)
                     .ThenBy(f => f.Tiles.Min(p => Util.Manhattan(p, Player.TilePoint)))
                     .ToList();
                 bool hasRealField = ranked.Any(f => f.Tiles.Count >= 4);
+                // 有种着这种作物或者空着的田，就不往种着别的作物的田里补（不同作物分开种）；一块这样的田都没有时才补空位
+                bool Fits(Field f) => f.SeedIds.Contains(seedId) || f.Crops == 0;
+                bool keepApart = ranked.Any(f => (f.Tiles.Count >= 4 || !hasRealField) && Fits(f));
                 order = new List<Point>();
                 int skipped = 0;
+                var otherCropFields = new List<Field>();
                 foreach (var f in ranked)
                 {
                     var mine = f.Tiles.Where(set.Contains).ToList();
@@ -1383,11 +1380,21 @@ namespace BlindWhaleFarmer
                         skipped += mine.Count;
                         continue;
                     }
+                    if (keepApart && !Fits(f))
+                    {
+                        otherCropFields.Add(f);
+                        continue;
+                    }
                     // 一块田里一行一行种（蛇形），比“最近的下一格”整齐
                     order.AddRange(mine.OrderBy(p => p.Y).ThenBy(p => p.Y % 2 == 0 ? p.X : -p.X));
                 }
                 if (skipped > 0)
                     skippedNote = $"零散的 {skipped} 格耕地没种（离田太远，种了不好照顾；真要种就传 x1,y1,x2,y2 指定区域）";
+                if (otherCropFields.Count > 0)
+                    apartNote = $"种着别的作物的田（{string.Join("；", otherCropFields.Take(3).Select(f => f.Describe()))}）里的空位没往里种，不同作物分开种。"
+                        + "种子还有剩就 till_area 给它开一块新田"
+                        + (loc is Farm && SuggestFieldExpansion(loc) is string ext2 ? $"（比如{ext2}）" : "")
+                        + "，或者传 x1,y1,x2,y2 指定就种在那里";
             }
             else
                 order = Util.NearestOrder(Player.TilePoint, tiles).ToList();
@@ -1422,6 +1429,10 @@ namespace BlindWhaleFarmer
             string msg = $"种下了 {done} 格 {seedName}";
             if (skippedNote != null)
                 msg += "；" + skippedNote;
+            // 种子还有剩、又因为“分开种”没往别的田里补：说清楚剩多少、怎么办
+            int seedsLeft = Player.Items[idx] is { } rest && rest.DisplayName == seedName ? rest.Stack : 0;
+            if (apartNote != null && seedsLeft > 0)
+                msg += $"；还剩 {seedsLeft} 颗{seedName}：" + apartNote;
             if (done == 0 && err == null)
                 err = "没有能种的耕地" + (loc is Farm && SuggestFieldExpansion(loc) is string ext ? "，" + ext : "");
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);

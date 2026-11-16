@@ -77,12 +77,12 @@ namespace BlindWhaleFarmer
                 P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false));
 
             Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）。区域里有石头杂草的格子会跳过，先用 clear_area。"
-                + "农场上新田要挨着已有的田开（状态“作物”一节的“农田”行有田的位置和扩田建议），离老田太远会被拒绝。", 300,
+                + "不同作物可以分开开几块田，每块田挑方便的地方开（状态“作物”一节的“农田”行有每块田的位置、种了什么和扩田建议）。", 300,
                 j => () => a.TillArea(Int(j, "x1"), Int(j, "y1"), Int(j, "x2"), Int(j, "y2"), OptBool(j, "force") ?? false),
                 P("x1", "integer", "左上 x"), P("y1", "integer", "左上 y"), P("x2", "integer", "右下 x"), P("y2", "integer", "右下 y"),
-                P("force", "boolean", "确实要离老田很远另开一块时传 true", false));
+                P("force", "boolean", "现在不用传（以前离老田远要传，留着兼容）", false));
 
-            Add("plant_seeds", "在空耕地上批量播种（或施肥）。不给区域时按田来种：先补满已有作物的田、再种大块的田，一行一行种，零散的一两格耕地不种。", 300,
+            Add("plant_seeds", "在空耕地上批量播种（或施肥）。不给区域时按田来种：先种已经种着同样作物的田，再种空着的田（新作物自己占一块），一行一行种，零散的一两格耕地不种；想种在哪块田就传那块田的区域。", 300,
                 j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200),
                 P("seed", "string", "种子名称或背包序号"),
                 P("x1", "integer", "区域左上 x", false), P("y1", "integer", "区域左上 y", false),
@@ -233,6 +233,11 @@ namespace BlindWhaleFarmer
                 P("levels", "integer", "这次往下走几层（1~20），默认 3", false),
                 P("start_level", "integer", "从哪层开始（电梯层，可省略；骷髅洞穴没有电梯）", false),
                 P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴。人已经在沙漠或骷髅洞穴入口时默认是 skull", false));
+
+            Add("use_bomb", "放炸弹：走到那格旁边放下，马上跑出爆炸范围，等它炸完再返回。不传坐标就自动挑：附近有倒地的木乃伊就炸它们（木乃伊倒地时只有炸弹能炸死），没有就找身边石头最多的地方。爆炸范围是以炸弹为中心的正方形：樱桃炸弹半径 3、炸弹 5、超级炸弹 7；来不及跑出范围的位置不会放。fight 和 explore_mine 只剩倒地的木乃伊时也会自己用。", 60,
+                j => () => a.UseBomb(OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "kind")),
+                P("x", "integer", "炸弹放在哪格 x（可省略，自动挑）", false), P("y", "integer", "y", false),
+                P("kind", "string", "cherry（樱桃炸弹）/ bomb（炸弹）/ mega（超级炸弹），可省略=用最小的", false));
 
             Add("upgrade_tool", "找铁匠 Clint（Blacksmith）升级工具（花钱+矿锭，2 天后取，期间工具不能用），或者领取已经升级好的工具（tool 可省略）。建议在下雨天升级水壶。", 240,
                 j => () => a.UpgradeTool(OptStr(j, "tool")),
