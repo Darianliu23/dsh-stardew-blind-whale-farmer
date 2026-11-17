@@ -57,6 +57,12 @@ namespace BlindWhaleFarmer
                     sb.AppendLine($"Robin 正在农场施工：{building.buildingType.Value}（还要 {Math.Max(building.daysOfConstructionLeft.Value, building.daysUntilUpgrade.Value)} 天）");
                 if (GameActions.DailyQuestHint() is string quest)
                     sb.AppendLine(quest);
+                if (GameActions.SpecialOrderHint() is string order)
+                    sb.AppendLine(order);
+                if (GameActions.UnreadItemsHint() is string unread)
+                    sb.AppendLine(unread);
+                if (GameActions.IslandHint() is string island)
+                    sb.AppendLine(island);
                 sb.AppendLine($"农场类型：{FarmTypeName()}（攻略“农场类型”一节有这种地图的要点）");
                 if (GameActions.SpendingAdvice() is string spend)
                     sb.AppendLine(spend);
@@ -877,6 +883,10 @@ namespace BlindWhaleFarmer
                     }
                     else
                         sb.AppendLine("升级提示界面（会自动确认，也可以 close_menu）");
+                    break;
+
+                case SpecialOrdersBoard board when board.boardType == "":
+                    sb.AppendLine("特别订单板的界面。别在这里点，用 close_menu 关掉，再用 special_orders 查看订单内容、accept=left/right 接受。");
                     break;
 
                 case ShippingMenu:

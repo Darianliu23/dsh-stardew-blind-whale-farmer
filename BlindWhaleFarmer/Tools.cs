@@ -150,6 +150,10 @@ namespace BlindWhaleFarmer
                 P("item", "string", "食物名称或背包序号"),
                 P("force", "boolean", "要交的东西也照样吃（一般不要用）", false));
 
+            Add("use_item", "拿起背包里的东西使用（和手持右键一样，用掉一个）：读书（技能书加经验，能力书第一次读有永久加成）、读秘密纸条（直接返回纸条内容）、用图腾（传送图腾回农场/山上/海边/沙漠/姜岛、雨图腾让明天下雨、宝藏图腾）、吹马笛。吃东西用 eat；晶球、神秘盒找克林特用 crack_geodes。", 60,
+                j => () => a.UseItem(Str(j, "item")),
+                P("item", "string", "物品名称或背包序号"));
+
             Add("open_shop", "在商店所在地点打开商店界面（店主要在场、在营业时间）。不传 shop_id 就自动判断：SeedShop→杂货店，Blacksmith→铁匠，ScienceHouse→木匠，FishShop→鱼店，Saloon→酒吧。", 20,
                 j => () => a.OpenShop(OptStr(j, "shop_id")),
                 P("shop_id", "string", "商店ID，可省略", false));
@@ -255,6 +259,13 @@ namespace BlindWhaleFarmer
             Add("quest_board", "去镇上皮埃尔店门口的告示板查看今天的委托任务；accept=true 接受（2 天内完成，有报酬和好感）。", 180,
                 j => () => a.QuestBoard(OptBool(j, "accept") ?? false),
                 P("accept", "boolean", "是否接受", false));
+
+            Add("special_orders", "去刘易斯家门口的特别订单板（第一年秋季 2 日开放）：不传 accept 列出左右两个订单的内容、目标、期限和报酬；accept=left 或 right 接下其中一个（一周只能接一个，每周一刷新）。这周接过了就直接报正在做的订单进度。", 180,
+                j => () => a.SpecialOrders(OptStr(j, "accept")),
+                P("accept", "string", "接哪个：left（左边）或 right（右边），也可以传订单名的一部分；不传只看", false));
+
+            Add("repair_boat", "去威利鱼店后屋的船坞修去姜岛的船（社区中心修好或 Joja 路线走完后威利来信邀请才进得去）：把背包里够数的材料交上——硬木 200、铱锭 5、电池组 5，可以分几次交；全交齐的第二天船就能开，之后 travel_to IslandSouth 坐船去姜岛（船票 1000g，回来免费）。", 180,
+                j => () => a.RepairBoat());
 
             Add("buy_animal", "去 Marnie 的牧场（AnimalShop）买动物，自动放进有空位的鸡舍/畜棚并起名。不传 type 会列出能买的动物和价格。", 240,
                 j => () => a.BuyAnimal(OptStr(j, "type"), OptStr(j, "name"), OptInt(j, "count") ?? 1),

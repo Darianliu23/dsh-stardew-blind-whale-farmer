@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { launchGame } from '../../lib/game-control.js'
 
 /** 假游戏：按顺序返回状态；记下启动和读档。 */
-function fakeGame({ states, running = false, startError = null, loadReplies = ['成功：正在读取存档 测试_1（上次游玩 11-07 00:05），要十几秒'] }) {
+function fakeGame({ states, running = false, startError = null, mismatch = '', loadReplies = ['成功：正在读取存档 测试_1（上次游玩 11-07 00:05），要十几秒'] }) {
   const log = { starts: 0, loads: [] }
   let i = 0
   const replies = [...loadReplies]
@@ -17,6 +17,7 @@ function fakeGame({ states, running = false, startError = null, loadReplies = ['
       running: () => running,
       loadSave: async (save) => { log.loads.push(save); return replies.length > 1 ? replies.shift() : replies[0] },
       sleep: async () => {},
+      mismatch: () => mismatch,
     },
   }
 }
@@ -78,4 +79,17 @@ test('预设里的开游戏工具：参数传过去，成功时提醒等游戏�
   assert.equal(calls[0].gamePath, 'D:/Games/SDV')
   assert.equal(calls[0].save, '测试')
   assert.match(text, /等半分钟再试/)
+})
+
+test('连不上模组时端口和模组 config.json 不一样：直接说端口的事', async () => {
+  const g = fakeGame({ states: ['off'], mismatch: '插件设置里的端口是 18081，但游戏模组 config.json 里的 McpPort 是 18080，两边连不上。' })
+  const text = await launchGame({ startTimeoutMs: 0, deps: g.deps })
+  assert.match(text, /^失败：启动了 SMAPI，但连不上模组：插件设置里的端口是 18081.*McpPort 是 18080/)
+})
+
+test('portMismatchNote：一样或读不到不说，不一样说清两边的值', async () => {
+  const { portMismatchNote } = await import('../../lib/game-control.js')
+  assert.equal(portMismatchNote(18080, '', () => 18080), '')
+  assert.equal(portMismatchNote(18080, '', () => null), '')
+  assert.match(portMismatchNote(18081, '', () => 18080), /端口是 18081.*McpPort 是 18080.*改成 18080/)
 })

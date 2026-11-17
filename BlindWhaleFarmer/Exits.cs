@@ -46,7 +46,7 @@ namespace BlindWhaleFarmer
             {
                 ExitKind.Warp => "出口",
                 ExitKind.Door => "门",
-                ExitKind.Bus => "巴士",
+                ExitKind.Bus => Target is "IslandSouth" or "BoatTunnel" ? "船" : "巴士",
                 _ => "建筑门"
             };
             return $"{kind} ({Tile.X},{Tile.Y}) → {Target}{Note}";
@@ -74,7 +74,11 @@ namespace BlindWhaleFarmer
             }
 
             // 去沙漠的巴士要等金库收集包（或 Joja 的巴士项目）完成、巴士修好以后才有
-            list.AddRange(GetTileExits(loc).Where(e => e.Kind != ExitKind.Bus || e.Target != "Desert" || BusRepaired));
+            // 威利的后屋（船坞）要收到威利的邀请信才进得去；去姜岛的船要修好才开
+            list.AddRange(GetTileExits(loc).Where(e =>
+                (e.Kind != ExitKind.Bus || e.Target != "Desert" || BusRepaired)
+                && (e.Target != "BoatTunnel" || e.Kind != ExitKind.Door || Game1.player.mailReceived.Contains("willyBackRoomInvitation"))
+                && (e.Kind != ExitKind.Bus || e.Target != "IslandSouth" || BoatRepaired)));
 
             foreach (var b in loc.buildings)
             {
@@ -157,6 +161,12 @@ namespace BlindWhaleFarmer
         public static bool BusRepaired =>
             Game1.MasterPlayer.mailReceived.Contains("ccVault") || Game1.MasterPlayer.mailReceived.Contains("jojaVault");
 
+        /// <summary>威利去姜岛的船修好了没有（和船坞售票机的判断一样）。</summary>
+        public static bool BoatRepaired => Game1.MasterPlayer.mailReceived.Contains("willyBoatFixed");
+
+        /// <summary>这个“巴士”类出口其实是威利的船（去姜岛、从姜岛回来）。</summary>
+        public static bool IsBoat(Exit e) => e.Kind == ExitKind.Bus && e.Target is "IslandSouth" or "BoatTunnel";
+
         private static List<Exit> GetTileExits(GameLocation loc)
         {
             string key = loc.NameOrUniqueName;
@@ -192,6 +202,9 @@ namespace BlindWhaleFarmer
                         // 沙漠里停着的巴士：走到车门那一格就问“是否返回星露谷”
                         if (parts.Length >= 1 && parts[0] == "DesertBus" && Game1.getLocationFromName("BusStop") != null)
                             list.Add(new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BusStop", IsTouch = true, Note = "（坐巴士回巴士站，免费）" });
+                        // 姜岛南边码头的船：走上去问“要不要回去”，坐船回威利的船坞（免费）
+                        if (parts.Length >= 1 && parts[0] == "LeaveIsland" && Game1.getLocationFromName("BoatTunnel") != null)
+                            list.Add(new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BoatTunnel", IsTouch = true, Note = "（坐威利的船回鹈鹕镇，免费）" });
                         if (parts.Length >= 4 && (parts[0] == "Warp" || parts[0] == "MagicWarp")
                             && Game1.getLocationFromName(parts[1]) != null
                             && int.TryParse(parts[2], out int tx) && int.TryParse(parts[3], out int ty))
@@ -240,6 +253,12 @@ namespace BlindWhaleFarmer
                     break;
                 case "WarpCommunityCenter":
                     return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "CommunityCenter" };
+                // 威利鱼店里通往后屋船坞的门（FishShop.performAction，收到邀请信才开）
+                case "WarpBoatTunnel" when Game1.getLocationFromName("BoatTunnel") != null:
+                    return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "BoatTunnel", TargetTile = new Point(6, 12), Note = "（威利的船坞）" };
+                // 船坞的售票机：买票坐船去姜岛（BoatTunnel.checkAction，船修好以后）
+                case "BoatTicket" when Game1.getLocationFromName("IslandSouth") != null:
+                    return new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "IslandSouth", Note = "（售票机，坐威利的船去姜岛，船票 1000g）" };
             }
             return null;
         }

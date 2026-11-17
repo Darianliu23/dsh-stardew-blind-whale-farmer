@@ -830,7 +830,7 @@ namespace BlindWhaleFarmer
                     if (e.IsTouch)
                     {
                         // 沙漠的巴士：踩到车门那格就弹出问题，走路会被这个界面打断，所以不看走路的结果，看问题出来没有
-                        foreach (var s in GoToAny(new List<Point> { e.Tile }, o, $"去 {e.Target} 的巴士"))
+                        foreach (var s in GoToAny(new List<Point> { e.Tile }, o, $"去 {e.Target} 的{(Exits.IsBoat(e) ? "船" : "巴士")}"))
                             yield return s;
                         if (!o.Ok && Game1.activeClickableMenu is not DialogueBox { isQuestion: true })
                             yield break;
@@ -851,7 +851,7 @@ namespace BlindWhaleFarmer
                         int yes = Array.FindIndex(ask.responses, r => r.responseKey == "Yes");
                         if (yes < 0)
                         {
-                            o.Fail($"坐不了去 {e.Target} 的巴士。当前界面：{observer.DescribeMenu()}");
+                            o.Fail($"坐不了去 {e.Target} 的{(Exits.IsBoat(e) ? "船" : "巴士")}。当前界面：{observer.DescribeMenu()}");
                             yield break;
                         }
                         foreach (var s in Dialogue(yes))
@@ -862,7 +862,7 @@ namespace BlindWhaleFarmer
                 }
             }
             // 巴士要等人走上车、开出画面才换地图，比走门慢得多
-            int waitTicks = e.Kind == ExitKind.Bus ? 2400 : 600;
+            int waitTicks = Exits.IsBoat(e) ? 4800 : e.Kind == ExitKind.Bus ? 2400 : 600;
 
             // 联机时走进节日地图不会马上传送：游戏先等所有玩家都到（确认后才传送）
             if (Game1.activeClickableMenu is ReadyCheckDialog ready)
@@ -899,7 +899,9 @@ namespace BlindWhaleFarmer
                 {
                     string text = db.getCurrentString();
                     db.closeDialogue();
-                    o.Fail(e.Kind == ExitKind.Bus
+                    o.Fail(Exits.IsBoat(e)
+                        ? $"坐不了去 {e.Target} 的船：{text}（去姜岛的船票 1000g；船要先用 repair_boat 修好）"
+                        : e.Kind == ExitKind.Bus
                         ? $"坐不了去 {e.Target} 的巴士：{text}（去沙漠要 500g 车票，帕姆在巴士站台时才发车，大约 10:00-17:00）"
                         : $"进不去 {e.Target}：{text}");
                     yield break;
@@ -2587,6 +2589,13 @@ namespace BlindWhaleFarmer
                     yield return ActionResult.Success("夜里有新生命要起名（孩子或者刚出生的动物）。用 set_name 起个名字，起完不用再 sleep");
                     yield break;
                 }
+                // 选职业的界面是夜里结算时弹的，那时屏幕还是黑的（fadeToBlack），等不到“天亮”，要先认出来交给 AI。
+                // 以前放在天亮之后才判断，结果白等 3 分钟、回一句“可以开始新的一天”，AI 不知道要选职业，界面就一直挂着
+                if (Game1.activeClickableMenu is LevelUpMenu { isProfessionChooser: true })
+                {
+                    yield return ActionResult.Success($"睡下了，夜里技能升级要选职业（选完游戏才会存档、进入新的一天，不用再 sleep）：\n" + observer.DescribeMenu());
+                    yield break;
+                }
                 if (Game1.farmEvent != null && Game1.activeClickableMenu is DialogueBox nightBox)
                 {
                     if (nightBox.isQuestion)
@@ -2597,14 +2606,11 @@ namespace BlindWhaleFarmer
                     foreach (var s in ClickThroughDialogue(YesChoice, 120))
                         yield return s;
                 }
-                if (Game1.stats.DaysPlayed != day && !Game1.newDay && !Game1.fadeToBlack && Context.IsWorldReady)
+                // 夜里的农场事件（修船、陨石、仙子、女巫、建筑完工……）在新的一天开始前播，那时 eventUp 也开着、时钟还停在 24:00，
+                // 不能当成“早上的剧情”提前返回：以前会回“睡醒了，00:00”，状态还提示“必须马上 sleep”
+                if (Game1.stats.DaysPlayed != day && !Game1.newDay && !Game1.fadeToBlack && Context.IsWorldReady && Game1.farmEvent == null)
                 {
-                    // 选职业要 AI 自己挑；早上的剧情事件也交给 AI 处理
-                    if (Game1.activeClickableMenu is LevelUpMenu { isProfessionChooser: true })
-                    {
-                        yield return ActionResult.Success($"睡醒了，{Util.Stamp()}。先用 choose_profession 选职业");
-                        yield break;
-                    }
+                    // 早上的剧情事件交给 AI 处理
                     if (Game1.eventUp || (Game1.activeClickableMenu == null && Player.CanMove))
                         break;
                 }
@@ -2613,6 +2619,12 @@ namespace BlindWhaleFarmer
             if (Game1.activeClickableMenu is ReadyCheckDialog waiting)
             {
                 yield return ActionResult.Success("还在等：" + ReadyCheckHint(waiting));
+                yield break;
+            }
+            // 等到头还有界面挂着（不是会自动确认的结算/普通升级），别说“可以开始新的一天”，把界面交给 AI
+            if (Game1.activeClickableMenu is { } left && left is not (ShippingMenu or SaveGameMenu) && left is not LevelUpMenu { isProfessionChooser: false })
+            {
+                yield return ActionResult.Success("睡下了，但还有界面要处理：\n" + observer.DescribeMenu());
                 yield break;
             }
             yield return ActionResult.Success(Game1.stats.DaysPlayed == day
@@ -2780,6 +2792,9 @@ namespace BlindWhaleFarmer
                 return null;
             var ev = Game1.CurrentEvent;
             if (ev is { isFestival: true })
+                return null;
+            // 坐威利的船去姜岛（-78765）、从姜岛回来（-157039427）的过场是坐船本身，不算半路冒出来的剧情
+            if (ev?.id is "-78765" or "-157039427")
                 return null;
             var who = ev?.actors.Where(a => a != null).Select(a => a.displayName).Distinct().Take(3).ToList() ?? new List<string>();
             return $"在 {Loc?.DisplayName ?? "这里"} 触发了剧情{(who.Count > 0 ? "（" + string.Join("、", who) + "）" : "")}，刚才的动作停下了，没做完。"
