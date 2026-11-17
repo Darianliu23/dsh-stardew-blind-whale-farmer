@@ -34,6 +34,9 @@ namespace BlindWhaleFarmer
         /// </summary>
         private static bool ClearableObstacle(Point p)
         {
+            // 火山里的岩浆：用水壶浇一下就冷却成能走的石头（VolcanoDungeon.performToolAction），水壶要有水
+            if (IsHotLava(Loc, p))
+                return VolcanoCanWithWater() >= 0;
             if (!Loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || obj.isPassable())
                 return false;
             // 矿洞外面只清杂草、捡野菜（不花体力，也不会砸掉玩家摆的东西）；石头、木桶只在矿洞里清
@@ -51,6 +54,20 @@ namespace BlindWhaleFarmer
         private IEnumerable<object> ClearObstacle(Point p, Outcome o, int maxHits = 12, bool stopOnThreat = true)
         {
             var key = new Vector2(p.X, p.Y);
+            if (IsHotLava(Loc, p))
+            {
+                int can = VolcanoCanWithWater();
+                if (can < 0)
+                {
+                    o.Fail("挡路的岩浆要用水壶浇冷，但水壶没水了（火山入口那层和第 5 层有泉水能灌）");
+                    yield break;
+                }
+                foreach (var s in UseToolOnce(can, p, o))
+                    yield return s;
+                if (o.Ok && IsHotLava(Loc, p))
+                    o.Fail($"({p.X},{p.Y}) 的岩浆浇了没冷却");
+                yield break;
+            }
             if (!Loc.objects.TryGetValue(key, out var obj))
             {
                 o.Succeed();
@@ -294,7 +311,7 @@ namespace BlindWhaleFarmer
         /// </summary>
         private IEnumerable<object> GoToAnyClearing(ICollection<Point> goals, Outcome o, string label)
         {
-            for (int round = 0; round < 20; round++)
+            for (int round = 0, max = Loc is VolcanoDungeon ? 40 : 20; round < max; round++)
             {
                 var me = Player.TilePoint;
                 if (goals.Contains(me))

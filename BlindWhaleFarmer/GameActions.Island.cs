@@ -37,7 +37,11 @@ namespace BlindWhaleFarmer
                     : $"威利的船（鱼店后屋）还没修好，去姜岛要先 repair_boat。还差：{string.Join("、", missing)}";
             }
             if (Loc?.InIslandContext() == true)
-                return $"金核桃：现有 {Game1.netWorldState.Value.GoldenWalnuts} 个，一共找到 {Game1.netWorldState.Value.GoldenWalnutsFound} 个（给鹦鹉解锁岛上的东西；攻略“姜岛”一节）";
+            {
+                int easy = WalnutBushes(Loc).Count + BuriedWalnuts(Loc).Count;
+                return $"金核桃：现有 {Game1.netWorldState.Value.GoldenWalnuts} 个，一共找到 {Game1.netWorldState.Value.GoldenWalnutsFound} 个（feed_parrot 给鹦鹉解锁岛上的东西；攻略“姜岛”一节）"
+                    + (easy > 0 ? $"。这张地图上还有 {easy} 处灌木/地下的核桃能直接捡（collect_walnuts）" : "");
+            }
             return null;
         }
 

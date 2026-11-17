@@ -133,7 +133,7 @@ SMAPI 控制台命令（调试用）：
 - 背包里能捐给博物馆的东西、能交给社区中心收集包的材料
 - 附近能不能钓鱼；矿洞层数、下楼梯/竖井/电梯/出口的坐标
 
-## AI 能做什么（60 个工具）
+## AI 能做什么（64 个工具）
 
 | 类别 | 工具 |
 |---|---|
@@ -142,8 +142,8 @@ SMAPI 控制台命令（调试用）：
 | 批量农活 | `till_area`（不给坐标只给格数就挨着田扩）、`plant_seeds`、`water_crops`（水壶空了自动去灌水）、`harvest_crops`、`clear_area`（不给坐标就清自己周围）、`forage`（把地图上的野生采集物挨个采了） |
 | 钓鱼 | `fish`（自动找岸边、按钓鱼等级算抛竿力度、等咬钩、提竿、自动玩钓鱼小游戏、收宝箱，一次最多连钓 20 竿） |
 | 动物 | `care_animals`（自动进每个鸡舍/畜棚：捡蛋和羊毛、清空自动采集器、食槽放干草、摸动物、挤奶/剪毛；可开关动物门） |
-| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托）、`special_orders`（刘易斯家门口的特别订单：看内容、接订单、查进度）、`repair_boat`（交材料修威利去姜岛的船；修好后 `travel_to` 会自己坐船来回） |
-| 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，附近有矿石宝石节点会先敲，可坐电梯直达）、`use_bomb`（放炸弹并跑出爆炸范围；打倒的木乃伊会自动用炸弹炸死） |
+| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托）、`special_orders`（刘易斯家门口的特别订单、齐先生核桃房的齐挑战：看内容、接订单、查进度）、`special_order_dropbox`（把订单要的东西放进指定地点的投递箱）、`prize_machine`（领订单奖券、去刘易斯家的奖券机换奖品）、`repair_boat`（交材料修威利去姜岛的船；修好后 `travel_to` 会自己坐船来回）、`feed_parrot`（给姜岛的鹦鹉交金核桃解锁东西）、`collect_walnuts`（摇核桃灌木、挖地下埋着的金核桃） |
+| 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，附近有矿石宝石节点会先敲，可坐电梯直达；`where=volcano` 爬姜岛火山：浇冷岩浆、踩机关开关开门，一直到火山口）、`use_bomb`（放炸弹并跑出爆炸范围；打倒的木乃伊会自动用炸弹炸死） |
 | 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵） |
 | 联机 | `say`（在游戏聊天里说话）、`set_mode`（换联机模式）、`wait_chat`（等别人说话）、`follow`（跟着别的玩家走）、`propose`（拿结婚戒指向别的玩家求婚） |
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |

@@ -245,10 +245,10 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>出门（下矿、钓鱼）时身上带着、但这次用不上的东西，给动作结果加一句提醒。</summary>
-        private static string TripClutterHint(string purpose)
+        private static string TripClutterHint(string purpose, Func<Item, bool> alsoUseful = null)
         {
             var reserved = ReservedChecker();
-            var clutter = Player.Items.Where(i => i != null && !UsefulFor(purpose, i) && reserved(i) == null
+            var clutter = Player.Items.Where(i => i != null && !UsefulFor(purpose, i) && alsoUseful?.Invoke(i) != true && reserved(i) == null
                                                   && !(i is SObject o && o.Edibility > 0)).ToList();
             if (clutter.Count < 4 || Player.freeSpotsInInventory() > 6)
                 return null;

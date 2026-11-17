@@ -605,6 +605,7 @@ namespace BlindWhaleFarmer
             doorWaitNote = null;
             // 地图上被石头、树挡住的出口：这次不走了，换一条路线（比如农场南门堵了就经过小镇去森林）
             var blockedExits = new HashSet<string>();
+            var triedVolcanoSwitches = new HashSet<string>();
             string blockedWhy = null;
             for (int hop = 0; hop < 25; hop++)
             {
@@ -672,6 +673,32 @@ namespace BlindWhaleFarmer
                 string exitFrom = Loc.NameOrUniqueName;
                 foreach (var s in TakeExit(route[0], o))
                     yield return s;
+                // 火山里被矮人机关门挡住（比如从火山口的捷径下来，第 0 层的门要踩旁边的开关才开）：踩亮走得到的开关，再走一次
+                if (!o.Ok && o.Message.StartsWith("找不到通往") && Loc is StardewValley.Locations.VolcanoDungeon vdTravel && !triedVolcanoSwitches.Contains(exitFrom))
+                {
+                    triedVolcanoSwitches.Add(exitFrom);
+                    int pressed = 0;
+                    foreach (var sw in VolcanoSwitches(vdTravel).ToList())
+                    {
+                        var swPath = Pathfinder.FindPath(vdTravel, Player.TilePoint, new[] { sw });
+                        if (swPath == null)
+                            continue;
+                        var so = new Outcome();
+                        foreach (var s in WalkPath(swPath, so))
+                            yield return s;
+                        if (so.Ok)
+                            pressed++;
+                    }
+                    if (pressed > 0)
+                    {
+                        for (int t = 0; t < 300 && vdTravel.dwarfGates.Any(g => !g.opened.Value && g.switches.Values.All(v => v)); t++)
+                            yield return null;
+                        foreach (var s in WaitTicks(30))
+                            yield return s;
+                        o.Succeed();
+                        continue;
+                    }
+                }
                 if (!o.Ok && o.Message.StartsWith("找不到通往") && Loc.NameOrUniqueName == exitFrom)
                 {
                     blockedExits.Add(Exits.ExitKey(exitFrom, route[0]));

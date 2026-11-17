@@ -749,7 +749,7 @@ namespace BlindWhaleFarmer
         /// 矿洞里还没拿空的宝箱（每 10 层的奖励箱、宝藏房的箱子）。它们放在 overlayObjects 里，
         /// 但 GameLocation.objects 是叠加了 overlayObjects 的字典，所以从 objects 里就能找到。
         /// </summary>
-        private static IEnumerable<(Point tile, Chest chest)> MineChests(MineShaft mine) =>
+        private static IEnumerable<(Point tile, Chest chest)> MineChests(GameLocation mine) =>
             mine.objects.Pairs
                 .Where(p => p.Value is Chest c && !c.playerChest.Value && c.GetItemsForPlayer().Count > 0)
                 .Select(p => (new Point((int)p.Key.X, (int)p.Key.Y), (Chest)p.Value))
@@ -759,7 +759,7 @@ namespace BlindWhaleFarmer
         /// 开矿洞宝箱：和玩家点击一样走 checkAction。第一下掀开盖子，之后每点一下拿出一样东西（举过头顶展示，
         /// 背包满时弹出拿取界面）。拿不了（走不到、背包满）时通过 note 说明，调用方就不再反复尝试这个箱子。
         /// </summary>
-        private IEnumerable<object> OpenMineChest(MineShaft mine, Point tile, List<string> took, Action<string> note)
+        private IEnumerable<object> OpenMineChest(GameLocation mine, Point tile, List<string> took, Action<string> note)
         {
             var o = new Outcome();
             foreach (var s in GoAdjacent(tile, o))
@@ -897,7 +897,7 @@ namespace BlindWhaleFarmer
         private const int MineExtraRange = 8;
 
         /// <summary>这一层附近能捡的矿物/采集物和能劈的木箱木桶，近的在前。</summary>
-        private static IEnumerable<(Point p, SObject obj)> MineExtras(MineShaft mine, HashSet<Point> skipped)
+        private static IEnumerable<(Point p, SObject obj)> MineExtras(GameLocation mine, HashSet<Point> skipped)
         {
             var me = Player.TilePoint;
             return mine.objects.Pairs
@@ -977,6 +977,13 @@ namespace BlindWhaleFarmer
             string clutter = TripClutterHint("mine");
             // 去哪个矿：明说 skull，或者人已经在沙漠 / 骷髅洞穴入口，就是骷髅洞穴
             whichMine = whichMine?.Trim().ToLowerInvariant();
+            // 姜岛火山：地图和走法都不一样（岩浆、机关门、往上走），单独处理
+            if (whichMine is "volcano" or "火山" or "火山地牢" || (string.IsNullOrEmpty(whichMine) && Loc is VolcanoDungeon or Caldera or IslandNorth))
+            {
+                foreach (var s in ExploreVolcano(levels, maxBombs))
+                    yield return s;
+                yield break;
+            }
             bool skull = whichMine is "skull" or "skullcave" or "skull_cavern" or "骷髅" or "骷髅洞穴"
                 || (string.IsNullOrEmpty(whichMine) && Loc.Name is "SkullCave" or "Desert");
             if (Loc is not MineShaft && skull)

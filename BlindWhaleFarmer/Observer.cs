@@ -63,6 +63,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(unread);
                 if (GameActions.IslandHint() is string island)
                     sb.AppendLine(island);
+                if (GameActions.AffordableParrotsHint() is string parrots)
+                    sb.AppendLine(parrots);
                 sb.AppendLine($"农场类型：{FarmTypeName()}（攻略“农场类型”一节有这种地图的要点）");
                 if (GameActions.SpendingAdvice() is string spend)
                     sb.AppendLine(spend);
@@ -885,8 +887,16 @@ namespace BlindWhaleFarmer
                         sb.AppendLine("升级提示界面（会自动确认，也可以 close_menu）");
                     break;
 
-                case SpecialOrdersBoard board when board.boardType == "":
-                    sb.AppendLine("特别订单板的界面。别在这里点，用 close_menu 关掉，再用 special_orders 查看订单内容、accept=left/right 接受。");
+                case SpecialOrdersBoard board:
+                    sb.AppendLine($"{(board.boardType == "Qi" ? "齐先生的订单板" : "特别订单板")}的界面。别在这里点，用 close_menu 关掉，再用 special_orders{(board.boardType == "Qi" ? " board=qi" : "")} 查看订单内容、accept=left/right 接受。");
+                    break;
+
+                case QuestContainerMenu:
+                    sb.AppendLine("特别订单投递箱的界面。别在这里点，用 close_menu 关掉，再用 special_order_dropbox 自动把要交的东西放进去。");
+                    break;
+
+                case PrizeTicketMenu:
+                    sb.AppendLine("奖券机的界面。用 close_menu 关掉，再用 prize_machine 换奖品。");
                     break;
 
                 case ShippingMenu:

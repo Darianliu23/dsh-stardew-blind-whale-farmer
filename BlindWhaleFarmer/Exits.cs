@@ -68,9 +68,12 @@ namespace BlindWhaleFarmer
 
             foreach (var w in loc.warps)
             {
-                if (w.npcOnly.Value || Game1.getLocationFromName(w.TargetName) == null)
+                // 岛北去火山的传送点写的是 VolcanoEntrance，游戏踩上去时换成火山第 0 层（GameLocation.isCollidingWithWarp）
+                string target = w.TargetName == "VolcanoEntrance" ? StardewValley.Locations.VolcanoDungeon.GetLevelName(0) : w.TargetName;
+                // 火山的层是临时生成的：getLocationFromName 会当场生成一整层地图，只看名字对不对就行
+                if (w.npcOnly.Value || (!StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(target) && Game1.getLocationFromName(target) == null))
                     continue;
-                list.Add(new Exit { Kind = ExitKind.Warp, Tile = new Point(w.X, w.Y), Target = w.TargetName, TargetTile = new Point(w.TargetX, w.TargetY) });
+                list.Add(new Exit { Kind = ExitKind.Warp, Tile = new Point(w.X, w.Y), Target = target, TargetTile = new Point(w.TargetX, w.TargetY) });
             }
 
             // 去沙漠的巴士要等金库收集包（或 Joja 的巴士项目）完成、巴士修好以后才有
@@ -78,7 +81,8 @@ namespace BlindWhaleFarmer
             list.AddRange(GetTileExits(loc).Where(e =>
                 (e.Kind != ExitKind.Bus || e.Target != "Desert" || BusRepaired)
                 && (e.Target != "BoatTunnel" || e.Kind != ExitKind.Door || Game1.player.mailReceived.Contains("willyBackRoomInvitation"))
-                && (e.Kind != ExitKind.Bus || e.Target != "IslandSouth" || BoatRepaired)));
+                && (e.Kind != ExitKind.Bus || e.Target != "IslandSouth" || BoatRepaired)
+                && (e.Target != "QiNutRoom" || StardewValley.Locations.IslandWest.IsQiWalnutRoomDoorUnlocked(out _))));
 
             foreach (var b in loc.buildings)
             {
@@ -187,6 +191,14 @@ namespace BlindWhaleFarmer
                             list.Add(e);
                     }
 
+                    // 姜岛西边齐先生核桃房的门：也没有 Action，按图块编号 1470 认（IslandWest.checkAction，找到 100 个金核桃才开）
+                    if (loc is StardewValley.Locations.IslandWest && loc.getTileIndexAt(x, y, "Buildings", "untitled tile sheet") == 1470
+                        && Game1.getLocationFromName("QiNutRoom") != null)
+                    {
+                        list.Add(new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "QiNutRoom", TargetTile = new Point(7, 8),
+                            Note = "（齐先生的核桃房，一共找到 100 个金核桃才开）" });
+                    }
+
                     // 巴士站的售票机没有 Action 属性，游戏是按图块编号 1057 认的（BusStop.checkAction）
                     if (loc is StardewValley.Locations.BusStop && loc.getTileIndexAt(x, y, "Buildings") == 1057
                         && Game1.getLocationFromName("Desert") != null)
@@ -273,6 +285,20 @@ namespace BlindWhaleFarmer
             if (from.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 return new List<Exit>();
 
+            // 火山的层每层都要现生成地图，别为了找路把整座火山都生成一遍：
+            // 只在要去火山里某层时往上找到那层为止，人在火山里时只往下走回入口
+            // 火山口（Caldera）算第 10 层，它有一条直接回第 0 层的捷径；第 0 层只有一层，总是可以走
+            bool fromVolcano = StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(from.NameOrUniqueName, out int fromLevel);
+            if (from is StardewValley.Locations.Caldera)
+            {
+                fromVolcano = true;
+                fromLevel = 10;
+            }
+            bool toVolcano = StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(targetName, out int toLevel);
+            bool VolcanoOk(string name) =>
+                !StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(name, out int n)
+                || n == 0 || (toVolcano && n <= toLevel) || (fromVolcano && n < fromLevel);
+
             var prev = new Dictionary<string, (string, Exit)>(StringComparer.OrdinalIgnoreCase);
             var queue = new Queue<(string name, int depth)>();
             queue.Enqueue((from.NameOrUniqueName, 0));
@@ -291,7 +317,7 @@ namespace BlindWhaleFarmer
                 {
                     if (avoid != null && avoid.Contains(ExitKey(name, e)))
                         continue;
-                    if (prev.ContainsKey(e.Target))
+                    if (prev.ContainsKey(e.Target) || !VolcanoOk(e.Target))
                         continue;
                     prev[e.Target] = (name, e);
                     if (e.Target.Equals(targetName, StringComparison.OrdinalIgnoreCase))

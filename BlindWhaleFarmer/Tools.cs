@@ -41,7 +41,7 @@ namespace BlindWhaleFarmer
         private static readonly HashSet<string> LootTools = new() { "fish", "forage", "explore_mine", "fight", "move_to", "travel_to", "interact", "check_crab_pots", "clear_area", "use_tool" };
 
         /// <summary>打怪类工具：本来就会挨打，不因掉血中断。</summary>
-        private static readonly HashSet<string> CombatTools = new() { "fight", "explore_mine" };
+        private static readonly HashSet<string> CombatTools = new() { "fight", "explore_mine", "collect_walnuts" };
         private readonly Func<string, string> updateNotes;
 
         public JsonArray Schema { get; }
@@ -240,7 +240,7 @@ namespace BlindWhaleFarmer
                 j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level"), OptStr(j, "where"), OptInt(j, "bombs")),
                 P("levels", "integer", "这次往下走几层（1~20），默认 3", false),
                 P("start_level", "integer", "从哪层开始（电梯层，可省略；骷髅洞穴没有电梯）", false),
-                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴。人已经在沙漠或骷髅洞穴入口时默认是 skull", false),
+                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴，volcano=姜岛火山（往上走 0~9 层到火山口：自己敲石头、用水壶浇冷挡路的岩浆、踩机关开关开门；levels 最多 10；第 0 层入口和第 5 层能给水壶灌水）。人已经在沙漠/骷髅洞穴入口时默认 skull，在火山里或岛北时默认 volcano", false),
                 P("bombs", "integer", "这次最多用几颗炸弹炸石头（默认 5，0=不用炸弹；炸木乃伊不算在内）", false));
 
             Add("use_bomb", "放炸弹：走到那格旁边放下，马上跑出爆炸范围，等它炸完再返回。不传坐标就自动挑：附近有倒地的木乃伊就炸它们（木乃伊倒地时只有炸弹能炸死），没有就找身边矿石、宝石节点最多（其次石头最多）的地方，炸完把掉出来的矿石宝石捡回来。爆炸范围是以炸弹为中心的正方形：樱桃炸弹半径 3、炸弹 5、超级炸弹 7；来不及跑出范围的位置不会放。fight 和 explore_mine 只剩倒地的木乃伊时也会自己用；explore_mine 碰到一片值得炸的石头也会自己炸。", 60,
@@ -261,9 +261,26 @@ namespace BlindWhaleFarmer
                 j => () => a.QuestBoard(OptBool(j, "accept") ?? false),
                 P("accept", "boolean", "是否接受", false));
 
-            Add("special_orders", "去刘易斯家门口的特别订单板（第一年秋季 2 日开放）：不传 accept 列出左右两个订单的内容、目标、期限和报酬；accept=left 或 right 接下其中一个（一周只能接一个，每周一刷新）。这周接过了就直接报正在做的订单进度。", 180,
-                j => () => a.SpecialOrders(OptStr(j, "accept")),
-                P("accept", "string", "接哪个：left（左边）或 right（右边），也可以传订单名的一部分；不传只看", false));
+            Add("special_orders", "去特别订单板：默认是刘易斯家门口的（第一年秋季 2 日开放），board=qi 是齐先生核桃房里的齐挑战（找到 100 个金核桃后开门，奖励齐钻）。不传 accept 列出左右两个订单的内容、目标、期限和报酬；accept=left 或 right 接下其中一个（每块板一周只能接一个，每周一刷新）。这周接过了就直接报正在做的订单进度。", 300,
+                j => () => a.SpecialOrders(OptStr(j, "accept"), OptStr(j, "board")),
+                P("accept", "string", "接哪个：left（左边）或 right（右边），也可以传订单名的一部分；不传只看", false),
+                P("board", "string", "town（默认，刘易斯家门口）或 qi（齐先生的核桃房）", false));
+
+            Add("special_order_dropbox", "有的特别订单不是交给人，而是把东西放进指定地点的投递箱（订单目标里会写“放进 xx 的投递箱”）。这个工具自己走过去，把背包里订单要的东西放进去并确认，交够数订单就完成。", 300,
+                j => () => a.SpecialOrderDropBox(OptStr(j, "order")),
+                P("order", "string", "哪个订单（名字的一部分），可省略=第一个背包里有东西能交的", false));
+
+            Add("prize_machine", "奖券：先去订单板左边的小机器领完成特别订单攒下的奖券，再去刘易斯家（ManorHouse）的奖券机一张换一个奖品（奖品按固定顺序排，有种子、神秘盒、星之果茶、家具、技能书等）。look=true 只看接下来的奖品不换。", 300,
+                j => () => a.PrizeMachine(OptInt(j, "count"), OptBool(j, "look") ?? false),
+                P("count", "integer", "换几张，默认全部", false), P("look", "boolean", "只看接下来的奖品", false));
+
+            Add("feed_parrot", "姜岛：给鹦鹉交金核桃解锁东西（第一只鹦鹉 1、乌龟让路 10、农舍 20、信箱 5、方尖碑 20、鹦鹉快递 10、挖掘场的桥 10、岛上商人 10、度假村 20、火山桥/捷径各 5）。不传 which 列出现在能交的；传名字就走过去交。", 300,
+                j => () => a.FeedParrot(OptStr(j, "which")),
+                P("which", "string", "交给哪只：中文名或英文（Hut、Turtle、House、House_Mailbox、Obelisk、ParrotPlatforms、Bridge、Trader、Resort、VolcanoBridge、VolcanoShortcutOut），可省略=只列出来", false));
+
+            Add("collect_walnuts", "姜岛：在当前地图（或 where 指定的岛上地点）摇结着金核桃的灌木、用锄头挖地下埋着的金核桃，捡起来。解谜得的核桃（青蛙美食家、化石办公室、音乐石等）不在这里，见攻略“姜岛”。", 300,
+                j => () => a.CollectWalnuts(OptStr(j, "where")),
+                P("where", "string", "岛上地点：IslandSouth、IslandEast、IslandWest、IslandNorth、IslandSouthEast 等，可省略=当前地图", false));
 
             Add("repair_boat", "去威利鱼店后屋的船坞修去姜岛的船（社区中心修好或 Joja 路线走完后威利来信邀请才进得去）：把背包里够数的材料交上——硬木 200、铱锭 5、电池组 5，可以分几次交；全交齐的第二天船就能开，之后 travel_to IslandSouth 坐船去姜岛（船票 1000g，回来免费）。", 180,
                 j => () => a.RepairBoat());
