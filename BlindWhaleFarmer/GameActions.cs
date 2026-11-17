@@ -1785,7 +1785,8 @@ namespace BlindWhaleFarmer
                 {
                     var goals = Pathfinder.IsPassable(loc, tile.X, tile.Y)
                         ? new List<Point> { tile }
-                        : Pathfinder.NearestStandTiles(loc, tile, 1);
+                        // 落在墙根、石头上走不到：人身边 2 格（128 像素，Farmer.GetAppliedMagneticRadius 的最小值）内的东西会自己飞过来，站到 2 格内就行
+                        : Pathfinder.NearestStandTiles(loc, tile, 2);
                     foreach (var s in GoToAny(goals, o, "掉落物"))
                         yield return s;
                     if (!o.Ok)

@@ -236,16 +236,17 @@ namespace BlindWhaleFarmer
                 P("radius", "integer", "多远以内的怪（格），默认 12", false),
                 P("min_health_percent", "integer", "生命低于百分之多少就吃东西，默认 40", false));
 
-            Add("explore_mine", "自动下矿洞：打附近的怪、用镐敲石头找楼梯、下楼，下够 levels 层或体力/生命/时间不够时停下。在矿洞外会先去矿洞入口；start_level 可用电梯直达（5 的倍数且到过）。出发前带上武器、镐子和回血食物。where=skull 去沙漠的骷髅洞穴（要有骷髅钥匙，会自己坐巴士过去；没有电梯，每次从第 1 层开始；遇到竖井、血量充足就跳，一次连降几层）。", 900,
-                j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level"), OptStr(j, "where")),
+            Add("explore_mine", "自动下矿洞：打附近的怪、用镐敲石头找楼梯、下楼，下够 levels 层或体力/生命/时间不够时停下。在矿洞外会先去矿洞入口；start_level 可用电梯直达（5 的倍数且到过）。出发前带上武器、镐子和回血食物。where=skull 去沙漠的骷髅洞穴（要有骷髅钥匙，会自己坐巴士过去；没有电梯，每次从第 1 层开始；遇到竖井、血量充足就跳，一次连降几层）。背包里有炸弹时，碰到一片值得炸的石头（罩住 2 个以上矿石/宝石，或 8 块以上石头；体力不到三成时 3 块就炸）会自己炸，炸完把掉的东西捡回来；骷髅洞穴里留 2 颗对付木乃伊。", 900,
+                j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level"), OptStr(j, "where"), OptInt(j, "bombs")),
                 P("levels", "integer", "这次往下走几层（1~20），默认 3", false),
                 P("start_level", "integer", "从哪层开始（电梯层，可省略；骷髅洞穴没有电梯）", false),
-                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴。人已经在沙漠或骷髅洞穴入口时默认是 skull", false));
+                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴。人已经在沙漠或骷髅洞穴入口时默认是 skull", false),
+                P("bombs", "integer", "这次最多用几颗炸弹炸石头（默认 5，0=不用炸弹；炸木乃伊不算在内）", false));
 
-            Add("use_bomb", "放炸弹：走到那格旁边放下，马上跑出爆炸范围，等它炸完再返回。不传坐标就自动挑：附近有倒地的木乃伊就炸它们（木乃伊倒地时只有炸弹能炸死），没有就找身边石头最多的地方。爆炸范围是以炸弹为中心的正方形：樱桃炸弹半径 3、炸弹 5、超级炸弹 7；来不及跑出范围的位置不会放。fight 和 explore_mine 只剩倒地的木乃伊时也会自己用。", 60,
+            Add("use_bomb", "放炸弹：走到那格旁边放下，马上跑出爆炸范围，等它炸完再返回。不传坐标就自动挑：附近有倒地的木乃伊就炸它们（木乃伊倒地时只有炸弹能炸死），没有就找身边矿石、宝石节点最多（其次石头最多）的地方，炸完把掉出来的矿石宝石捡回来。爆炸范围是以炸弹为中心的正方形：樱桃炸弹半径 3、炸弹 5、超级炸弹 7；来不及跑出范围的位置不会放。fight 和 explore_mine 只剩倒地的木乃伊时也会自己用；explore_mine 碰到一片值得炸的石头也会自己炸。", 60,
                 j => () => a.UseBomb(OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "kind")),
                 P("x", "integer", "炸弹放在哪格 x（可省略，自动挑）", false), P("y", "integer", "y", false),
-                P("kind", "string", "cherry（樱桃炸弹）/ bomb（炸弹）/ mega（超级炸弹），可省略=用最小的", false));
+                P("kind", "string", "cherry（樱桃炸弹）/ bomb（炸弹）/ mega（超级炸弹），可省略=自动挑（小炸弹优先，大炸弹罩住的矿多得多时才用）", false));
 
             Add("upgrade_tool", "找铁匠 Clint（Blacksmith）升级工具（花钱+矿锭，2 天后取，期间工具不能用），或者领取已经升级好的工具（tool 可省略）。建议在下雨天升级水壶。", 240,
                 j => () => a.UpgradeTool(OptStr(j, "tool")),

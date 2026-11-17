@@ -965,7 +965,7 @@ namespace BlindWhaleFarmer
             o.Succeed();
         }
 
-        public IEnumerable<object> ExploreMine(int levels, int? startLevel, string whichMine = null)
+        public IEnumerable<object> ExploreMine(int levels, int? startLevel, string whichMine = null, int? maxBombs = null)
         {
             var o = new Outcome();
             if (Blocked(out string blockedWhy))
@@ -1101,6 +1101,10 @@ namespace BlindWhaleFarmer
             var grabbed = new List<string>();
             int containers = 0;
             var skippedExtras = new HashSet<Point>();
+            // 炸石头：这次最多用几颗（不传 = 最多 5 颗，0 = 不用），放过没成的格子不再试
+            int bombBudget = Math.Clamp(maxBombs ?? 5, 0, 50), blastBombs = 0, blastStones = 0, blastOres = 0;
+            var skippedBlasts = new HashSet<Point>();
+            var blastNotes = new List<string>();
             while (descended < levels && guard++ < 400)
             {
                 if (Loc is not MineShaft mine)
@@ -1249,6 +1253,32 @@ namespace BlindWhaleFarmer
                     o.Succeed();
                 }
 
+                // 3.5) 背包里有炸弹、附近有一片值得炸的石头（罩住 2 个以上矿/宝石节点，或者 8 块以上石头；体力不到三成时 3 块就炸）：
+                //      炸一颗省体力、更快找到楼梯，炸出来的东西捡回来。骷髅洞穴里留 2 颗炸木乃伊用。身边有怪、血不到一半时不炸
+                if (blastBombs < bombBudget && NearestThreat(4) == null && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
+                {
+                    var bombs = BombsInBag();
+                    int reserve = mine.mineLevel > 120 ? 2 : 0;
+                    int have = bombs.Sum(b => Player.Items[b.idx]?.Stack ?? 0);
+                    if (bombs.Count > 0 && have > reserve)
+                    {
+                        bool tired = Player.Stamina < Player.MaxStamina * 0.3f;
+                        var spot = BestBlastSpot(mine, bombs, 8, skippedBlasts);
+                        if (spot.Found && (spot.Ores >= 2 || spot.Stones >= 8 || (tired && spot.Stones >= 3)))
+                        {
+                            foreach (var s in BlastStones(spot, o, blastNotes, (b, n) => { blastStones += b; blastOres += n; rocks += b; oreNodes += n; }))
+                                yield return s;
+                            if (o.Ok)
+                                blastBombs++;
+                            else
+                                skippedBlasts.Add(spot.Tile);
+                            o.Succeed();
+                            lastHp = Player.health;
+                            continue;
+                        }
+                    }
+                }
+
                 // 3) 敲最近的石头找楼梯。矿石、宝石、晶球节点也是“石头”，只是值钱：多走几步也先敲它们
                 var stones = mine.objects.Pairs.Where(p => p.Value.IsBreakableStone())
                     .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), valuable: ValuableNodeIds.Contains(p.Value.ItemId))).ToList();
@@ -1357,6 +1387,10 @@ namespace BlindWhaleFarmer
             string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {rocks} 块石头{(oreNodes > 0 ? $"（其中矿石/宝石节点 {oreNodes} 个）" : "")}，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
             if (MummyNote(st, 12) is string mummyNote)
                 msg += "。" + mummyNote;
+            if (blastBombs > 0)
+                msg += $"；用了 {blastBombs} 颗炸弹炸石头，炸掉 {blastStones} 块（其中矿石/宝石节点 {blastOres} 个），掉的东西都捡了";
+            if (blastNotes.Count > 0)
+                msg += "；" + string.Join("；", blastNotes.Distinct());
             if (boulders > 0)
                 msg += $"；敲碎了 {boulders} 块挡路的矿石巨石";
             if (grabbed.Count > 0)
