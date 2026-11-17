@@ -135,12 +135,12 @@ namespace BlindWhaleFarmer
                 j => () => a.ListChests(OptStr(j, "item")),
                 P("item", "string", "要找的物品名，多个用逗号分隔，可省略", false));
 
-            Add("take_items", "从箱子里取东西回背包。结果会列出箱子里还有什么。", 120,
+            Add("take_items", "从箱子里取东西回背包。指定了物品时会在所有地点的箱子里找，箱子在别的地图就自己走过去（不用先 travel_to）；不传坐标优先用这张地图里有这样东西的箱子。结果会列出箱子里还有什么。", 300,
                 j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
-                P("items", "string", "要取的物品名，多个用逗号分隔；all 表示全部", false),
+                P("items", "string", "要取的物品名，多个用逗号分隔，可以带数量（比如“铁锭x5，煤炭x10”），不带数量就整摞拿；all 表示全部", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
 
-            Add("trash_item", "把背包里的东西扔进垃圾桶，扔了就没了。只在背包满了、又不方便回去存箱子时用（比如在矿洞里），先扔最不值钱、最好补的（泥土、石头、杂物）；工具和任务物品扔不了。", 20,
+            Add("trash_item", "把背包里的东西扔进垃圾桶，扔了就没了。只在背包满了、又不方便回去存箱子时用（比如在矿洞里），先扔最不值钱、最好补的（泥土、石头、杂物）；工具和任务物品扔不了；宝石、矿物、矿石和锭、古物、料理、工匠品、戒指和一个卖 50g 以上的东西会拒绝，并列出能扔的。格号会变（扔掉一格后新捡的东西会填进去），扔之前先 get_state 看清楚。", 20,
                 j => () => a.TrashItem(Str(j, "item"), OptInt(j, "count"), OptBool(j, "force") ?? false),
                 P("item", "string", "物品名称或背包序号"), P("count", "integer", "扔几个，不传扔掉这一格全部", false),
                 P("force", "boolean", "要交的东西也照样扔（一般不要用）", false));
@@ -209,9 +209,10 @@ namespace BlindWhaleFarmer
                 j => () => a.GiftInfo(Str(j, "npc")),
                 P("npc", "string", "村民名字（英文或中文）"));
 
-            Add("give_gift", "给村民送礼：村民不在当前地点会自动找过去。每人每天 1 次、每周 2 次（生日不限）；生日送最爱的礼物效果 8 倍。送之前最好用 gift_info 确认他喜欢。送花束开始恋爱、送美人鱼吊坠求婚也用它，这两样不受次数限制。", 240,
-                j => () => a.GiveGift(Str(j, "npc"), Str(j, "item")),
-                P("npc", "string", "村民名字"), P("item", "string", "礼物（物品名称或背包序号）"));
+            Add("give_gift", "给村民送礼：村民不在当前地点会自动找过去。每人每天 1 次、每周 2 次（生日不限）；生日送最爱的礼物效果 8 倍。送之前最好用 gift_info 确认他喜欢；他讨厌、不喜欢的东西会拒送并列出背包里能换的（交任务的东西不拦）。送花束开始恋爱、送美人鱼吊坠求婚也用它，这两样不受次数限制。", 240,
+                j => () => a.GiveGift(Str(j, "npc"), Str(j, "item"), OptBool(j, "force") ?? false),
+                P("npc", "string", "村民名字"), P("item", "string", "礼物（物品名称或背包序号）"),
+                P("force", "boolean", "他讨厌/不喜欢的东西也照样送（会掉好感，一般不要用）", false));
 
             Add("donate_museum", "去博物馆（ArchaeologyHouse，8:00-18:00）把背包里所有还没捐过的矿物/古物捐掉，并领取捐赠奖励（种子、配方、家具等）。", 240,
                 j => () => a.DonateMuseum());

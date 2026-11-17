@@ -67,8 +67,52 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success(string.Join("\n", lines));
         }
 
+        private static string NpcName(string name) => Game1.getCharacterFromName(name)?.displayName ?? name;
+
+        /// <summary>
+        /// 告示板/村民委托怎么完成、怎么交：哪些只认接任务以后新弄到的（箱子里现成的不算），交的时候用哪个工具。
+        /// 以游戏源码里各任务的 OnFishCaught / OnMonsterSlain / OnItemReceived / OnNpcSocialized / OnItemOfferedToNpc 为准。
+        /// </summary>
+        internal static string QuestHowTo(StardewValley.Quests.Quest q)
+        {
+            switch (q)
+            {
+                case StardewValley.Quests.ItemDeliveryQuest d when d.target.Value != null:
+                    return $"带着{(d.number.Value > 1 ? $" {d.number.Value} 个" : "")}{Util.ObjectName(d.ItemId.Value)}用 give_gift npc={d.target.Value} 交给{NpcName(d.target.Value)}（会先算交任务，不算送礼；箱子里现成的也行，先 take_items 拿上）";
+                case StardewValley.Quests.FishingQuest f when f.target.Value != null:
+                    return f.numberFished.Value >= f.numberToFish.Value
+                        ? $"已经钓够了，interact npc={f.target.Value} 和{NpcName(f.target.Value)}说话就交了（不用带鱼，也别用 give_gift）"
+                        : $"只认接任务以后亲手钓到的（现在 {f.numberFished.Value}/{f.numberToFish.Value}），箱子里、背包里现成的鱼不算，也不用交出去。钓够了 interact npc={f.target.Value} 和{NpcName(f.target.Value)}说话";
+                case StardewValley.Quests.SlayMonsterQuest m when m.target.Value != null:
+                    return m.numberKilled.Value >= m.numberToKill.Value
+                        ? $"已经打够了，interact npc={m.target.Value} 和{NpcName(m.target.Value)}说话就交了"
+                        : $"只认接任务以后打倒的（现在 {m.numberKilled.Value}/{m.numberToKill.Value}），打够了 interact npc={m.target.Value} 和{NpcName(m.target.Value)}说话";
+                case StardewValley.Quests.ResourceCollectionQuest r when r.target.Value != null:
+                    return r.numberCollected.Value >= r.number.Value
+                        ? $"已经收集够了，interact npc={r.target.Value} 和{NpcName(r.target.Value)}说话就交了"
+                        : $"只认接任务以后新采到/挖到的（现在 {r.numberCollected.Value}/{r.number.Value}），从箱子里拿出来的不算。够了 interact npc={r.target.Value} 和{NpcName(r.target.Value)}说话";
+                case StardewValley.Quests.LostItemQuest l when l.npcName.Value != null:
+                    return l.itemFound.Value
+                        ? $"东西已经找到了，用 give_gift npc={l.npcName.Value} 把{Util.ObjectName(l.ItemId.Value)}交给{NpcName(l.npcName.Value)}"
+                        : $"去 {l.locationOfItem.Value} 找{Util.ObjectName(l.ItemId.Value)}（大概在 ({l.tileX.Value},{l.tileY.Value}) 附近，可能藏在垃圾桶、灌木之类里），找到后 give_gift 交给{NpcName(l.npcName.Value)}";
+                case StardewValley.Quests.SocializeQuest:
+                    return "和任务里的村民挨个说话（interact npc=名字），说完自动完成";
+            }
+            return null;
+        }
+
+        /// <summary>这个村民身上有没有“说句话就能交”的任务（钓鱼、打怪、收集任务做够了）。</summary>
+        private static bool HasQuestReadyToTurnIn(NPC npc) =>
+            Player.questLog.Any(q => !q.completed.Value && q is StardewValley.Quests.FishingQuest or StardewValley.Quests.SlayMonsterQuest or StardewValley.Quests.ResourceCollectionQuest
+                && Safe(() => q.OnNpcSocialized(npc, probe: true)));
+
+        private static bool Safe(Func<bool> f)
+        {
+            try { return f(); } catch { return false; }
+        }
+
         /// <summary>走到村民身边送礼（村民不在当前地点会自动过去）。送之前检查次数限制和喜好。</summary>
-        public IEnumerable<object> GiveGift(string npcName, string itemSpec)
+        public IEnumerable<object> GiveGift(string npcName, string itemSpec, bool force = false)
         {
             var npc = FindVillager(npcName);
             if (npc == null)
@@ -80,6 +124,22 @@ namespace BlindWhaleFarmer
             if (idx < 0)
             {
                 yield return ActionResult.Fail($"背包里没有可以送人的“{itemSpec}”");
+                yield break;
+            }
+            // 他身上有说句话就能交的任务（钓够了鱼之类）：先交任务。拿着东西过去游戏会当成送礼，任务反而没交
+            if (HasQuestReadyToTurnIn(npc))
+            {
+                ActionResult turnIn = null;
+                foreach (var s in Interact(null, null, npc.Name, null))
+                {
+                    if (s is ActionResult r)
+                    {
+                        turnIn = r;
+                        break;
+                    }
+                    yield return s;
+                }
+                yield return ActionResult.Success($"{npc.displayName} 身上有做够了的任务，先和他说话把任务交了（礼物没送，还要送就再 give_gift）：{turnIn?.Message}");
                 yield break;
             }
             if (!Game1.player.friendshipData.TryGetValue(npc.Name, out var f))
@@ -110,7 +170,24 @@ namespace BlindWhaleFarmer
             }
 
             string itemName = item.DisplayName;
-            string taste = Knowledge.TasteName(npc.getGiftTasteForThisItem(item));
+            int tasteCode = npc.getGiftTasteForThisItem(item);
+            string taste = Knowledge.TasteName(tasteCode);
+            // 送他讨厌 / 不喜欢的东西是倒扣好感（讨厌 -40、不喜欢 -20，生日 8 倍）：先拦下，列出背包里能换的。
+            // 任务要交给他的东西（背包里标【留着】的）不拦，交任务不按喜好算
+            if (!force && !bouquet && !pendant && (tasteCode == NPC.gift_taste_hate || tasteCode == NPC.gift_taste_dislike)
+                && ReservedChecker()(item) == null)
+            {
+                int loss = (tasteCode == NPC.gift_taste_hate ? 40 : 20) * (npc.isBirthday() ? 8 : 1);
+                var inv = Knowledge.InventoryTastes(npc);
+                var better = new List<string>();
+                foreach (int t in new[] { NPC.gift_taste_love, NPC.gift_taste_like, NPC.gift_taste_neutral })
+                    if (inv.TryGetValue(t, out var names))
+                        better.Add($"{Knowledge.TasteName(t)}：{string.Join("、", names.Take(6))}");
+                yield return ActionResult.Fail($"{npc.displayName}{taste}{itemName}，送了好感会掉 {loss} 点{(npc.isBirthday() ? "（今天是他生日，8 倍）" : "")}，没有送。"
+                    + (better.Count > 0 ? $"背包里可以换：{string.Join("；", better)}" : "背包里没有他不讨厌的礼物，先用 gift_info 看看他喜欢什么")
+                    + $"。{ForceHint}");
+                yield break;
+            }
             int pointsBefore = f.Points;
 
             // 一路上把礼物举在手里送过去（游戏里拿着物品走路会举过头顶），看着像专门去送礼的

@@ -32,7 +32,7 @@ namespace BlindWhaleFarmer
         };
 
         /// <summary>出发前判断店主今天、现在会不会在柜台：不在就返回原因（没把握的情况返回 null，到了再看）。</summary>
-        private static string ShopkeeperAway(string npc)
+        private static string ShopkeeperAway(string npc, int walk = 0)
         {
             if (!ShopHours.TryGetValue(npc, out var h))
                 return null;
@@ -45,8 +45,9 @@ namespace BlindWhaleFarmer
             string hours = $"营业 {Util.TimeString(h.open)}-{Util.TimeString(h.close)}，现在 {Util.TimeString(now)}";
             if (now >= h.close)
                 return $"{h.name}今天已经下班了（{hours}），明天再来";
-            if (now < h.open && Utility.CalculateMinutesBetweenTimes(now, h.open) > DoorWaitMinutes)
-                return $"{h.name}还没开门（{hours}），没有出发。先干别的，{Util.TimeString(h.open)} 前后再来（路上也要花时间，可以提前一小时出发）";
+            if (now < h.open && Utility.CalculateMinutesBetweenTimes(now, h.open) - walk > DoorWaitMinutes)
+                return $"{h.name}还没开门（{hours}），走过去大约 {walk} 分钟，到了还得干等 {Utility.CalculateMinutesBetweenTimes(now, h.open) - walk} 分钟，没有出发。"
+                    + $"先干别的，{Util.TimeString(Utility.ModifyTime(h.open, -(walk + 10)))} 左右再出发";
             return null;
         }
 
@@ -54,7 +55,9 @@ namespace BlindWhaleFarmer
         private IEnumerable<object> GoToShopkeeper(string location, string npc, string counterAction, Outcome o)
         {
             // 先看今天、现在店主在不在柜台，免得走过去才发现白跑
-            if (!Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase) && ShopkeeperAway(npc) is string away)
+            var shopRoute = Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase) ? null : Exits.PlanRoute(Loc, location);
+            int walk = shopRoute is { Count: > 0 } ? RouteMinutes(shopRoute, shopRoute.Count - 1) : 0;
+            if (!Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase) && ShopkeeperAway(npc, walk) is string away)
             {
                 o.Fail(away);
                 yield break;
@@ -71,8 +74,16 @@ namespace BlindWhaleFarmer
                 && Game1.timeOfDay < hours.open && Utility.CalculateMinutesBetweenTimes(Game1.timeOfDay, hours.open) <= DoorWaitMinutes)
             {
                 int giveUp = Utility.ModifyTime(hours.open, 30);
+                int closedDialogues = 0;
                 for (int t = 0; t < 60 * 600 && Game1.timeOfDay < giveUp && !Loc.characters.Any(c => c.Name == npc); t++)
                 {
+                    // 普通对话框关掉接着等（最多 3 次），剧情和问题才停
+                    if (!Game1.eventUp && Game1.activeClickableMenu is DialogueBox { isQuestion: false } chat && closedDialogues < 3)
+                    {
+                        chat.exitThisMenu(false);
+                        closedDialogues++;
+                        continue;
+                    }
                     if ((Game1.eventUp && Game1.CurrentEvent != null) || Game1.activeClickableMenu != null)
                         break;
                     yield return null;
@@ -223,6 +234,12 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(ToolUpgradeStatus() + "，同一时间只能升级一件");
                 yield break;
             }
+            // 不是来领工具的：出门前先查工具带没带、钱和锭够不够，免得走到铁匠铺才发现
+            if (pending == null && UpgradePrecheck(toolSpec) is string notReady)
+            {
+                yield return ActionResult.Fail(notReady + "（这次没有出门）");
+                yield break;
+            }
 
             foreach (var s in GoToShopkeeper("Blacksmith", "Clint", "Blacksmith", o))
                 yield return s;
@@ -321,6 +338,75 @@ namespace BlindWhaleFarmer
             yield return started
                 ? ActionResult.Success($"把 {current.DisplayName} 交给 Clint 升级成 {offer.DisplayName}（花费 {cost}），2 天后来铁匠铺用 upgrade_tool 领取。升级期间这件工具不能用！")
                 : ActionResult.Fail($"升级失败（需要 {cost}）：{buy?.Message}");
+        }
+
+        /// <summary>升级工具出门前的检查：工具在不在背包（不在就说在哪个箱子）、钱和锭够不够。都齐了返回 null。</summary>
+        private static string UpgradePrecheck(string toolSpec)
+        {
+            int idx = Util.FindToolIndex(toolSpec);
+            if (idx < 0 || Player.Items[idx] is not Tool current)
+            {
+                var match = Util.ToolMatcher(toolSpec);
+                foreach (var (loc, tile, chest) in AllChests())
+                {
+                    var found = chest.GetItemsForPlayer().FirstOrDefault(i => i != null && match(i));
+                    if (found != null)
+                        return $"要升级的“{found.DisplayName}”不在背包里，在 {loc.NameOrUniqueName} ({tile.X},{tile.Y}) 的箱子里。先 take_items items={found.DisplayName} x={tile.X} y={tile.Y} 拿上（在别的地图要先 travel_to {loc.NameOrUniqueName}）";
+                }
+                return $"背包里没有“{toolSpec}”，箱子里也没找到（可升级：axe、pickaxe、hoe、watering_can）";
+            }
+            Dictionary<ISalable, ItemStockInformation> stock;
+            try
+            {
+                stock = StardewValley.Internal.ShopBuilder.GetShopStock("ClintUpgrade");
+            }
+            catch
+            {
+                return null; // 读不到价目表就到了再看
+            }
+            var offer = stock.FirstOrDefault(p => p.Key is Tool t && t.GetType() == current.GetType() && t.UpgradeLevel == current.UpgradeLevel + 1);
+            if (offer.Key == null)
+                return null; // 已是最高级之类：到店里会说清楚
+            var info = offer.Value;
+            var gaps = new List<string>();
+            if (Player.Money < info.Price)
+                gaps.Add($"钱差 {info.Price - Player.Money}g（要 {info.Price}g，你身上 {Player.Money}g）");
+            if (info.TradeItem != null)
+            {
+                string q = ItemRegistry.QualifyItemId(info.TradeItem) ?? info.TradeItem;
+                int need = info.TradeItemCount ?? 1;
+                int have = Player.Items.CountId(q);
+                if (have < need)
+                {
+                    string bar = Util.ObjectName(info.TradeItem);
+                    gaps.Add($"材料差 {need - have} 个{bar}（要 {need} 个，背包里有 {have} 个；可以先 list_chests item={bar} 看看箱子里有没有，矿石放进熔炉加煤炭能炼成锭）");
+                }
+            }
+            return gaps.Count > 0
+                ? $"升级 {current.DisplayName} → {offer.Key.DisplayName} 还不够：{string.Join("；", gaps)}"
+                : null;
+        }
+
+        /// <summary>
+        /// 书商（Marcello）：每季只来镇上两天（Utility.getDaysOfBooksellerThisSeason），摊子在镇子东边、博物馆南边的路上，
+        /// 地图上带 Action "Bookseller" 的那格。来的当天和前一天提醒一句。
+        /// </summary>
+        public static string BooksellerHint()
+        {
+            var days = Utility.getDaysOfBooksellerThisSeason();
+            if (days == null || days.Count == 0)
+                return null;
+            string when = string.Join("、", days.OrderBy(d => d).Select(d => $"{d} 日"));
+            if (days.Contains(Game1.dayOfMonth))
+            {
+                var town = Game1.getLocationFromName("Town");
+                var stall = town != null ? FindTileAction(town, "Bookseller") : null;
+                return $"📚 书商今天在镇上（这季来 {when}）：摊子在 Town {(stall is Point p ? $"({p.X},{p.Y})" : "东边博物馆南面的路上")}，"
+                    + $"travel_to Town 后 interact {(stall is Point q ? $"x={q.X} y={q.Y}" : "那个摊子")} 打开书店（读过书以后会先问买书还是换书，选买书）。技能书、能力书只有他卖，钱够就买";
+            }
+            if (days.Contains(Game1.dayOfMonth + 1))
+                return $"📚 明天书商来镇上（这季来 {when}），卖技能书和能力书";
+            return null;
         }
 
         // ───────────────────────── 告示板任务 ─────────────────────────
@@ -499,6 +585,21 @@ namespace BlindWhaleFarmer
                 ? " + " + string.Join(" + ", bp.BuildMaterials.Select(m => $"{m.Amount}个{Util.ObjectName(m.ItemId)}"))
                 : "") + $"，工期 {bp.BuildDays} 天";
 
+        /// <summary>建这个还差什么：钱差多少、每样材料身上有几个、差几个。</summary>
+        private static string BlueprintMissing(CarpenterMenu.BlueprintEntry bp)
+        {
+            var miss = new List<string>();
+            if (bp.BuildCost > Player.Money)
+                miss.Add($"钱差 {bp.BuildCost - Player.Money}g（身上 {Player.Money}/{bp.BuildCost}）");
+            foreach (var m in bp.BuildMaterials ?? new List<BuildingMaterial>())
+            {
+                int have = Player.Items.CountId(ItemRegistry.QualifyItemId(m.ItemId) ?? m.ItemId);
+                if (have < m.Amount)
+                    miss.Add($"{Util.ObjectName(m.ItemId)}差 {m.Amount - have}（身上 {have}/{m.Amount}）");
+            }
+            return miss.Count > 0 ? string.Join("、", miss) : "材料或钱";
+        }
+
         /// <summary>这块地能不能放下这个建筑（和 buildStructure 的检查一致，必须在农场上调用）。</summary>
         private static bool CanPlace(GameLocation farm, BuildingData data, Point tile)
         {
@@ -525,13 +626,7 @@ namespace BlindWhaleFarmer
         public IEnumerable<object> Build(string buildingSpec, int? x, int? y, bool force = false)
         {
             var o = new Outcome();
-            foreach (var s in GoToShopkeeper("ScienceHouse", "Robin", "Carpenter", o))
-                yield return s;
-            if (!o.Ok)
-            {
-                yield return ActionResult.Fail(o.Message);
-                yield break;
-            }
+            // 出门前先查：在施工、没这个图纸、材料或钱不够，都不用跑这一趟
             if (Game1.IsThereABuildingUnderConstruction("Robin") || Player.daysUntilHouseUpgrade.Value > 0)
             {
                 yield return ActionResult.Fail("Robin 正在施工，同一时间只能建一个，等完工再来");
@@ -559,7 +654,22 @@ namespace BlindWhaleFarmer
             menu.SetNewActiveBlueprint(bp);
             if (!menu.DoesFarmerHaveEnoughResourcesToBuild())
             {
-                yield return ActionResult.Fail($"材料或钱不够：{bp.DisplayName} 需要 {BlueprintCost(bp)}，你有 {Player.Money}g");
+                yield return ActionResult.Fail($"{bp.DisplayName} 还缺：{BlueprintMissing(bp)}（需要 {BlueprintCost(bp)}）。这次没有出门；材料在箱子里就先 take_items 拿上");
+                yield break;
+            }
+
+            foreach (var s in GoToShopkeeper("ScienceHouse", "Robin", "Carpenter", o))
+                yield return s;
+            if (!o.Ok)
+            {
+                yield return ActionResult.Fail(o.Message);
+                yield break;
+            }
+            // 路上可能花了钱、用掉了材料：到了再核对一次
+            menu.SetNewActiveBlueprint(bp);
+            if (!menu.DoesFarmerHaveEnoughResourcesToBuild())
+            {
+                yield return ActionResult.Fail($"{bp.DisplayName} 还缺：{BlueprintMissing(bp)}（需要 {BlueprintCost(bp)}）");
                 yield break;
             }
 

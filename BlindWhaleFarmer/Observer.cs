@@ -33,8 +33,38 @@ namespace BlindWhaleFarmer
             "o石头/矿 w杂草 /树枝 *可捡的采集品 ?远古斑点(用锄头挖) X物品/机器/箱子 &机器有产物可收取 R大型障碍(大树桩/大石头) " +
             "T树 t小树苗 S树桩 F果树 b灌木 \"草 _地板/小路 =空耕地(干) :空耕地(已浇水) v作物(需浇水) c作物(已浇水/不需浇水) !作物可收获 d枯死作物 f家具 L矿洞下楼梯 H矿洞竖井";
 
-        public string Build()
+        /// <summary>
+        /// 每轮都一样的大段内容（箱子、穿戴、田地规划、图例、出口）上次给过、没变、而且没隔太久就只写一句“没变”，省 token。
+        /// full=true（或 MCP 重新连接）时全部重给。
+        /// </summary>
+        private readonly Dictionary<string, (int hash, DateTime at)> lastShown = new();
+        private static readonly TimeSpan RepeatAfter = TimeSpan.FromMinutes(10);
+        private bool showAll;
+
+        public void ResetSeen()
         {
+            lock (lastShown)
+                lastShown.Clear();
+        }
+
+        /// <summary>text 和上次一样就返回一句省略说明，否则原样返回并记下。</summary>
+        private string Once(string key, string text)
+        {
+            if (text == null)
+                return null;
+            int h = text.GetHashCode();
+            lock (lastShown)
+            {
+                if (!showAll && lastShown.TryGetValue(key, out var prev) && prev.hash == h && DateTime.UtcNow - prev.at < RepeatAfter)
+                    return "（和上次 get_state 一样，没变化，省略；要看就 get_state full=true）";
+                lastShown[key] = (h, DateTime.UtcNow);
+            }
+            return text;
+        }
+
+        public string Build(bool full = false)
+        {
+            showAll = full;
             var sb = new StringBuilder();
             var player = Game1.player;
             var loc = Game1.currentLocation;
@@ -59,15 +89,18 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(quest);
                 if (GameActions.SpecialOrderHint() is string order)
                     sb.AppendLine(order);
+                if (GameActions.BooksellerHint() is string books)
+                    sb.AppendLine(books);
                 if (GameActions.UnreadItemsHint() is string unread)
                     sb.AppendLine(unread);
                 if (GameActions.IslandHint() is string island)
                     sb.AppendLine(island);
                 if (GameActions.AffordableParrotsHint() is string parrots)
                     sb.AppendLine(parrots);
-                sb.AppendLine($"农场类型：{FarmTypeName()}（攻略“农场类型”一节有这种地图的要点）");
+                if (Once("farmtype", $"农场类型：{FarmTypeName()}（攻略“农场类型”一节有这种地图的要点）") is string ft && !ft.StartsWith("（"))
+                    sb.AppendLine(ft);
                 if (GameActions.SpendingAdvice() is string spend)
-                    sb.AppendLine(spend);
+                    sb.AppendLine(Once("spend", spend) is string sp && sp.StartsWith("（") ? "【花钱建议】和上次一样，省略" : spend);
             });
             Safe(sb, () =>
             {
@@ -108,6 +141,16 @@ namespace BlindWhaleFarmer
             sb.AppendLine("## 位置");
             sb.AppendLine($"地点：{loc.NameOrUniqueName}（{loc.DisplayName}），{(loc.IsOutdoors ? "室外" : "室内")}，地图大小 {Pathfinder.MapWidth(loc)}x{Pathfinder.MapHeight(loc)}");
             sb.AppendLine($"你站在 ({pt.X},{pt.Y})，面朝{Util.DirName(player.FacingDirection)}");
+            Safe(sb, () =>
+            {
+                // 鸡舍、畜棚、小屋这些建筑里面：地点名是一串编号，说清楚这是哪栋建筑、门在农场哪儿
+                if (loc.ParentBuilding is StardewValley.Buildings.Building b && b.GetParentLocation() is GameLocation parent)
+                {
+                    string kind = StardewValley.TokenizableStrings.TokenParser.ParseText(b.GetData()?.Name) ?? b.buildingType.Value;
+                    string animals = loc is AnimalHouse ah ? $"，里面住着 {ah.animalsThatLiveHere.Count} 只动物（现在在屋里的 {loc.animals.Length} 只）" : "";
+                    sb.AppendLine($"这里是{parent.DisplayName}上 ({b.tileX.Value},{b.tileY.Value}) 那栋{kind}（{b.buildingType.Value}）的里面{animals}。出门回到{parent.NameOrUniqueName}");
+                }
+            });
             // 有的剧情开头把主角藏在地图外面（马龙送剑是 -100,-100），坐标是负的、四周全空，AI 看了会以为出错了
             bool offMap = !loc.isTileOnMap(pt.X, pt.Y);
             if (offMap)
@@ -131,7 +174,7 @@ namespace BlindWhaleFarmer
             {
                 sb.AppendLine();
                 sb.AppendLine("## 穿戴（背包里有更好的鞋子、戒指会自动换上）");
-                sb.AppendLine(GameActions.GearOverview());
+                sb.AppendLine(Once("gear", GameActions.GearOverview()));
             });
 
             // 箱子里有什么每次都给出来，不用靠记忆（东西多时只列每个箱子里最多的几样，全部用 list_chests）
@@ -141,7 +184,7 @@ namespace BlindWhaleFarmer
                 {
                     sb.AppendLine();
                     sb.AppendLine("## 箱子（所有地点，按数量列主要物品；找某样东西用 list_chests item=名字）");
-                    sb.AppendLine(chests);
+                    sb.AppendLine(Once("chests", chests));
                 }
             });
 
@@ -150,10 +193,12 @@ namespace BlindWhaleFarmer
             Safe(sb, () =>
             {
                 var exits = Exits.Get(loc);
+                var lines = new StringBuilder();
                 if (exits.Count == 0)
-                    sb.AppendLine("无");
-                foreach (var e in exits.OrderBy(e => Util.Manhattan(e.Tile, pt)))
-                    sb.AppendLine("- " + e.Describe());
+                    lines.AppendLine("无");
+                foreach (var e in exits.OrderBy(e => e.Target))
+                    lines.AppendLine("- " + e.Describe());
+                sb.AppendLine(Once("exits:" + loc.NameOrUniqueName, lines.ToString().TrimEnd()));
             });
 
             sb.AppendLine();
@@ -168,7 +213,7 @@ namespace BlindWhaleFarmer
             {
                 AppendCrops(sb, loc, pt);
                 if (loc is Farm && GameActions.FieldOverview(loc) is string fields)
-                    sb.AppendLine(fields);
+                    sb.AppendLine(Once("fields", fields));
                 if (loc is not Farm)
                 {
                     CountCrops(Game1.getFarm(), out int needWater, out int ready, out int total);
@@ -189,7 +234,7 @@ namespace BlindWhaleFarmer
             else
             {
                 sb.AppendLine($"## 文字地图（以你为中心，左上角坐标=({pt.X - config.MapRadiusX},{pt.Y - config.MapRadiusY})，每个字符一格，向右 x+1，向下 y+1）");
-                sb.AppendLine("图例：" + Legend);
+                sb.AppendLine(Once("legend", "图例：" + Legend));
                 Safe(sb, () => AppendMap(sb, loc, pt));
             }
 
@@ -810,7 +855,9 @@ namespace BlindWhaleFarmer
                 {
                     // 有些任务没有目标描述
                 }
-                sb.AppendLine($"- {q.GetName()}：{obj}{(q.completed.Value ? "（已完成）" : "")}");
+                string days = q.IsTimedQuest() && q.daysLeft.Value > 0 ? $"（还剩 {q.daysLeft.Value} 天）" : "";
+                string how = q.completed.Value ? null : GameActions.QuestHowTo(q);
+                sb.AppendLine($"- {q.GetName()}：{obj}{days}{(q.completed.Value ? "（已完成）" : "")}{(how != null ? "。怎么交：" + how : "")}");
             }
         }
 

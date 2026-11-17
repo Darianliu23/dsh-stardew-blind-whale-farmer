@@ -56,6 +56,34 @@ namespace BlindWhaleFarmer
             return i => names.Any(n => i.DisplayName.Contains(n, StringComparison.OrdinalIgnoreCase) || i.Name.Contains(n, StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>
+        /// 拆出“要什么、要几个”：逗号/顿号分隔，每项可以带数量（铁锭x5、铁锭×5、铁锭*5、铁锭:5、铁锭 5）。
+        /// 不写数量就是全拿；空或 all 是全部。
+        /// </summary>
+        private static List<(Func<Item, bool> filter, int? count)> ItemCounts(string items)
+        {
+            var list = new List<(Func<Item, bool>, int?)>();
+            if (string.IsNullOrWhiteSpace(items) || items.Trim().Equals("all", StringComparison.OrdinalIgnoreCase) || items.Trim() == "全部")
+            {
+                list.Add((_ => true, null));
+                return list;
+            }
+            foreach (var part in items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string name = part;
+                int? count = null;
+                var m = System.Text.RegularExpressions.Regex.Match(part, @"^(.+?)\s*(?:[xX×*:：]\s*|\s+)(\d+)\s*个?$");
+                if (m.Success && int.TryParse(m.Groups[2].Value, out int c) && c > 0)
+                {
+                    name = m.Groups[1].Value;
+                    count = c;
+                }
+                name = Util.StripQuality(name);
+                list.Add((i => i.DisplayName.Contains(name, StringComparison.OrdinalIgnoreCase) || i.Name.Contains(name, StringComparison.OrdinalIgnoreCase), count));
+            }
+            return list;
+        }
+
         private static string ChestSummary(Chest chest)
         {
             var items = chest.GetItemsForPlayer().Where(i => i != null).ToList();
@@ -155,6 +183,43 @@ namespace BlindWhaleFarmer
         /// <summary>从箱子取东西回背包。和箱子界面里点箱子物品一样：先确认背包装得下再从箱子移除。</summary>
         public IEnumerable<object> TakeItems(string items, int? x, int? y)
         {
+            // 要的东西不在这张地图的箱子里（或者给的坐标是别的地图上的箱子）：在所有地点的箱子里找，找到就自己走过去拿
+            bool specific = !string.IsNullOrWhiteSpace(items) && !items.Trim().Equals("all", StringComparison.OrdinalIgnoreCase) && items.Trim() != "全部";
+            if (specific)
+            {
+                var wanted = ItemCounts(items);
+                bool Has(Chest c) => c.GetItemsForPlayer().Any(i => i != null && wanted.Any(w => w.filter(i)));
+                var here = FindChest(x, y, out _, out _);
+                if (here == null || !Has(here) && !x.HasValue)
+                {
+                    var all = AllChests().Where(c => c.loc.objects.TryGetValue(new Vector2(c.tile.X, c.tile.Y), out var o) && o == c.chest).ToList();
+                    var pick = all
+                        .Where(c => (!x.HasValue || (c.tile.X == x && c.tile.Y == y)) && Has(c.chest))
+                        .OrderBy(c => c.loc == Loc ? 0 : 1)
+                        .FirstOrDefault();
+                    if (pick.chest != null && pick.chest != here)
+                    {
+                        if (pick.loc != Loc)
+                        {
+                            var go = new Outcome();
+                            foreach (var s in TravelInner(pick.loc.NameOrUniqueName, go))
+                                yield return s;
+                            if (!go.Ok)
+                            {
+                                yield return ActionResult.Fail($"要的东西在 {pick.loc.NameOrUniqueName} ({pick.tile.X},{pick.tile.Y}) 的箱子里，但没走过去：{go.Message}");
+                                yield break;
+                            }
+                        }
+                        x = pick.tile.X;
+                        y = pick.tile.Y;
+                    }
+                    else if (here == null || !Has(here))
+                    {
+                        yield return ActionResult.Fail($"所有地点的箱子里都没有“{items}”" + (here != null ? "。" + ChestSummary(here) : ""));
+                        yield break;
+                    }
+                }
+            }
             var chest = FindChest(x, y, out var tile, out string error);
             if (chest == null)
             {
@@ -169,21 +234,46 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(o.Message);
                 yield break;
             }
-            var filter = ItemFilter(items);
             var taken = new List<string>();
             bool bagFull = false;
-            foreach (var item in chest.GetItemsForPlayer().Where(i => i != null && filter(i)).ToList())
+            // 每一项：名字 + 要几个（没写数量就是整摞全拿）
+            foreach (var (filter, want) in ItemCounts(items))
             {
-                if (!Player.couldInventoryAcceptThisItem(item))
+                int left = want ?? int.MaxValue;
+                foreach (var item in chest.GetItemsForPlayer().Where(i => i != null && filter(i)).ToList())
                 {
-                    bagFull = true;
-                    continue;
+                    if (left <= 0)
+                        break;
+                    int take = Math.Min(left, item.Stack);
+                    // 只拿一部分：和箱子界面里右键拆堆一样，拆一份出来，剩下的留在箱子里
+                    var piece = take < item.Stack ? item.getOne() : item;
+                    if (piece != item)
+                        piece.Stack = take;
+                    if (!Player.couldInventoryAcceptThisItem(piece))
+                    {
+                        bagFull = true;
+                        continue;
+                    }
+                    if (piece == item)
+                        chest.GetItemsForPlayer().Remove(item);
+                    else
+                        item.Stack -= take;
+                    var rest = Player.addItemToInventory(piece);
+                    int got = take - (rest?.Stack ?? 0);
+                    if (rest != null)
+                    {
+                        if (piece == item)
+                            chest.addItem(rest);
+                        else
+                            item.Stack += rest.Stack;
+                        bagFull = true;
+                    }
+                    if (got > 0)
+                        taken.Add($"{item.DisplayName}x{got}");
+                    left -= got;
                 }
-                chest.GetItemsForPlayer().Remove(item);
-                taken.Add($"{item.DisplayName}x{item.Stack}");
-                var left = Player.addItemToInventory(item);
-                if (left != null)
-                    chest.addItem(left);
+                if (want.HasValue && left > 0 && left < want.Value)
+                    taken[^1] += $"（要 {want} 个，箱子里只够这些）";
             }
             chest.clearNulls();
             if (taken.Count == 0)

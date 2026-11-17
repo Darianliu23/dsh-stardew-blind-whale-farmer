@@ -975,6 +975,9 @@ namespace BlindWhaleFarmer
             }
             // 出门带了下矿用不上的东西，结束时提醒一句（下次出门前整理）
             string clutter = TripClutterHint("mine");
+            // 刚下矿时背包几乎满了：照样下，结束时说清楚（上面的杂物提醒已经说了空位的话就不重复）
+            if (clutter == null && Loc is not MineShaft and not VolcanoDungeon && Player.freeSpotsInInventory() < 3)
+                clutter = $"⚠ 下矿时背包只剩 {Player.freeSpotsInInventory()} 个空位，敲出来的矿石宝石很快就装不下（掉在地上）。下次先 tidy_backpack purpose=mine 再来";
             // 去哪个矿：明说 skull，或者人已经在沙漠 / 骷髅洞穴入口，就是骷髅洞穴
             whichMine = whichMine?.Trim().ToLowerInvariant();
             // 姜岛火山：地图和走法都不一样（岩浆、机关门、往上走），单独处理
@@ -1119,6 +1122,8 @@ namespace BlindWhaleFarmer
                     stop = "离开了矿洞";
                     break;
                 }
+                MainThread.Progress = $"{(mine.mineLevel > 120 ? $"骷髅洞穴第 {mine.mineLevel - 120} 层" : $"矿洞第 {mine.mineLevel} 层")}，这次已下 {descended}/{levels} 层，"
+                    + $"敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}，背包空位 {Player.freeSpotsInInventory()}";
                 if (Game1.isWarping || Game1.fadeToBlack || Game1.globalFade)
                 {
                     // 下楼梯/进矿洞的淡入淡出还没结束，等它结束再继续，不算停下

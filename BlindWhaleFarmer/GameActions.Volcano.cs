@@ -133,6 +133,7 @@ namespace BlindWhaleFarmer
 
             while (descended < levels && guard++ < 300)
             {
+                MainThread.Progress = $"{VolcanoLevelName(Loc)}，这次已上 {descended}/{levels} 层，敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
                 if (Game1.isWarping || Game1.fadeToBlack || Game1.globalFade)
                 {
                     foreach (var s in WaitSceneSettled())

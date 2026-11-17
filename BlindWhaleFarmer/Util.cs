@@ -143,6 +143,15 @@ namespace BlindWhaleFarmer
             ["鱼竿"] = i => i is FishingRod,
         };
 
+        /// <summary>和 FindToolIndex 一样的匹配规则（别名 axe/pickaxe… 或名字），用来在箱子里找工具。</summary>
+        public static Func<Item, bool> ToolMatcher(string spec)
+        {
+            if (spec != null && ToolAliases.TryGetValue(spec.Trim().Replace("-", "_"), out var pred))
+                return pred;
+            string bare = StripQuality(spec ?? "");
+            return i => i is Tool && bare.Length > 0 && (i.DisplayName.Contains(bare, StringComparison.OrdinalIgnoreCase) || i.Name.Contains(bare, StringComparison.OrdinalIgnoreCase));
+        }
+
         public static int FindToolIndex(string spec)
         {
             if (spec != null && ToolAliases.TryGetValue(spec.Trim().Replace("-", "_"), out var pred))

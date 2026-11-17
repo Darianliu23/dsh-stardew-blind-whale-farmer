@@ -169,6 +169,7 @@ namespace BlindWhaleFarmer
                 else if (parsed is JsonObject call && call["method"]?.GetValue<string>() == "tools/call"
                          && (req.Headers["Accept"] ?? "").Contains("text/event-stream"))
                 {
+                    streamedCall.Value = true;
                     await WriteStreamed(resp, Dispatch(call));
                 }
                 else
@@ -222,6 +223,8 @@ namespace BlindWhaleFarmer
             {
                 case "initialize":
                 {
+                    // 新连接（可能是新会话）：状态里省略过的段落下次全部重给
+                    mod.Observer?.ResetSeen();
                     string want = p?["protocolVersion"]?.GetValue<string>();
                     string version = Array.IndexOf(SupportedVersions, want) >= 0 ? want : SupportedVersions[0];
                     return Result(id, new JsonObject
@@ -263,8 +266,16 @@ namespace BlindWhaleFarmer
                 new JsonObject
                 {
                     ["name"] = "get_state",
-                    ["description"] = "读取当前游戏状态的文字描述：时间天气、体力金钱、当前界面（对话/商店/信件等）、位置、背包、出口、人物和动物、作物、附近物体坐标、以你为中心的字符地图、任务。每次决定行动前先调用。",
-                    ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+                    ["description"] = "读取当前游戏状态的文字描述：时间天气、体力金钱、当前界面（对话/商店/信件等）、位置、背包、出口、人物和动物、作物、附近物体坐标、以你为中心的字符地图、任务。每次决定行动前先调用。"
+                        + "箱子、穿戴、田地规划、出口、图例这几段和上次一样时只写“没变化”（10 分钟内），要全部重看传 full=true。",
+                    ["inputSchema"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["full"] = new JsonObject { ["type"] = "boolean", ["description"] = "true 时没变化的段落也全部给出（换了会话、记不清箱子里有什么时用）" }
+                        }
+                    }
                 },
                 new JsonObject
                 {
@@ -358,7 +369,7 @@ namespace BlindWhaleFarmer
                 if (name == "get_state")
                 {
                     result = await mod.MainThread.Invoke(() =>
-                        Context.IsWorldReady ? mod.Observer.Build() : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
+                        Context.IsWorldReady ? mod.Observer.Build(IsTrue(args?["full"])) : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
                     // 本次游玩进度和玩家的额外要求放最前面（它们可以在 DSH 设置里随时改，不在连接时的说明里）
                     var head = new List<string>();
                     if (mod.PlayerInControl)
@@ -372,6 +383,10 @@ namespace BlindWhaleFarmer
                         head.Add("【你的长期笔记】" + (string.IsNullOrWhiteSpace(mod.Agent?.Notes)
                             ? "（空。建议用 update_notes 写下目标和计划，换会话后也能接着玩）"
                             : mod.Agent.Notes.Trim()));
+                    if (mod.MainThread.TakeLateResult() is string late)
+                        head.Insert(0, "【上一个动作的结果】" + late);
+                    if (mod.MainThread.RunningSummary() is string running)
+                        head.Insert(0, "【正在执行】" + running + "（做完前别的动作会被拒绝；做完的结果会出现在 get_state 最前面）");
                     if (head.Count > 0)
                         result = string.Join("\n", head) + "\n\n" + result;
                 }
@@ -389,7 +404,21 @@ namespace BlindWhaleFarmer
                 else
                 {
                     mod.Hud.SetAction($"[MCP] {name} {argText}");
-                    result = await mod.Tools.Execute(name, argText).ConfigureAwait(false);
+                    var exec = mod.Tools.Execute(name, argText);
+                    // 不走 SSE 的客户端常见 60 秒就超时，超时后动作在游戏里接着跑、结果却丢了：
+                    // 快到时先回一句“还在执行”和进度，做完的结果存起来，下次 get_state 放在最前面
+                    if (!streamedCall.Value && await Task.WhenAny(exec, Task.Delay(EarlyReplyMs)).ConfigureAwait(false) != exec)
+                    {
+                        string toolName = name;
+                        _ = exec.ContinueWith(t => mod.MainThread.StoreLateResult(toolName,
+                            t.Status == TaskStatus.RanToCompletion ? t.Result : "出错：" + t.Exception?.GetBaseException().Message));
+                        string running = mod.MainThread.RunningSummary();
+                        result = $"成功：{name} 还在游戏里执行，先回你一句免得调用超时（{running ?? "快做完了"}）。"
+                            + "它做完后的结果会出现在下一次 get_state 的最前面【上一个动作的结果】里。现在用 get_state 看进度；"
+                            + "它结束前别的动作会被拒绝（改主意了用 cancel_action 让它停下）";
+                    }
+                    else
+                        result = await exec.ConfigureAwait(false);
                     mod.Hud.SetAction($"[MCP] {name} → {Shorten(result, 80)}");
                 }
             }
@@ -533,7 +562,16 @@ namespace BlindWhaleFarmer
             };
         }
 
+        private static bool IsTrue(JsonNode n) =>
+            n is JsonValue v && (v.TryGetValue(out bool b) ? b : v.ToString().Trim().ToLowerInvariant() is "true" or "1" or "yes");
+
         private const int KeepAliveMs = 15000;
+
+        /// <summary>不走 SSE 的工具调用最多等多久先回复（MCP 客户端默认 60 秒超时，留点余量）。</summary>
+        private const int EarlyReplyMs = 45000;
+
+        /// <summary>这次请求是 SSE（客户端能一直等，每 15 秒有 keep-alive），不用提前回复。</summary>
+        private static readonly AsyncLocal<bool> streamedCall = new();
 
         /// <summary>
         /// 工具调用用 SSE 回复：先发响应头，动作执行期间每 15 秒发一行注释（": keep-alive"），结束时发结果事件。

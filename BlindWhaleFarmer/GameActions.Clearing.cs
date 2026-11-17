@@ -235,10 +235,11 @@ namespace BlindWhaleFarmer
 
         /// <summary>
         /// 走路时 ForageRadius 格内（含斜角）有能采的野生采集物（季节野菜、贝壳、洞穴萝卜之类）就顺手采了，和手动按交互键一样
-        /// （会算采集经验、品质）。不挨着的先走过去（来回最多多走 4×半径 步，绕太远的不去），采完回到原来那格接着走。
+        /// （会算采集经验、品质）。不挨着的先走过去（来回最多多走 4×半径 步，绕太远的不去），采完就近回到路线前面的格子接着走，
+        /// 不走回头路（rejoin[0] 进来是现在走到的路线下标，出去是回到的那一格的下标）。
         /// 节日/剧情里不采；背包装不下、别人任务专用的不采。
         /// </summary>
-        private IEnumerable<object> PickUpForageNearby(GameLocation loc, int walkDir)
+        private IEnumerable<object> PickUpForageNearby(GameLocation loc, int walkDir, List<Point> route = null, int[] rejoin = null)
         {
             int r = ForageRadius;
             if (r <= 0 || pickingForage || Game1.CurrentEvent != null || Game1.activeClickableMenu != null)
@@ -283,13 +284,27 @@ namespace BlindWhaleFarmer
                     if (Game1.activeClickableMenu != null || Loc != loc)
                         yield break;
                 }
-                // 回到原来那格：外面的 WalkPath 从这格直线走向下一格
+                // 回到路线上：优先回到前面还没走的格子（离得最近的那格），没有路再回原来那格。外面的 WalkPath 从那格接着往下走
                 if (Player.TilePoint != home && Loc == loc)
                 {
-                    var back = Pathfinder.FindPath(loc, Player.TilePoint, new[] { home }, 3000);
+                    int from = rejoin?[0] ?? 0;
+                    var ahead = route != null && rejoin != null
+                        ? route.Skip(from + 1).Take(4 * r + 4).ToList()
+                        : new List<Point>();
+                    var back = ahead.Count > 0 ? Pathfinder.FindPath(loc, Player.TilePoint, ahead, 3000) : null;
+                    if (back == null || back.Count - 1 > 2 * r + 2)
+                        back = Pathfinder.FindPath(loc, Player.TilePoint, new[] { home }, 3000);
                     if (back != null)
+                    {
                         foreach (var s in WalkPath(back, o))
                             yield return s;
+                        if (rejoin != null && o.Ok)
+                        {
+                            int at = route.FindIndex(from, p => p == Player.TilePoint);
+                            if (at >= 0)
+                                rejoin[0] = at;
+                        }
+                    }
                 }
             }
             finally

@@ -203,7 +203,7 @@ namespace BlindWhaleFarmer
                     string observation;
                     try
                     {
-                        observation = await mod.MainThread.Invoke(() => mod.Observer.Build()).ConfigureAwait(false);
+                        observation = await mod.MainThread.Invoke(() => mod.Observer.Build(full: true)).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {

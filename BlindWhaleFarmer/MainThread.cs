@@ -80,6 +80,39 @@ namespace BlindWhaleFarmer
 
         public bool IsBusy => current != null;
 
+        /// <summary>长动作自己报的进度（比如“矿洞第 12 层，已下 3/5 层”），动作开始时清空。</summary>
+        public static volatile string Progress;
+
+        /// <summary>正在跑的动作：名字、跑了几秒、进度。没在跑返回 null。（HTTP 线程读，字段都是一次性赋值，读到旧值也无妨）</summary>
+        public string RunningSummary()
+        {
+            if (current == null)
+                return null;
+            int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
+            string p = Progress;
+            return $"{currentName ?? "动作"} 已经执行 {sec / 60} 分 {sec % 60} 秒" + (string.IsNullOrEmpty(p) ? "" : $"，进度：{p}");
+        }
+
+        private readonly object lateLock = new();
+        private string lateResult;
+
+        /// <summary>调用方等不及先拿到了“还在执行”的回复：动作做完后的结果先存着，下次 get_state 放在最前面。</summary>
+        public void StoreLateResult(string name, string result)
+        {
+            lock (lateLock)
+                lateResult = $"{name}（{DateTime.Now:HH:mm:ss} 做完）：{result}";
+        }
+
+        public string TakeLateResult()
+        {
+            lock (lateLock)
+            {
+                string r = lateResult;
+                lateResult = null;
+                return r;
+            }
+        }
+
         public Task<T> Invoke<T>(Func<T> func)
         {
             var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -126,7 +159,10 @@ namespace BlindWhaleFarmer
                 {
                     int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
                     string what = currentName != null ? $"（{currentName}，已经执行 {sec / 60} 分 {sec % 60} 秒，最长 {currentMaxTicks / 3600} 分钟）" : "";
-                    tcs.SetResult($"失败：上一个动作{what}还在执行，它结束前其他动作都会被拒绝。可以用 get_state 看看情况，过一会儿再试");
+                    string p = Progress;
+                    tcs.SetResult($"失败：上一个动作{what}还在执行，它结束前其他动作都会被拒绝。"
+                        + (string.IsNullOrEmpty(p) ? "" : $"进度：{p}。")
+                        + "它做完后结果会出现在 get_state 最前面；可以用 get_state 看情况，过一会儿再试，或者 cancel_action 让它停下");
                     return;
                 }
                 try
@@ -135,6 +171,7 @@ namespace BlindWhaleFarmer
                     currentTcs = tcs;
                     currentName = name;
                     currentStartedUtc = DateTime.UtcNow;
+                    Progress = null;
                     currentTicks = 0;
                     currentMaxTicks = Math.Max(1, maxSeconds) * 60;
                     currentInterruptOnChat = interruptOnChat;

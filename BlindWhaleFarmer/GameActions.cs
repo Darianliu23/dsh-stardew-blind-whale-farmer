@@ -207,8 +207,10 @@ namespace BlindWhaleFarmer
                     Player.FarmerSprite.animate(WalkAnimation(dir), Game1.currentGameTime);
                     yield return null;
                 }
-                foreach (var w in PickUpForageNearby(loc, dir))
+                var rejoin = new[] { i };
+                foreach (var w in PickUpForageNearby(loc, dir, path, rejoin))
                     yield return w;
+                i = rejoin[0];
             }
             Player.Halt();
             Player.FarmerSprite.StopAnimation();
@@ -527,8 +529,16 @@ namespace BlindWhaleFarmer
 
         private static string TileName(Point p)
         {
-            var (_, name, _) = Observer.ClassifyFeature(Loc, new Vector2(p.X, p.Y));
-            return name;
+            // 矿洞里目标刚被打碎/地图刚换层时偶尔读到一半是空的：读不到就当没有，调用方会写成“空地”
+            try
+            {
+                var (_, name, _) = Observer.ClassifyFeature(Loc, new Vector2(p.X, p.Y));
+                return name;
+            }
+            catch (NullReferenceException)
+            {
+                return null;
+            }
         }
 
         // ───────────────────────── 移动 ─────────────────────────
@@ -724,23 +734,26 @@ namespace BlindWhaleFarmer
         /// <summary>这次 travel 在门口等开门花的时间，接在“已到达”后面。</summary>
         private string doorWaitNote;
 
-        /// <summary>到门口最多等多久开门（游戏分钟）；离开门还更久就不出发。</summary>
-        private const int DoorWaitMinutes = 120;
+        /// <summary>到门口最多等多久开门（游戏分钟）：出发前算上路上的时间，到了还要干等更久就先不出发。</summary>
+        private const int DoorWaitMinutes = 30;
 
         /// <summary>路线上哪扇门今天进不去、或者还要很久才开：返回说明；都能进（或快开了）返回 null。</summary>
         private string RouteDoorClosed(List<Exit> route)
         {
             var from = Loc;
-            foreach (var e in route)
+            for (int i = 0; i < route.Count; i++)
             {
+                var e = route[i];
                 string why = Exits.DoorClosedReason(from, e, out int opensAt);
                 if (why != null)
                 {
                     if (opensAt < 0)
                         return why + "。没有出发";
                     int minutes = Utility.CalculateMinutesBetweenTimes(Game1.timeOfDay, opensAt);
-                    if (minutes > DoorWaitMinutes)
-                        return $"{why}，还要 {minutes} 分钟才开，没有出发。先干别的，{Util.TimeString(opensAt)} 前后再来（路上也要花时间，可以提前一小时出发）";
+                    int walk = RouteMinutes(route, i);
+                    if (minutes - walk > DoorWaitMinutes)
+                        return $"{why}，还要 {minutes} 分钟才开，走过去大约 {walk} 分钟，到了还得在门口干等 {minutes - walk} 分钟，没有出发。"
+                            + $"先干别的，{Util.TimeString(Utility.ModifyTime(opensAt, -(walk + 10)))} 左右再出发";
                 }
                 from = Game1.getLocationFromName(e.Target);
                 if (from == null)
@@ -827,8 +840,16 @@ namespace BlindWhaleFarmer
                             yield break;
                         }
                         int startTime = Game1.timeOfDay;
+                        int closedDialogues = 0;
                         for (int t = 0; t < 60 * 600 && Game1.timeOfDay < opensAt; t++)
                         {
+                            // 路过的村民搭话这类普通对话框：关掉接着等（最多 3 次）；剧情、要选答案的问题才停下交给 AI
+                            if (!Game1.eventUp && Game1.activeClickableMenu is DialogueBox { isQuestion: false } chat && closedDialogues < 3)
+                            {
+                                chat.exitThisMenu(false);
+                                closedDialogues++;
+                                continue;
+                            }
                             if ((Game1.eventUp && Game1.CurrentEvent != null) || Game1.activeClickableMenu != null)
                             {
                                 o.Fail($"在 {e.Target} 门口等开门时被打断了（现在 {Util.TimeString(Game1.timeOfDay)}，{Util.TimeString(opensAt)} 开门）：出现了剧情或界面，先处理它");
@@ -1163,6 +1184,13 @@ namespace BlindWhaleFarmer
             var before = Game1.activeClickableMenu;
             var fromLoc = Loc;
             var v = new Vector2(target.X, target.Y);
+            // 拿着东西点机器（熔炉放矿石、小桶放水果……）：记下机器和手里东西的样子，事后看到底放没放进去。
+            // 游戏缺煤炭之类时只在屏幕上弹一句红字，checkAction 照样返回 true，不核对就会误报“成功”
+            SObject machine = npc == null && itemIdx >= 0 && Loc.objects.TryGetValue(v, out var mo) && mo.bigCraftable.Value && mo.GetMachineData() != null ? mo : null;
+            var heldBefore = machine?.heldObject.Value;
+            var handBefore = Player.ActiveObject;
+            int handStackBefore = handBefore?.Stack ?? 0;
+            var hudBefore = Game1.hudMessages.Select(m => (m, m.timeLeft)).ToList();
             bool ok;
             if (npc != null)
                 ok = npc.checkAction(Player, Loc);
@@ -1184,7 +1212,24 @@ namespace BlindWhaleFarmer
             foreach (var s in WaitTicks(25))
                 yield return s;
 
-            if (Game1.activeClickableMenu != null && Game1.activeClickableMenu != before)
+            if (machine != null && Game1.activeClickableMenu == before && machine.heldObject.Value == heldBefore
+                && Player.ActiveObject == handBefore && (handBefore?.Stack ?? 0) == handStackBefore)
+            {
+                // 新弹出的（或者被重新弹出、计时刷新了的）提示就是游戏给的原因
+                var said = Game1.hudMessages.Where(m => !hudBefore.Any(b => b.m == m && b.timeLeft >= m.timeLeft))
+                    .Select(m => m.message).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+                string reason = said.Count > 0 ? "游戏提示：" + string.Join("；", said)
+                    : machine.heldObject.Value != null ? $"{machine.DisplayName}里已经在做{machine.heldObject.Value.DisplayName}了"
+                    : $"{handBefore?.DisplayName ?? "这样东西"}不能放进{machine.DisplayName}，或者数量不够";
+                yield return ActionResult.Fail($"{handBefore?.DisplayName} 没有放进 ({target.X},{target.Y}) 的{machine.DisplayName}：{reason}"
+                    + (machine.QualifiedItemId == "(BC)13" ? "。熔炉要 5 个矿石（石英 1 个）+ 背包里 1 个煤炭" : ""));
+                yield break;
+            }
+
+            if (machine != null && machine.heldObject.Value != null && machine.heldObject.Value != heldBefore)
+                yield return ActionResult.Success($"把 {handBefore?.DisplayName} 放进了 ({target.X},{target.Y}) 的{machine.DisplayName}，正在做{machine.heldObject.Value.DisplayName}"
+                    + (machine.MinutesUntilReady > 0 ? $"，约 {machine.MinutesUntilReady} 分钟（游戏时间）后好" : ""));
+            else if (Game1.activeClickableMenu != null && Game1.activeClickableMenu != before)
                 yield return ActionResult.Success("交互后打开了界面：\n" + observer.DescribeMenu());
             else if (Game1.currentLocation != fromLoc)
                 yield return ActionResult.Success($"进入了 {Game1.currentLocation.NameOrUniqueName}");
@@ -1582,6 +1627,50 @@ namespace BlindWhaleFarmer
             o.Fail("没能给水壶灌水");
         }
 
+        /// <summary>种地的地方（农场、温室、岛上农场）里缺水 / 成熟的格数，不含当前地图。</summary>
+        internal static List<(GameLocation loc, int thirsty, int ripe)> CropWorkElsewhere()
+        {
+            var list = new List<(GameLocation, int, int)>();
+            foreach (string name in new[] { "Farm", "Greenhouse", "IslandWest" })
+            {
+                var l = Game1.getLocationFromName(name);
+                if (l == null || l == Loc)
+                    continue;
+                int thirsty = 0, ripe = 0;
+                foreach (var tf in l.terrainFeatures.Values)
+                    if (tf is HoeDirt hd)
+                    {
+                        if (Observer.NeedsWater(hd) && !(l.IsOutdoors && l.IsRainingHere()))
+                            thirsty++;
+                        if (hd.crop != null && hd.readyForHarvest())
+                            ripe++;
+                    }
+                if (thirsty > 0 || ripe > 0)
+                    list.Add((l, thirsty, ripe));
+            }
+            return list;
+        }
+
+        private static string FieldName(GameLocation l) => l.Name switch
+        {
+            "Farm" => "农场",
+            "Greenhouse" => "温室",
+            "IslandWest" => "姜岛农场",
+            _ => l.DisplayName
+        };
+
+        /// <summary>当前地图没活，但别处的田有：说清楚田在哪，免得 AI 以为今天不用浇水/收菜。都没有返回 null。</summary>
+        private static string CropsElsewhereNote(bool water)
+        {
+            var work = CropWorkElsewhere().Where(w => water ? w.thirsty > 0 : w.ripe > 0).ToList();
+            if (work.Count == 0)
+                return null;
+            string what = water ? "要浇水" : "能收";
+            string where = string.Join("、", work.Select(w => $"{FieldName(w.loc)}（{w.loc.NameOrUniqueName}）{(water ? w.thirsty : w.ripe)} 格"));
+            var first = work[0].loc.NameOrUniqueName;
+            return $"这里（{Loc.NameOrUniqueName}）没有{(water ? "需要浇水的作物" : "可以收获的作物")}，但别处的田{what}：{where}。先 travel_to {first} 再 {(water ? "water_crops" : "harvest_crops")}";
+        }
+
         public IEnumerable<object> WaterCrops(int max)
         {
             int canIdx = Util.FindTool<WateringCan>();
@@ -1596,7 +1685,7 @@ namespace BlindWhaleFarmer
                 .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
             if (tiles.Count == 0)
             {
-                yield return ActionResult.Success("这里没有需要浇水的作物");
+                yield return ActionResult.Success(CropsElsewhereNote(true) ?? "这里没有需要浇水的作物");
                 yield break;
             }
             string err = null;
@@ -1674,7 +1763,7 @@ namespace BlindWhaleFarmer
             tiles.AddRange(wild);
             if (tiles.Count == 0)
             {
-                yield return ActionResult.Success("这里没有可以收获的作物");
+                yield return ActionResult.Success(CropsElsewhereNote(false) ?? "这里没有可以收获的作物");
                 yield break;
             }
             int wildPicked = 0;
@@ -2022,6 +2111,28 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>扔进垃圾桶（和背包界面里拖到垃圾桶一样，升级过垃圾桶会退一点钱）：背包满了又不在箱子旁边时腾位置用。</summary>
+        /// <summary>这样东西扔了可惜的原因；不值钱的（石头、泥土、纤维、垃圾……）返回 null。</summary>
+        private static string TrashValueWhy(Item item)
+        {
+            if (item is StardewValley.Objects.Ring)
+                return "是戒指";
+            if (item is not SObject o)
+                return "不是普通物品";
+            string what = o.Category switch
+            {
+                SObject.GemCategory => "是宝石",
+                SObject.mineralsCategory => "是矿物",
+                SObject.metalResources => "是矿石/锭/煤炭（升级工具、做东西要用）",
+                SObject.CookingCategory => "是料理（能回血回体力）",
+                SObject.artisanGoodsCategory => "是工匠品",
+                _ => o.Type == "Arch" ? "是古物（可以捐博物馆）" : null
+            };
+            if (what != null)
+                return what;
+            int price = o.sellToStorePrice();
+            return price >= 50 ? $"一个能卖 {price}g" : null;
+        }
+
         public IEnumerable<object> TrashItem(string itemSpec, int? count, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec, i => i is not Tool && i.canBeTrashed());
@@ -2036,6 +2147,18 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var item = Player.Items[idx];
+            // 值钱的（宝石、矿石、锭、古物、料理、工匠品、戒指，或者一个就卖 50g 以上的）不扔：
+            // 背包满了扔东西时很容易按旧的格号扔错，扔掉了就回不来了
+            if (!force && TrashValueWhy(item) is string valuable)
+            {
+                var junk = Player.Items.Where(i => i != null && i is not Tool && i.canBeTrashed() && TrashValueWhy(i) == null && ReservedChecker()(i) == null)
+                    .OrderBy(i => i is SObject o ? o.sellToStorePrice() * i.Stack : 0).Take(6)
+                    .Select(i => $"{Player.Items.IndexOf(i)}:{i.DisplayName}x{i.Stack}").ToList();
+                yield return ActionResult.Fail($"{idx}:{item.DisplayName}x{item.Stack} {valuable}，没有扔。"
+                    + (junk.Count > 0 ? $"能扔的不值钱的东西：{string.Join("、", junk)}" : "背包里没有不值钱的东西可扔：回去把东西存进箱子（travel_to Farm 会自动收），或者先 eat 吃掉食物")
+                    + $"。{ForceHint}");
+                yield break;
+            }
             int n = Math.Clamp(count ?? item.Stack, 1, item.Stack);
             string name = item.DisplayName;
             Item gone;
@@ -2742,10 +2865,34 @@ namespace BlindWhaleFarmer
                 }
             }
             tiles += Util.Manhattan(cur, bed);
+            return WalkMinutes(tiles, hops);
+        }
+
+        /// <summary>走 tiles 格、切 hops 次地图大约要多少游戏分钟（向上取整到 10 分钟）。算法见 EstimateMinutesToBed。</summary>
+        private static int WalkMinutes(double tiles, int hops)
+        {
             float speed = Math.Clamp(Player.getMovementSpeed(), 2f, 10f);
             double tilesPerGameMinute = speed * 60 / 64 * Game1.realMilliSecondsPerGameMinute / 1000.0;
             int minutes = (int)Math.Ceiling(tiles * 1.3 / tilesPerGameMinute) + hops * 2;
             return (minutes + 9) / 10 * 10;
+        }
+
+        /// <summary>沿路线从现在的位置走到第 upTo 个出口（含）门前大约要多少游戏分钟。</summary>
+        private static int RouteMinutes(List<Exit> route, int upTo)
+        {
+            Point cur = Player.TilePoint;
+            double tiles = 0;
+            int hops = 0;
+            for (int i = 0; i <= upTo && i < route.Count; i++)
+            {
+                tiles += Util.Manhattan(cur, route[i].Tile);
+                if (i < upTo)
+                {
+                    cur = route[i].TargetTile;
+                    hops++;
+                }
+            }
+            return WalkMinutes(tiles, hops);
         }
 
         /// <summary>晚上的回家提醒和体力提醒；urgentOnly 时只在来不及（过了 24:00 才能躺下）或体力快见底时返回。</summary>
@@ -2801,7 +2948,18 @@ namespace BlindWhaleFarmer
                 }
                 yield return null;
             }
-            yield return ActionResult.Success($"等待结束，现在是 {Util.TimeString(Game1.timeOfDay)}{rest}");
+            // 白天干等的时候田里还有活：提一句，下次可以先去干活再回来（不拦着，有时候等就是对的）
+            string idle = "";
+            if (Game1.timeOfDay < 1800 && minutes >= 30)
+            {
+                var work = CropWorkElsewhere();
+                int thirsty = work.Sum(w => w.thirsty), ripe = work.Sum(w => w.ripe);
+                if (thirsty > 0 || ripe > 0)
+                    idle = $"。顺便说一句：{string.Join("、", work.Select(w => FieldName(w.loc)).Distinct())}还有"
+                        + string.Join("、", new[] { thirsty > 0 ? $"{thirsty} 格要浇水" : null, ripe > 0 ? $"{ripe} 格能收" : null }.Where(x => x != null))
+                        + "，等人/等开门的空档可以先去干活，算好时间再回来";
+            }
+            yield return ActionResult.Success($"等待结束，现在是 {Util.TimeString(Game1.timeOfDay)}{rest}{idle}");
         }
 
         private const int MaxWaitMinutes = 120;
