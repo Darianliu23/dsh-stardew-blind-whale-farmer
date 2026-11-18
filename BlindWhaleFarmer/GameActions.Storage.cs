@@ -181,8 +181,23 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>从箱子取东西回背包。和箱子界面里点箱子物品一样：先确认背包装得下再从箱子移除。</summary>
-        public IEnumerable<object> TakeItems(string items, int? x, int? y)
+        public IEnumerable<object> TakeItems(string items, int? x, int? y, int? count = null)
         {
+            // 别的工具（buy、sell、ship_items）数量都叫 count，这里也认：只取一样东西时换成“干草x3”的写法
+            if (count.HasValue)
+            {
+                var parts = (items ?? "").Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                bool all = parts.Length == 0 || parts.Length == 1 && (parts[0].Equals("all", StringComparison.OrdinalIgnoreCase) || parts[0] == "全部");
+                if (count <= 0 || all || parts.Length > 1)
+                {
+                    yield return ActionResult.Fail(count <= 0 ? "count 要大于 0"
+                        : all ? "传了 count 就要在 items 里写要取什么（比如 items=\"干草\" count=3）"
+                        : "count 只能配一样东西。取好几样时把数量写在 items 里，比如“铁锭x5，煤炭x10”");
+                    yield break;
+                }
+                if (ItemCounts(parts[0])[0].count == null)
+                    items = $"{parts[0]}x{count}";
+            }
             // 要的东西不在这张地图的箱子里（或者给的坐标是别的地图上的箱子）：在所有地点的箱子里找，找到就自己走过去拿
             bool specific = !string.IsNullOrWhiteSpace(items) && !items.Trim().Equals("all", StringComparison.OrdinalIgnoreCase) && items.Trim() != "全部";
             if (specific)

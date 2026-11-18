@@ -136,8 +136,9 @@ namespace BlindWhaleFarmer
                 P("item", "string", "要找的物品名，多个用逗号分隔，可省略", false));
 
             Add("take_items", "从箱子里取东西回背包。指定了物品时会在所有地点的箱子里找，箱子在别的地图就自己走过去（不用先 travel_to）；不传坐标优先用这张地图里有这样东西的箱子。结果会列出箱子里还有什么。", 300,
-                j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
+                j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y"), OptInt(j, "count")),
                 P("items", "string", "要取的物品名，多个用逗号分隔，可以带数量（比如“铁锭x5，煤炭x10”），不带数量就整摞拿；all 表示全部", false),
+                P("count", "integer", "只取一样东西时可以用它写数量（items=干草 count=3 等于 items=干草x3）；items 里已经写了数量就以 items 为准", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
 
             Add("trash_item", "把背包里的东西扔进垃圾桶，扔了就没了。只在背包满了、又不方便回去存箱子时用（比如在矿洞里），先扔最不值钱、最好补的（泥土、石头、杂物）；工具和任务物品扔不了；宝石、矿物、矿石和锭、古物、料理、工匠品、戒指和一个卖 50g 以上的东西会拒绝，并列出能扔的。格号会变（扔掉一格后新捡的东西会填进去），扔之前先 get_state 看清楚。", 20,
