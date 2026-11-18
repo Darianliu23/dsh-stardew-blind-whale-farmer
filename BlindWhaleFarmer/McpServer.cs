@@ -378,6 +378,8 @@ namespace BlindWhaleFarmer
                         head.Add("【" + session + "】");
                     if (!string.IsNullOrWhiteSpace(mod.Config.ExtraInstructions))
                         head.Add("【玩家的额外要求】" + mod.Config.ExtraInstructions.Trim());
+                    if (Context.IsWorldReady && GameActions.TakeExpiredReserveNote() is string expired)
+                        head.Add("【留着的东西到日子了】" + expired);
                     if (Context.IsWorldReady && GameActions.ReservedSummary() is string keep)
                         head.Add("【玩家要留着的东西】" + keep);
                     // 笔记按存档保存（模组 data 文件夹），内置 AI 每步都能看到；MCP 客户端换了会话也要能接着上次的计划玩

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Microsoft.Xna.Framework;
+using StardewModdingAPI;
 using StardewValley;
 using StardewValley.Buildings;
 using StardewValley.GameData.Buildings;
@@ -25,10 +26,24 @@ namespace BlindWhaleFarmer
         /// </summary>
         /// <summary>设置里的 ReservedItems：玩家要留着的东西，逗号分隔。</summary>
         public static string ReservedItems = "";
-        /// <summary>玩家在游戏里/对话里让 AI 记下要留的东西（reserve_items 写的），按存档保存在模组 data 文件夹，和设置里的分开存，免得插件推设置时被覆盖。</summary>
-        public static string SaveReservedItems = "";
-        /// <summary>SaveReservedItems 改了以后写盘（ModEntry 填）。</summary>
+        /// <summary>reserve_items 记下的一样东西：名字、留到哪天（游戏总天数，0 = 一直留着）、玩家当时说要拿来干什么。</summary>
+        public sealed class SavedReserve
+        {
+            public string Name { get; set; } = "";
+            public int UntilDay { get; set; }
+            public string Purpose { get; set; } = "";
+        }
+
+        /// <summary>
+        /// 玩家在游戏里/对话里让 AI 记下要留的东西（reserve_items 写的），按存档保存在模组 data 文件夹，
+        /// 和设置里的分开存，免得插件推设置时被覆盖。改它要拿 SaveReservedLock。
+        /// </summary>
+        public static List<SavedReserve> SaveReserved = new();
+        internal static readonly object SaveReservedLock = new();
+        /// <summary>SaveReserved 改了以后写盘（ModEntry 填）。</summary>
         internal static Action PersistSaveReserved;
+        /// <summary>到期自动放开的东西，下次 get_state / 内置 AI 读状态时提醒一次。</summary>
+        private static readonly List<string> expiredReserveNotes = new();
         internal const string PlayerReserved = "玩家要求保留";
 
         private static readonly char[] NameSeparators = { ',', '，', '、', ';', '；' };
@@ -37,11 +52,141 @@ namespace BlindWhaleFarmer
             (text ?? "").Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(Util.StripQuality).Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
+        internal static string DayText(int totalDays)
+        {
+            var d = WorldDate.ForDaysPlayed(totalDays);
+            return $"第{d.Year}年{Util.SeasonName(d.SeasonKey)}季{d.DayOfMonth}日";
+        }
+
+        /// <summary>
+        /// 把“第2年春季”“明年春天”“夏季15日”“秋”“10天后”这类说法换成游戏总天数（WorldDate.TotalDays）。
+        /// 没写年份就取今天之后最近的那一天；只写季节就是那个季节第 1 天。认不出返回 null 和原因。
+        /// </summary>
+        internal static (int? day, string error) ParseUntil(string text)
+        {
+            text = (text ?? "").Trim();
+            if (text.Length == 0)
+                return (null, null);
+            var today = Game1.Date;
+            int todayTotal = today.TotalDays;
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"(\d+)\s*天后");
+            if (m.Success)
+                return (todayTotal + Math.Max(1, int.Parse(m.Groups[1].Value)), null);
+            string lower = text.ToLowerInvariant();
+            Season? season = null;
+            foreach (var (key, s) in new[] { ("春", Season.Spring), ("spring", Season.Spring), ("夏", Season.Summer), ("summer", Season.Summer),
+                         ("秋", Season.Fall), ("fall", Season.Fall), ("autumn", Season.Fall), ("冬", Season.Winter), ("winter", Season.Winter) })
+            {
+                if (lower.Contains(key))
+                {
+                    season = s;
+                    break;
+                }
+            }
+            if (season == null)
+                return (null, $"认不出“{text}”是哪天，写成“第2年春季”“夏季15日”“明年春天”或“10天后”");
+            int day = 1;
+            m = System.Text.RegularExpressions.Regex.Match(text, @"(\d+)\s*[日号]");
+            if (m.Success)
+                day = Math.Clamp(int.Parse(m.Groups[1].Value), 1, 28);
+            int? year = null;
+            m = System.Text.RegularExpressions.Regex.Match(text, @"(\d+)\s*年");
+            if (m.Success)
+                year = int.Parse(m.Groups[1].Value);
+            else if (text.Contains("后年"))
+                year = today.Year + 2;
+            else if (text.Contains("明年") || lower.Contains("next year"))
+                year = today.Year + 1;
+            if (year == null)
+            {
+                year = today.Year;
+                if (new WorldDate(today.Year, season.Value, day).TotalDays <= todayTotal)
+                    year++;
+            }
+            int total = new WorldDate(Math.Max(1, year.Value), season.Value, day).TotalDays;
+            if (total <= todayTotal)
+                return (null, $"{DayText(total)} 已经过了（今天是 {DayText(todayTotal)}）");
+            return (total, null);
+        }
+
+        /// <summary>到日子的放开，记下提醒。调用方不用拿锁。</summary>
+        internal static void ExpireSaveReserved()
+        {
+            if (!Context.IsWorldReady)
+                return;
+            int today = Game1.Date.TotalDays;
+            bool changed = false;
+            lock (SaveReservedLock)
+            {
+                foreach (var r in SaveReserved.Where(r => r.UntilDay > 0 && r.UntilDay <= today).ToList())
+                {
+                    SaveReserved.Remove(r);
+                    expiredReserveNotes.Add($"{r.Name}（玩家让你留到 {DayText(r.UntilDay)}{(string.IsNullOrWhiteSpace(r.Purpose) ? "" : "，说要" + r.Purpose.Trim())}）");
+                    changed = true;
+                }
+            }
+            if (changed)
+                PersistSaveReserved?.Invoke();
+        }
+
+        /// <summary>到期放开的提醒，只给一次。没有返回 null。</summary>
+        internal static string TakeExpiredReserveNote()
+        {
+            ExpireSaveReserved();
+            lock (SaveReservedLock)
+            {
+                if (expiredReserveNotes.Count == 0)
+                    return null;
+                string note = string.Join("；", expiredReserveNotes) + "。到日子了，已经从保留清单里去掉，现在可以用了，按玩家当时说的去做";
+                expiredReserveNotes.Clear();
+                return note;
+            }
+        }
+
+        /// <summary>读档时调用：换存档后上一个存档的到期提醒不要带过来。</summary>
+        internal static void LoadSaveReserved(List<SavedReserve> list)
+        {
+            lock (SaveReservedLock)
+            {
+                SaveReserved = (list ?? new()).Where(r => !string.IsNullOrWhiteSpace(r?.Name)).ToList();
+                expiredReserveNotes.Clear();
+            }
+        }
+
+        /// <summary>写盘用：拿一份快照。</summary>
+        internal static List<SavedReserve> SaveReservedSnapshot()
+        {
+            lock (SaveReservedLock)
+                return SaveReserved.Select(r => new SavedReserve { Name = r.Name, UntilDay = r.UntilDay, Purpose = r.Purpose }).ToList();
+        }
+
+        private static List<string> SaveReservedNames()
+        {
+            ExpireSaveReserved();
+            lock (SaveReservedLock)
+                return SaveReserved.Select(r => r.Name).ToList();
+        }
+
         /// <summary>给 AI 看的保留清单（设置里的 + 这个存档里记下的），都没有就返回 null。</summary>
         internal static string ReservedSummary()
         {
+            ExpireSaveReserved();
             var fromSettings = SplitReservedNames(ReservedItems);
-            var fromSave = SplitReservedNames(SaveReservedItems).Where(n => !fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase)).ToList();
+            List<string> fromSave;
+            lock (SaveReservedLock)
+            {
+                fromSave = SaveReserved.Where(r => !fromSettings.Contains(r.Name, StringComparer.OrdinalIgnoreCase))
+                    .Select(r =>
+                    {
+                        var extra = new List<string>();
+                        if (r.UntilDay > 0)
+                            extra.Add("留到" + DayText(r.UntilDay));
+                        if (!string.IsNullOrWhiteSpace(r.Purpose))
+                            extra.Add("要" + r.Purpose.Trim());
+                        return r.Name + (extra.Count > 0 ? "（" + string.Join("，", extra) + "）" : "");
+                    })
+                    .ToList();
+            }
             if (fromSettings.Count == 0 && fromSave.Count == 0)
                 return null;
             var parts = new List<string>();
@@ -49,44 +194,59 @@ namespace BlindWhaleFarmer
                 parts.Add("设置里的：" + string.Join("、", fromSettings));
             if (fromSave.Count > 0)
                 parts.Add("这个存档里记下的：" + string.Join("、", fromSave));
-            return string.Join("；", parts) + "。不卖、不出货、不吃、不扔、不种、不送（交任务可以）。玩家说要留别的东西或说不用留了，用 reserve_items 改";
+            return string.Join("；", parts) + "。不卖、不出货、不吃、不扔、不种、不送（交任务可以）；写了“留到”的到那天会自动放开并提醒你。玩家说要留别的东西或说不用留了，用 reserve_items 改";
         }
 
         /// <summary>
-        /// reserve_items：玩家说“这个留着”“草莓种子别种了”时记下来；说“可以用了”就去掉。
+        /// reserve_items：玩家说“这个留着”“草莓种子留着明年春天种”时记下来（可带到期日和用途）；说“可以用了”就去掉。
         /// 设置里的那份只能玩家在 DSH 配置页 / config.json 改。
         /// </summary>
-        public IEnumerable<object> ReserveItems(string add, string remove)
+        public IEnumerable<object> ReserveItems(string add, string remove, string until, string purpose)
         {
             var addNames = SplitReservedNames(add);
             var removeNames = SplitReservedNames(remove);
             if (addNames.Count == 0 && removeNames.Count == 0)
             {
-                yield return ActionResult.Success(ReservedSummary() is string s ? "现在要留着的：" + s : "现在没有要留着的东西");
+                yield return ActionResult.Success((ReservedSummary() is string s ? "现在要留着的：" + s : "现在没有要留着的东西") + $"（今天是 {DayText(Game1.Date.TotalDays)}）");
+                yield break;
+            }
+            var (untilDay, untilError) = ParseUntil(until);
+            if (untilError != null)
+            {
+                yield return ActionResult.Fail(untilError + "。清单没改");
                 yield break;
             }
             var fromSettings = SplitReservedNames(ReservedItems);
-            var list = SplitReservedNames(SaveReservedItems);
             var notes = new List<string>();
-            foreach (var n in addNames)
+            lock (SaveReservedLock)
             {
-                if (fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase) || list.Contains(n, StringComparer.OrdinalIgnoreCase))
-                    notes.Add($"{n} 已经在清单里");
-                else
-                    list.Add(n);
+                foreach (var n in addNames)
+                {
+                    var existing = SaveReserved.FirstOrDefault(r => r.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
+                    if (fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase))
+                        notes.Add($"{n} 是玩家在设置里写的，一直留着，不用再记");
+                    else if (existing != null)
+                    {
+                        // 已经有了就按这次说的更新日子和用途
+                        existing.UntilDay = untilDay ?? 0;
+                        if (!string.IsNullOrWhiteSpace(purpose))
+                            existing.Purpose = purpose.Trim();
+                    }
+                    else
+                        SaveReserved.Add(new SavedReserve { Name = n, UntilDay = untilDay ?? 0, Purpose = (purpose ?? "").Trim() });
+                }
+                foreach (var n in removeNames)
+                {
+                    if (SaveReserved.RemoveAll(x => x.Name.Equals(n, StringComparison.OrdinalIgnoreCase)) > 0)
+                        continue;
+                    notes.Add(fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase)
+                        ? $"{n} 是玩家在设置里写的，你去不掉，请玩家在 DSH 配置页的“保留物品”（或 config.json 的 ReservedItems）里删"
+                        : $"{n} 本来就不在清单里");
+                }
             }
-            foreach (var n in removeNames)
-            {
-                if (list.RemoveAll(x => x.Equals(n, StringComparison.OrdinalIgnoreCase)) > 0)
-                    continue;
-                notes.Add(fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase)
-                    ? $"{n} 是玩家在设置里写的，你去不掉，请玩家在 DSH 配置页的“保留物品”（或 config.json 的 ReservedItems）里删"
-                    : $"{n} 本来就不在清单里");
-            }
-            SaveReservedItems = string.Join(", ", list);
             PersistSaveReserved?.Invoke();
             string now = ReservedSummary() is string summary ? "现在要留着的：" + summary : "现在没有要留着的东西";
-            yield return ActionResult.Success((notes.Count > 0 ? string.Join("；", notes) + "。" : "已更新。") + now);
+            yield return ActionResult.Success((notes.Count > 0 ? string.Join("；", notes) + "。" : "已更新。") + now + $"（今天是 {DayText(Game1.Date.TotalDays)}）");
         }
 
         internal static Func<Item, string> ReservedChecker()
@@ -106,7 +266,7 @@ namespace BlindWhaleFarmer
                     }
                 }
             }
-            var keepNames = SplitReservedNames(ReservedItems).Concat(SplitReservedNames(SaveReservedItems)).ToArray();
+            var keepNames = SplitReservedNames(ReservedItems).Concat(SaveReservedNames()).ToArray();
             return item =>
             {
                 if (item == null)

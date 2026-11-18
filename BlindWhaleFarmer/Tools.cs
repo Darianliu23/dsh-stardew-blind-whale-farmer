@@ -321,10 +321,12 @@ namespace BlindWhaleFarmer
                 j => () => a.SetMode(Str(j, "mode")),
                 P("mode", "string", "solo、command 或 hybrid"));
 
-            Add("reserve_items", "记下或去掉玩家要留着的东西（按存档保存）。玩家说“草莓种子留着明年种”“这个别卖”时加进去，说“可以用了”时去掉；清单里的东西不卖、不出货、不吃、不扔、不种、不送（交任务可以）。两个参数都不传就看现在的清单。玩家在设置里写的那部分你去不掉。", 10,
-                j => () => a.ReserveItems(OptStr(j, "add"), OptStr(j, "remove")),
-                P("add", "string", "要加的物品名，多个用逗号分隔（名字要和游戏里的一样，比如“草莓种子”）", false),
-                P("remove", "string", "要去掉的物品名，多个用逗号分隔", false));
+            Add("reserve_items", "记下或去掉玩家要留着的东西（按存档保存）。玩家说“草莓种子留着明年春天种”“这个别卖”时加进去，说“可以用了”时去掉；清单里的东西不卖、不出货、不吃、不扔、不种、不送（交任务可以）。玩家说了留到什么时候就填 until 和 purpose：到那天自动放开，get_state 最前面会提醒你去用。add 和 remove 都不传就看现在的清单。玩家在设置里写的那部分你去不掉。", 10,
+                j => () => a.ReserveItems(OptStr(j, "add"), OptStr(j, "remove"), OptStr(j, "until"), OptStr(j, "purpose")),
+                P("add", "string", "要加的物品名，多个用逗号分隔（名字要和游戏里的一样，比如“草莓种子”）。已经在清单里的会按这次的 until/purpose 更新", false),
+                P("remove", "string", "要去掉的物品名，多个用逗号分隔", false),
+                P("until", "string", "留到哪天，到了自动放开：“第2年春季”“明年春天”“夏季15日”“10天后”；没写年份就是下一个这样的日子。不传 = 一直留着", false),
+                P("purpose", "string", "玩家说留着干什么（比如“种在温室”“送给阿比盖尔”），到期提醒时会带上", false));
 
             Add("wait_chat","联机时等别人说话：有人说话就立刻返回，最多等 seconds 秒（5~300）。闲着等吩咐时用。", 320,
                 j => () => a.WaitChat(OptInt(j, "seconds") ?? 60),

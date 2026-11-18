@@ -158,6 +158,12 @@ namespace BlindWhaleFarmer
                 system += "\n\n## 玩家要留着的东西\n" + keep;
 
             var user = new StringBuilder();
+            if (GameActions.TakeExpiredReserveNote() is string expired)
+            {
+                user.AppendLine("# 留着的东西到日子了");
+                user.AppendLine(expired);
+                user.AppendLine();
+            }
             user.AppendLine("# 你的长期笔记");
             user.AppendLine(string.IsNullOrWhiteSpace(Notes) ? "（空。建议先用 update_notes 写下目标和计划）" : Notes);
             user.AppendLine();
