@@ -14,7 +14,7 @@ namespace BlindWhaleFarmer
         /// <summary>时间到了以后还允许的工具：处理界面、记笔记；分钟用完时另外允许 sleep 回家存档。</summary>
         private static readonly HashSet<string> AlwaysAllowed = new()
         {
-            "dialogue", "close_menu", "menu_click", "skip_event", "choose_profession", "leave_festival", "update_notes"
+            "dialogue", "close_menu", "menu_click", "skip_event", "choose_profession", "leave_festival", "update_notes", "reserve_items"
         };
 
         private readonly ModConfig config;

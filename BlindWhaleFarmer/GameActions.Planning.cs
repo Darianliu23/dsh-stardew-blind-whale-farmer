@@ -25,7 +25,69 @@ namespace BlindWhaleFarmer
         /// </summary>
         /// <summary>设置里的 ReservedItems：玩家要留着的东西，逗号分隔。</summary>
         public static string ReservedItems = "";
+        /// <summary>玩家在游戏里/对话里让 AI 记下要留的东西（reserve_items 写的），按存档保存在模组 data 文件夹，和设置里的分开存，免得插件推设置时被覆盖。</summary>
+        public static string SaveReservedItems = "";
+        /// <summary>SaveReservedItems 改了以后写盘（ModEntry 填）。</summary>
+        internal static Action PersistSaveReserved;
         internal const string PlayerReserved = "玩家要求保留";
+
+        private static readonly char[] NameSeparators = { ',', '，', '、', ';', '；' };
+
+        internal static List<string> SplitReservedNames(string text) =>
+            (text ?? "").Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Util.StripQuality).Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        /// <summary>给 AI 看的保留清单（设置里的 + 这个存档里记下的），都没有就返回 null。</summary>
+        internal static string ReservedSummary()
+        {
+            var fromSettings = SplitReservedNames(ReservedItems);
+            var fromSave = SplitReservedNames(SaveReservedItems).Where(n => !fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (fromSettings.Count == 0 && fromSave.Count == 0)
+                return null;
+            var parts = new List<string>();
+            if (fromSettings.Count > 0)
+                parts.Add("设置里的：" + string.Join("、", fromSettings));
+            if (fromSave.Count > 0)
+                parts.Add("这个存档里记下的：" + string.Join("、", fromSave));
+            return string.Join("；", parts) + "。不卖、不出货、不吃、不扔、不种、不送（交任务可以）。玩家说要留别的东西或说不用留了，用 reserve_items 改";
+        }
+
+        /// <summary>
+        /// reserve_items：玩家说“这个留着”“草莓种子别种了”时记下来；说“可以用了”就去掉。
+        /// 设置里的那份只能玩家在 DSH 配置页 / config.json 改。
+        /// </summary>
+        public IEnumerable<object> ReserveItems(string add, string remove)
+        {
+            var addNames = SplitReservedNames(add);
+            var removeNames = SplitReservedNames(remove);
+            if (addNames.Count == 0 && removeNames.Count == 0)
+            {
+                yield return ActionResult.Success(ReservedSummary() is string s ? "现在要留着的：" + s : "现在没有要留着的东西");
+                yield break;
+            }
+            var fromSettings = SplitReservedNames(ReservedItems);
+            var list = SplitReservedNames(SaveReservedItems);
+            var notes = new List<string>();
+            foreach (var n in addNames)
+            {
+                if (fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase) || list.Contains(n, StringComparer.OrdinalIgnoreCase))
+                    notes.Add($"{n} 已经在清单里");
+                else
+                    list.Add(n);
+            }
+            foreach (var n in removeNames)
+            {
+                if (list.RemoveAll(x => x.Equals(n, StringComparison.OrdinalIgnoreCase)) > 0)
+                    continue;
+                notes.Add(fromSettings.Contains(n, StringComparer.OrdinalIgnoreCase)
+                    ? $"{n} 是玩家在设置里写的，你去不掉，请玩家在 DSH 配置页的“保留物品”（或 config.json 的 ReservedItems）里删"
+                    : $"{n} 本来就不在清单里");
+            }
+            SaveReservedItems = string.Join(", ", list);
+            PersistSaveReserved?.Invoke();
+            string now = ReservedSummary() is string summary ? "现在要留着的：" + summary : "现在没有要留着的东西";
+            yield return ActionResult.Success((notes.Count > 0 ? string.Join("；", notes) + "。" : "已更新。") + now);
+        }
 
         internal static Func<Item, string> ReservedChecker()
         {
@@ -44,8 +106,7 @@ namespace BlindWhaleFarmer
                     }
                 }
             }
-            var keepNames = (ReservedItems ?? "").Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(Util.StripQuality).Where(n => n.Length > 0).ToArray();
+            var keepNames = SplitReservedNames(ReservedItems).Concat(SplitReservedNames(SaveReservedItems)).ToArray();
             return item =>
             {
                 if (item == null)

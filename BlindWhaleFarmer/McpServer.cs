@@ -358,7 +358,7 @@ namespace BlindWhaleFarmer
                 return "失败：游戏里的内置 AI 正在运行，它运行时只能用 get_state、get_guide、gift_info、bundle_info。"
                        + "要自己操作就先用 toggle_ai 传 on=false 停掉它（或在游戏里按 " + mod.Config.ToggleKey + "）";
             }
-            if (mod.PlayerInControl && !InfoTools.Contains(name) && name != "update_notes")
+            if (mod.PlayerInControl && !InfoTools.Contains(name) && name != "update_notes" && name != "reserve_items")
                 return $"失败：玩家按 {mod.Config.TakeOverKey} 接管了游戏，现在由玩家自己操作，你的动作都会被拒绝。"
                        + $"不要再尝试游戏动作：停下来向玩家汇报刚才在做什么、遇到了什么问题，等玩家在游戏里再按 {mod.Config.TakeOverKey} 交还、并告诉你继续";
 
@@ -378,6 +378,8 @@ namespace BlindWhaleFarmer
                         head.Add("【" + session + "】");
                     if (!string.IsNullOrWhiteSpace(mod.Config.ExtraInstructions))
                         head.Add("【玩家的额外要求】" + mod.Config.ExtraInstructions.Trim());
+                    if (Context.IsWorldReady && GameActions.ReservedSummary() is string keep)
+                        head.Add("【玩家要留着的东西】" + keep);
                     // 笔记按存档保存（模组 data 文件夹），内置 AI 每步都能看到；MCP 客户端换了会话也要能接着上次的计划玩
                     if (Context.IsWorldReady)
                         head.Add("【你的长期笔记】" + (string.IsNullOrWhiteSpace(mod.Agent?.Notes)

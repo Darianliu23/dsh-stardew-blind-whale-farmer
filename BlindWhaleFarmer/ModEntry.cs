@@ -46,6 +46,8 @@ namespace BlindWhaleFarmer
         private sealed class SaveData
         {
             public string Notes { get; set; } = "";
+            /// <summary>reserve_items 记下的要留着的东西（逗号分隔）。</summary>
+            public string Reserved { get; set; } = "";
         }
 
         public override void Entry(IModHelper helper)
@@ -53,6 +55,7 @@ namespace BlindWhaleFarmer
             Config = helper.ReadConfig<ModConfig>();
             Monitor.Log(Guide.Load(helper.DirectoryPath, Config.GuideFile), LogLevel.Info);
             Guide.SetOverrides(Config.GuideOverrides);
+            GameActions.PersistSaveReserved = SaveNotes;
             GameActions.ForageRadius = Math.Clamp(Config.ForageRadius, 0, 10);
             GameActions.ReservedItems = Config.ReservedItems ?? "";
             MainThread = new MainThread(Monitor);
@@ -149,6 +152,7 @@ namespace BlindWhaleFarmer
         {
             var data = Helper.Data.ReadJsonFile<SaveData>(NotesFile) ?? new SaveData();
             Agent.Notes = data.Notes ?? "";
+            GameActions.SaveReservedItems = data.Reserved ?? "";
             Agent.ClearLog();
             Exits.ClearCache();
             // 每次读档算新的一次游玩，时长重新计
@@ -217,7 +221,7 @@ namespace BlindWhaleFarmer
             // 后台线程也可能调用，写文件本身是线程安全的
             try
             {
-                Helper.Data.WriteJsonFile(NotesFile, new SaveData { Notes = notes });
+                Helper.Data.WriteJsonFile(NotesFile, new SaveData { Notes = notes, Reserved = GameActions.SaveReservedItems ?? "" });
             }
             catch (Exception ex)
             {

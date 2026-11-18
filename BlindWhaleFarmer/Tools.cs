@@ -35,7 +35,7 @@ namespace BlindWhaleFarmer
             + "在矿洞里回不去箱子时：先 eat 吃掉食物，再用 trash_item 扔最不值钱的（泥土、石头、杂物），别让矿石宝石留在地上";
 
         /// <summary>有人说话也不从外面打断的工具：本身就在等人或者很短；钓鱼半路断了鱼竿还在水里，它自己在两竿之间停。</summary>
-        private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide" };
+        private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "reserve_items", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide" };
 
         /// <summary>会往背包里攒东西的工具：做完在外面背包快满时提醒一句“回农场会自动收纳”。</summary>
         private static readonly HashSet<string> LootTools = new() { "fish", "forage", "explore_mine", "fight", "move_to", "travel_to", "interact", "check_crab_pots", "clear_area", "use_tool" };
@@ -321,7 +321,12 @@ namespace BlindWhaleFarmer
                 j => () => a.SetMode(Str(j, "mode")),
                 P("mode", "string", "solo、command 或 hybrid"));
 
-            Add("wait_chat", "联机时等别人说话：有人说话就立刻返回，最多等 seconds 秒（5~300）。闲着等吩咐时用。", 320,
+            Add("reserve_items", "记下或去掉玩家要留着的东西（按存档保存）。玩家说“草莓种子留着明年种”“这个别卖”时加进去，说“可以用了”时去掉；清单里的东西不卖、不出货、不吃、不扔、不种、不送（交任务可以）。两个参数都不传就看现在的清单。玩家在设置里写的那部分你去不掉。", 10,
+                j => () => a.ReserveItems(OptStr(j, "add"), OptStr(j, "remove")),
+                P("add", "string", "要加的物品名，多个用逗号分隔（名字要和游戏里的一样，比如“草莓种子”）", false),
+                P("remove", "string", "要去掉的物品名，多个用逗号分隔", false));
+
+            Add("wait_chat","联机时等别人说话：有人说话就立刻返回，最多等 seconds 秒（5~300）。闲着等吩咐时用。", 320,
                 j => () => a.WaitChat(OptInt(j, "seconds") ?? 60),
                 P("seconds", "integer", "最多等几秒，默认 60", false));
 

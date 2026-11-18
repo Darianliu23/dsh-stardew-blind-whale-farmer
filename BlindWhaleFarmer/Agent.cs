@@ -154,6 +154,8 @@ namespace BlindWhaleFarmer
             string system = SystemPrompt;
             if (!string.IsNullOrWhiteSpace(mod.Config.ExtraInstructions))
                 system += "\n\n## 玩家给你的额外要求\n" + mod.Config.ExtraInstructions.Trim();
+            if (GameActions.ReservedSummary() is string keep)
+                system += "\n\n## 玩家要留着的东西\n" + keep;
 
             var user = new StringBuilder();
             user.AppendLine("# 你的长期笔记");

@@ -22,7 +22,7 @@ const LABELS = {
   forageRadius: ['play', '顺手采集范围（格）'],
   companionMode: ['play', '联机时怎么安排自己'],
   extraInstructions: ['play', '额外要求'],
-  reservedItems: ['play', '保留物品（AI 别动）'],
+  reservedItems: ['play', '保留物品'],
   guideFile: ['guide', '攻略文件'],
   ...Object.fromEntries(GUIDE_FIELDS.map(([key, file]) => [key, ['guide', `攻略·${file}`]])),
   presetEnabled: ['session', '创建“大肥鱼种白饭”会话预设'],
