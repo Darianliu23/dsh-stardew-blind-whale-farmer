@@ -260,7 +260,7 @@ class Program
 
         // ── /settings：DSH 插件推设置 ──
         var post = new System.Net.Http.StringContent(
-            "{\"revision\":\"r1\",\"settings\":{\"sessionDays\":3,\"sessionMinutes\":45,\"freezeTime\":false,\"idleSeconds\":90,\"extraInstructions\":\"专心钓鱼\"}}",
+            "{\"revision\":\"r1\",\"settings\":{\"sessionDays\":3,\"sessionMinutes\":45,\"freezeTime\":false,\"idleSeconds\":90,\"extraInstructions\":\"专心钓鱼\",\"reservedItems\":\"草莓种子, 远古水果\"}}",
             Encoding.UTF8, "application/json");
         var sp = await http.PostAsync($"http://127.0.0.1:{port}/settings", post);
         var spBody = JsonNode.Parse(await sp.Content.ReadAsStringAsync());
@@ -268,7 +268,8 @@ class Program
               && spBody?["settings"]?["sessionMinutes"]?.GetValue<int>() == 45
               && spBody?["settings"]?["freezeTime"]?.GetValue<bool>() == false,
             "POST /settings 应用设置：" + Shorten(spBody?["message"]?.GetValue<string>() ?? ""));
-        Check((int)tConfig.GetProperty("SessionMinutes").GetValue(config) == 45 && (string)tConfig.GetProperty("ExtraInstructions").GetValue(config) == "专心钓鱼",
+        Check((int)tConfig.GetProperty("SessionMinutes").GetValue(config) == 45 && (string)tConfig.GetProperty("ExtraInstructions").GetValue(config) == "专心钓鱼"
+              && (string)tConfig.GetProperty("ReservedItems").GetValue(config) == "草莓种子, 远古水果",
             "设置写进了模组配置");
         var sg = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/settings"));
         Check(sg?["revision"]?.GetValue<string>() == "r1" && !string.IsNullOrEmpty(sg?["instance"]?.GetValue<string>()),
