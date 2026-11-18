@@ -1047,6 +1047,14 @@ namespace BlindWhaleFarmer
                         + (suggest >= 5 ? $"。离你想去的最近的是 start_level={suggest}" : "") + "。没有出发");
                     yield break;
                 }
+                // 120 层是普通矿洞的最底层，下面没有楼梯了：拿过骷髅钥匙以后再按 120 只能在这一层打转
+                if (target >= 120 && MineShaft.lowestLevelReached >= 120 && Game1.player.hasSkullKey)
+                {
+                    yield return ActionResult.Fail("第 120 层是普通矿洞的最底层，下面没有了，骷髅钥匙也已经拿过，再去只能在这一层打转。"
+                        + "按想要的东西选层：铜矿 start_level=5~35，铁矿 45~75，金矿 85~115（层越深宝石、晶球越好）；"
+                        + "要铱矿、更深的层就去骷髅洞穴 explore_mine where=skull。没有出发");
+                    yield break;
+                }
                 if (!Loc.Name.Equals("Mine", StringComparison.OrdinalIgnoreCase))
                 {
                     foreach (var s in TravelInner("Mine", o))

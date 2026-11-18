@@ -282,15 +282,18 @@ namespace BlindWhaleFarmer
                 var pool = Player.Items.OfType<SObject>()
                     .Where(o => !o.bigCraftable.Value && o.canBeGivenAsGift() && GrangeGroup(o) != null)
                     .ToList();
+                // 按实际加分挑：单样分 + 新种类的 +5（最多 6 类）。铱星好东西单样能到 8 分，
+                // 比为了凑种类塞一个 1~2 分的烂东西（+5+2）更划算，所以不能死板地“先凑种类”
                 var chosen = new List<SObject>();
-                // 每个种类先挑分最高的一样
-                foreach (var g in pool.GroupBy(o => GrangeGroup(o)).Select(g => g.OrderByDescending(GrangeItemScore).First()).OrderByDescending(GrangeItemScore))
-                    if (chosen.Count < 9)
-                        chosen.Add(g);
-                // 剩下的格子用分最高的补满
-                foreach (var o in pool.Except(chosen).OrderByDescending(GrangeItemScore))
-                    if (chosen.Count < 9)
-                        chosen.Add(o);
+                var rest = pool.ToList();
+                while (chosen.Count < 9 && rest.Count > 0)
+                {
+                    var kindsNow = chosen.Select(o => GrangeGroup(o)).ToHashSet();
+                    int Gain(SObject o) => GrangeItemScore(o) + (kindsNow.Count < 6 && !kindsNow.Contains(GrangeGroup(o)) ? 5 : 0);
+                    var best = rest.OrderByDescending(Gain).ThenByDescending(GrangeItemScore).First();
+                    chosen.Add(best);
+                    rest.Remove(best);
+                }
                 if (chosen.Count == 0)
                 {
                     notes.Add("背包里没有能摆展示柜的东西（作物、水果、动物产品、宝石、鱼、采集品、料理、工匠品都行）");
@@ -345,11 +348,21 @@ namespace BlindWhaleFarmer
                 notes.Add("刘易斯还没评完（可能没开始评比），过一会儿再和他说话领奖");
                 yield break;
             }
+            // 评完游戏会弹“刘易斯评完了”的提示框，不关掉人动不了，AI 会以为卡住了直接走人
+            for (int t = 0; t < 60 * 5 && Game1.activeClickableMenu is DialogueBox; t++)
+                foreach (var s in ClickThroughDialogue(YesChoice, 60))
+                    yield return s;
             // 再和他说话领奖（星星币加在 festivalScore 上）
             int before = Player.festivalScore;
             lewis = ev.getActorByName("Lewis");
+            go = new Outcome();
             foreach (var s in GoAdjacent(lewis.TilePoint, go))
                 yield return s;
+            if (!go.Ok)
+            {
+                notes.Add($"刘易斯评完了（{ev.grangeScore} 分，≥90 一等奖），但走不到他旁边领奖：{go.Message}。有弹框先用 dialogue 关掉，再 festival start 找他领，别直接离开");
+                yield break;
+            }
             Face(lewis.TilePoint);
             Loc.checkAction(new xLocation(lewis.TilePoint.X, lewis.TilePoint.Y), Game1.viewport, Player);
             foreach (var s in ClickThroughDialogue(YesChoice))

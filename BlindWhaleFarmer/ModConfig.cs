@@ -62,6 +62,9 @@ namespace BlindWhaleFarmer
         /// <summary>额外写给 AI 的目标/要求，例如“优先赚钱，第一年春天种满防风草”。</summary>
         public string ExtraInstructions { get; set; } = "";
 
+        /// <summary>玩家要留着的东西，逗号分隔，例如“草莓种子, 远古水果”。AI 不卖、不出货、不吃、不扔、不种、不送、不拿去整理掉。</summary>
+        public string ReservedItems { get; set; } = "";
+
         /// <summary>攻略文件（相对模组目录或绝对路径）。想改打法就复制一份改名后指到这里，更新模组时不会被覆盖；留空用 guide/攻略.md（旧名 guide/zh-CN.md 也会自动换成它）。</summary>
         public string GuideFile { get; set; } = Guide.DefaultFile;
 

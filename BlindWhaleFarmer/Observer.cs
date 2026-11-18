@@ -163,6 +163,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine("附近有水，可以用 fish 工具钓鱼（会自动找岸边）");
             });
             Safe(sb, () => AppendMine(sb, loc, pt));
+            if (loc is MermaidHouse)
+                sb.AppendLine("美人鱼表演：进来几秒后自动开演，整场一分多钟（现实时间，约合游戏里 2 小时）。用 wait minutes=120 等它演完再走，别进来转一圈就出去");
 
             sb.AppendLine();
             sb.AppendLine("## 背包（序号: 物品）");
@@ -336,7 +338,18 @@ namespace BlindWhaleFarmer
         private static void AppendMine(StringBuilder sb, GameLocation loc, Point pt)
         {
             if (loc is not MineShaft mine)
+            {
+                // 矿洞入口：AI 看得见电梯却不知道怎么坐。电梯就是 explore_mine 的 start_level，列出现在能按的层
+                if (loc.Name == "Mine")
+                {
+                    int top = Math.Min(MineShaft.lowestLevelReached, 120) / 5 * 5;
+                    sb.AppendLine(top < 5
+                        ? "矿洞入口。电梯要下到第 5 层才解锁，现在用 explore_mine 从第 1 层往下走。"
+                        : $"矿洞入口。坐电梯不用自己点电梯：explore_mine start_level=层数 直接到那一层再往下打（不耗体力）。现在能到：{string.Join("、", Enumerable.Range(1, top / 5).Select(i => i * 5))}。"
+                          + (top >= 120 ? "120 层是最底层，下面没有了，别再选 120：铜矿 5~35、铁矿 45~75、金矿 85~115，铱矿去骷髅洞穴（explore_mine where=skull）。" : ""));
+                }
                 return;
+            }
             var found = new List<(Point p, string what)>();
             int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
             for (int x = 0; x < w; x++)
@@ -352,6 +365,26 @@ namespace BlindWhaleFarmer
                 sb.AppendLine("这一层还没有出现下楼梯，继续用镐敲石头（clear_area 或 use_tool pickaxe）。");
             foreach (var (p, what) in found.OrderBy(f => Util.Manhattan(f.p, pt)))
                 sb.AppendLine($"{what} ({p.X},{p.Y})，用 interact 使用");
+        }
+
+        // 夜市的摊位没有 Action 属性，游戏在 BeachNightMarket.checkAction 里按图块编号判断
+        private static string NightMarketTile(GameLocation loc, int x, int y)
+        {
+            if (loc is Submarine)
+                return loc.getTileIndexAt(x, y, "Buildings", "submarine tiles") == 217 ? "潜艇控制台（interact 后 dialogue choice=0 下潜/上浮，下潜后对着水 fish 钓深海鱼）" : null;
+            if (loc is not BeachNightMarket)
+                return null;
+            return loc.getTileIndexAt(x, y, "Buildings", "night market") switch
+            {
+                595 => "装饰品船商店",
+                69 or 877 => "免费礼物摊（17:00 后）",
+                653 => "深海潜艇钓鱼",
+                399 => "旅行商人",
+                70 => "魔法船商店",
+                68 => "画家（17:00 后卖画）",
+                1285 => "传送人",
+                _ => null
+            };
         }
 
         private static string MineTile(GameLocation loc, int x, int y)
@@ -409,7 +442,10 @@ namespace BlindWhaleFarmer
             }
             foreach (var p in parts)
                 sb.AppendLine(p);
-            sb.AppendLine($"背包空位：{empty} 个（共 {Game1.player.MaxItems} 格）");
+            var here = Game1.currentLocation;
+            bool onFarm = here is Farm || here is FarmHouse || here?.ParentBuilding?.GetParentLocation() is Farm;
+            sb.AppendLine($"背包空位：{empty} 个（共 {Game1.player.MaxItems} 格）"
+                + (onFarm && empty <= 4 ? "。快满了：出农场前先 tidy_backpack purpose=（mine/fish/town）把用不上的存进箱子" : ""));
         }
 
         /// <summary>
@@ -712,7 +748,9 @@ namespace BlindWhaleFarmer
             foreach (var b in loc.buildings)
             {
                 var p = new Point(b.tileX.Value, b.tileY.Value);
-                string name = b is ShippingBin ? "出货箱（站在旁边用 ship_items 出货）" : $"建筑 {b.buildingType.Value}（{b.tilesWide.Value}x{b.tilesHigh.Value}，坐标是左上角）";
+                string name = b is ShippingBin ? "出货箱（站在旁边用 ship_items 出货）"
+                    : b is PetBowl bowl ? (bowl.watered.Value ? "宠物水碗（今天有水）" : "宠物水碗（没水：water_crops 会顺便加满，或 use_tool 水壶对着它）")
+                    : $"建筑 {b.buildingType.Value}（{b.tilesWide.Value}x{b.tilesHigh.Value}，坐标是左上角）";
                 Add(name, "", p);
             }
             foreach (var f in loc.furniture)
@@ -737,6 +775,11 @@ namespace BlindWhaleFarmer
                 {
                     if (!loc.isTileOnMap(x, y))
                         continue;
+                    if (NightMarketTile(loc, x, y) is { } stall)
+                    {
+                        Add($"夜市[{stall}]", "interact", new Point(x, y));
+                        continue;
+                    }
                     string action = loc.doesTileHaveProperty(x, y, "Action", "Buildings");
                     if (string.IsNullOrEmpty(action))
                         continue;

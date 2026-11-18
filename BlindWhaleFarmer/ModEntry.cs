@@ -54,6 +54,7 @@ namespace BlindWhaleFarmer
             Monitor.Log(Guide.Load(helper.DirectoryPath, Config.GuideFile), LogLevel.Info);
             Guide.SetOverrides(Config.GuideOverrides);
             GameActions.ForageRadius = Math.Clamp(Config.ForageRadius, 0, 10);
+            GameActions.ReservedItems = Config.ReservedItems ?? "";
             MainThread = new MainThread(Monitor);
             Observer = new Observer(Config, helper.Reflection);
             Actions = new GameActions(helper.Reflection, Observer);
@@ -182,6 +183,8 @@ namespace BlindWhaleFarmer
             }
             if (s["extraInstructions"] is { } extra)
                 Config.ExtraInstructions = extra.GetValue<string>() ?? "";
+            if (s["reservedItems"] is { } keepItems)
+                GameActions.ReservedItems = Config.ReservedItems = keepItems.GetValue<string>() ?? "";
             string guideLog = null;
             if (s["guideFile"] is { } g && (g.GetValue<string>() ?? "") is var guide && guide != Config.GuideFile)
             {
@@ -370,7 +373,9 @@ namespace BlindWhaleFarmer
             // 模型思考时冻结时钟：内置 AI 在等回复，或者 MCP 客户端在两次调用之间思考
             bool thinking = Agent.Running ? Config.FreezeTimeWhileThinking && Agent.IsThinking
                                           : Config.McpFreezeTime && mcpPlaying;
-            SetTimeFrozen(thinking && !MainThread.IsBusy);
+            // 美人鱼表演、深海潜艇的动画按游戏时钟走（shouldTimePass），冻住了表演永远不开、潜艇不下潜
+            bool showRunning = Game1.currentLocation is StardewValley.Locations.MermaidHouse or StardewValley.Locations.Submarine;
+            SetTimeFrozen(thinking && !MainThread.IsBusy && !showRunning);
         }
 
         /// <summary>

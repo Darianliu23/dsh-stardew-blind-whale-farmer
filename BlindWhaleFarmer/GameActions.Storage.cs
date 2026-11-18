@@ -19,32 +19,39 @@ namespace BlindWhaleFarmer
         {
             tile = default;
             error = null;
+            // 地上的箱子 + 农舍/姜岛小屋的冰箱（冰箱不在 objects 里，要单独加）
+            var chests = Loc.objects.Pairs.Where(p => p.Value is Chest c && c.playerChest.Value && !c.giftbox.Value)
+                .Select(p => (tile: new Point((int)p.Key.X, (int)p.Key.Y), chest: (Chest)p.Value)).ToList();
+            var fridge = Loc.GetFridge();
+            if (fridge != null && Loc.GetFridgePosition() is Point fp)
+                chests.Add((fp, fridge));
             if (x.HasValue && y.HasValue)
             {
-                tile = new Point(x.Value, y.Value);
-                if (Loc.objects.TryGetValue(new Vector2(x.Value, y.Value), out var o) && o is Chest c && c.playerChest.Value && !c.giftbox.Value)
-                    return c;
+                var want = tile = new Point(x.Value, y.Value);
+                // 冰箱占两格高，点上面那格也算
+                var hit = chests.FirstOrDefault(c => c.tile == want ||c.chest == fridge && c.tile.X == x.Value && c.tile.Y - 1 == y.Value);
+                if (hit.chest != null)
+                {
+                    tile = hit.tile;
+                    return hit.chest;
+                }
                 // 说清楚那格其实是什么、这里的箱子都在哪，AI 一步就能改对
                 string here = WhatIsAt(tile);
-                var chests = Loc.objects.Pairs.Where(p => p.Value is Chest pc && pc.playerChest.Value && !pc.giftbox.Value)
-                    .Select(p => $"({(int)p.Key.X},{(int)p.Key.Y})").ToList();
+                var list = chests.Select(c => $"({c.tile.X},{c.tile.Y}){(c.chest == fridge ? "冰箱" : "")}").ToList();
                 error = $"({x},{y}) 不是箱子，" + (here != null ? $"那里是{here}" : "那里什么都没有")
-                    + (chests.Count > 0 ? $"。{Loc.NameOrUniqueName} 的箱子在：{string.Join("、", chests.Take(8))}（不传坐标就用最近的一个）"
+                    + (list.Count > 0 ? $"。{Loc.NameOrUniqueName} 的箱子在：{string.Join("、", list.Take(8))}（不传坐标就用最近的一个）"
                         : $"。{Loc.NameOrUniqueName} 里没有箱子（箱子的坐标只在放它的那张地图上有效，先 travel_to 过去）");
                 return null;
             }
             var me = Player.TilePoint;
-            var nearest = Loc.objects.Pairs
-                .Where(p => p.Value is Chest c && c.playerChest.Value && !c.giftbox.Value)
-                .OrderBy(p => Math.Abs(p.Key.X - me.X) + Math.Abs(p.Key.Y - me.Y))
-                .FirstOrDefault();
-            if (nearest.Value == null)
+            var nearest = chests.OrderBy(c => Math.Abs(c.tile.X - me.X) + Math.Abs(c.tile.Y - me.Y)).FirstOrDefault();
+            if (nearest.chest == null)
             {
                 error = "这里没有箱子。先 craft Chest（50 木材），再 place_item 放在农场上（比如出货箱旁边）";
                 return null;
             }
-            tile = new Point((int)nearest.Key.X, (int)nearest.Key.Y);
-            return (Chest)nearest.Value;
+            tile = nearest.tile;
+            return nearest.chest;
         }
 
         /// <summary>items 为空或 "all" 表示全部；否则用逗号/顿号分隔的名字（包含匹配）。</summary>
@@ -207,7 +214,7 @@ namespace BlindWhaleFarmer
                 var here = FindChest(x, y, out _, out _);
                 if (here == null || !Has(here) && !x.HasValue)
                 {
-                    var all = AllChests().Where(c => c.loc.objects.TryGetValue(new Vector2(c.tile.X, c.tile.Y), out var o) && o == c.chest).ToList();
+                    var all = AllChests().Where(c => c.loc.objects.TryGetValue(new Vector2(c.tile.X, c.tile.Y), out var o) && o == c.chest || c.chest == c.loc.GetFridge()).ToList();
                     var pick = all
                         .Where(c => (!x.HasValue || (c.tile.X == x && c.tile.Y == y)) && Has(c.chest))
                         .OrderBy(c => c.loc == Loc ? 0 : 1)

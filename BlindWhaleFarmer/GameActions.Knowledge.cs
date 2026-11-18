@@ -83,7 +83,10 @@ namespace BlindWhaleFarmer
                     return f.numberFished.Value >= f.numberToFish.Value
                         ? $"已经钓够了，interact npc={f.target.Value} 和{NpcName(f.target.Value)}说话就交了（不用带鱼，也别用 give_gift）"
                         : $"只认接任务以后亲手钓到的（现在 {f.numberFished.Value}/{f.numberToFish.Value}），箱子里、背包里现成的鱼不算，也不用交出去。钓够了 interact npc={f.target.Value} 和{NpcName(f.target.Value)}说话";
-                case StardewValley.Quests.SlayMonsterQuest m when m.target.Value != null:
+                // 没有交任务的人（马龙的“入门”打 10 只史莱姆就是这样，游戏里存的是字符串 "null"）：打够了自动完成
+                case StardewValley.Quests.SlayMonsterQuest m when m.target.Value is null or "null" or "":
+                    return $"只认接任务以后打倒的（现在 {m.numberKilled.Value}/{m.numberToKill.Value}），打够了自动完成，不用找人交";
+                case StardewValley.Quests.SlayMonsterQuest m:
                     return m.numberKilled.Value >= m.numberToKill.Value
                         ? $"已经打够了，interact npc={m.target.Value} 和{NpcName(m.target.Value)}说话就交了"
                         : $"只认接任务以后打倒的（现在 {m.numberKilled.Value}/{m.numberToKill.Value}），打够了 interact npc={m.target.Value} 和{NpcName(m.target.Value)}说话";
@@ -94,11 +97,53 @@ namespace BlindWhaleFarmer
                 case StardewValley.Quests.LostItemQuest l when l.npcName.Value != null:
                     return l.itemFound.Value
                         ? $"东西已经找到了，用 give_gift npc={l.npcName.Value} 把{Util.ObjectName(l.ItemId.Value)}交给{NpcName(l.npcName.Value)}"
-                        : $"去 {l.locationOfItem.Value} 找{Util.ObjectName(l.ItemId.Value)}（大概在 ({l.tileX.Value},{l.tileY.Value}) 附近，可能藏在垃圾桶、灌木之类里），找到后 give_gift 交给{NpcName(l.npcName.Value)}";
+                        : $"{Util.ObjectName(l.ItemId.Value)}就在 {l.locationOfItem.Value} 的 ({l.tileX.Value},{l.tileY.Value}) 那一格：先 travel_to {l.locationOfItem.Value}（一定是这张图，别在旁边的地图里找），到了 interact x={l.tileX.Value} y={l.tileY.Value} 捡起来（周围被灌木挡住会自己找能够到的位置），再 give_gift 交给{NpcName(l.npcName.Value)}";
                 case StardewValley.Quests.SocializeQuest:
                     return "和任务里的村民挨个说话（interact npc=名字），说完自动完成";
             }
             return null;
+        }
+
+        /// <summary>把这件东西交给他能不能完成某个任务（按游戏自己的判断，只探测不交）。</summary>
+        private static bool IsQuestDelivery(NPC npc, Item item) =>
+            Player.questLog.Any(q => !q.completed.Value && Safe(() => q.OnItemOfferedToNpc(npc, item, probe: true)));
+
+        /// <summary>拿着任务要的东西走过去交给他（和送礼走同一条路，但不检查送礼次数和喜好）。</summary>
+        private IEnumerable<object> DeliverQuestItem(NPC npc, int idx)
+        {
+            var item = Player.Items[idx];
+            string itemName = item.DisplayName;
+            int openBefore = Player.questLog.Count(q => !q.completed.Value);
+            foreach (var _ in WaitPlayerFree())
+                yield return null;
+            // 路上别举着任务物品（会被路过的村民当礼物收走），到他旁边 Interact 再拿出来
+            PutAwayHeldItem();
+            var o = new Outcome();
+            var npcLoc = npc.currentLocation;
+            if (npcLoc != null && npcLoc != Loc)
+            {
+                foreach (var s in TravelInner(npcLoc.NameOrUniqueName, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail($"去 {npc.displayName} 那里（{npcLoc.NameOrUniqueName}）交任务失败：{o.Message}");
+                    yield break;
+                }
+            }
+            ActionResult final = null;
+            foreach (var s in Interact(null, null, npc.Name, itemName))
+            {
+                if (s is ActionResult r)
+                {
+                    final = r;
+                    break;
+                }
+                yield return s;
+            }
+            bool done = Player.questLog.Count(q => !q.completed.Value) < openBefore || !Player.Items.Contains(item) || item.Stack <= 0;
+            yield return done
+                ? ActionResult.Success($"把{itemName}交给了 {npc.displayName}，任务完成（交任务不算送礼，今天还能再送他礼物）。{final?.Message}")
+                : ActionResult.Fail($"没交成（{itemName} 还在背包里）。{final?.Message}");
         }
 
         /// <summary>这个村民身上有没有“说句话就能交”的任务（钓鱼、打怪、收集任务做够了）。</summary>
@@ -126,6 +171,12 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"背包里没有可以送人的“{itemSpec}”");
                 yield break;
             }
+            // 玩家在设置里要留着的东西不送（交任务例外：任务要的照样交）
+            if (ReservedChecker()(Player.Items[idx]) == PlayerReserved && !IsQuestDelivery(npc, Player.Items[idx]))
+            {
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是玩家要求保留的，不能送人，换别的礼物");
+                yield break;
+            }
             // 他身上有说句话就能交的任务（钓够了鱼之类）：先交任务。拿着东西过去游戏会当成送礼，任务反而没交
             if (HasQuestReadyToTurnIn(npc))
             {
@@ -141,6 +192,30 @@ namespace BlindWhaleFarmer
                 }
                 yield return ActionResult.Success($"{npc.displayName} 身上有做够了的任务，先和他说话把任务交了（礼物没送，还要送就再 give_gift）：{turnIn?.Message}");
                 yield break;
+            }
+            // 交任务的东西：游戏先按任务算，不受每天/每周送礼次数、喜好、认不认识的限制，也不算送礼（GiftsToday 不变）。
+            // 同名东西可能按品质分成几堆，游戏只看拿在手里的那一堆够不够数：挑一堆够数的
+            {
+                string wantId = Player.Items[idx].QualifiedItemId;
+                int questIdx = -1;
+                for (int i = 0; i < Player.Items.Count && questIdx < 0; i++)
+                    if (Player.Items[i] is { } it && it.QualifiedItemId == wantId && IsQuestDelivery(npc, it))
+                        questIdx = i;
+                if (questIdx >= 0)
+                {
+                    foreach (var s in DeliverQuestItem(npc, questIdx))
+                        yield return s;
+                    yield break;
+                }
+                var shortQuest = Player.questLog.OfType<StardewValley.Quests.ItemDeliveryQuest>()
+                    .FirstOrDefault(q => !q.completed.Value && q.target.Value == npc.Name && q.ItemId.Value == wantId);
+                if (shortQuest != null)
+                {
+                    int biggest = Player.Items.Where(i => i?.QualifiedItemId == wantId).Max(i => i.Stack);
+                    yield return ActionResult.Fail($"交给 {npc.displayName} 的任务要 {shortQuest.number.Value} 个{Player.Items[idx].DisplayName}，而且必须是同一堆（品质不同的分开放，不会叠在一起）；"
+                        + $"现在最多的一堆只有 {biggest} 个。再弄几个同品质的凑够一堆再交");
+                    yield break;
+                }
             }
             if (!Game1.player.friendshipData.TryGetValue(npc.Name, out var f))
             {
@@ -190,10 +265,11 @@ namespace BlindWhaleFarmer
             }
             int pointsBefore = f.Points;
 
-            // 一路上把礼物举在手里送过去（游戏里拿着物品走路会举过头顶），看着像专门去送礼的
+            // 路上手里别拿着礼物：举着东西走，进门、开箱、碰到别的村民时一交互就会被当成送给他的礼物（群友报过交任务的东西被半路截胡）。
+            // 走到他旁边后 Interact 才把这件东西拿到手里
             foreach (var _ in WaitPlayerFree())
                 yield return null;
-            Player.CurrentToolIndex = idx;
+            PutAwayHeldItem();
 
             var o = new Outcome();
             var npcLoc = npc.currentLocation;

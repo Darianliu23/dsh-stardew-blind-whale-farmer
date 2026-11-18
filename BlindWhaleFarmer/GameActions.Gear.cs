@@ -173,8 +173,9 @@ namespace BlindWhaleFarmer
         /// ① 是比身上更好的鞋子、能戴的戒指、没戴帽子时的帽子，直接穿上；
         /// ② 是装备，或者比背包里最不值钱的那一格贵得多，就把最不值钱的那一格丢到脚边，换它进来。
         /// 返回最后掉在地上的东西（可能是换下来的旧鞋、被挤出去的杂物，或者它自己），都放下了返回空列表。
+        /// overflow 不为 null 时放不下的东西交给它处理，不丢在地上（比如节日地图是临时的，丢地上节日一结束就没了）。
         /// </summary>
-        internal static List<Item> AddOrMakeRoom(Item item)
+        internal static List<Item> AddOrMakeRoom(Item item, System.Action<Item> overflow = null)
         {
             var onGround = new List<Item>();
             var left = Player.addItemToInventory(item);
@@ -184,7 +185,10 @@ namespace BlindWhaleFarmer
             void Drop(Item it)
             {
                 onGround.Add(it);
-                Game1.createItemDebris(it, Player.getStandingPosition(), Player.FacingDirection);
+                if (overflow != null)
+                    overflow(it);
+                else
+                    Game1.createItemDebris(it, Player.getStandingPosition(), Player.FacingDirection);
             }
 
             // ① 直接穿上

@@ -419,12 +419,21 @@ namespace BlindWhaleFarmer
                 if (Game1.activeClickableMenu is DialogueBox)
                     foreach (var s in ClickThroughDialogue(YesChoice, 120))
                         yield return s;
-                else if (Game1.activeClickableMenu is ItemGrabMenu prize && ev.eventCommands[ev.CurrentCommand] == "null")
+                else if (Game1.activeClickableMenu is ItemGrabMenu prize
+                    && (ev.eventCommands[ev.CurrentCommand] == "null" || prize.ItemsToGrabMenu?.actualInventory.Any(i => i != null) == true))
                 {
-                    // 发奖时背包满了会弹物品界面，剧情停在 null 命令上，要靠关界面时往下走一步（游戏在 ItemGrabMenu 按键关闭时做）
+                    // 发奖时背包满了会弹物品界面，剧情停在 null 命令上，要靠关界面时往下走一步（游戏在 ItemGrabMenu 按键关闭时做）。
+                    // 拿不下的奖品不能丢地上：节日地图是临时的，节日一结束就没了。放进镇长家的失物招领箱（游戏自己也是这么放的）
                     int waitingAt = ev.CurrentCommand;
-                    GrabAll(prize);
-                    if (ev.CurrentCommand == waitingAt)
+                    bool atNull = ev.eventCommands[waitingAt] == "null";
+                    var lost = GrabAll(prize, overflow: item =>
+                    {
+                        Game1.player.team.returnedDonations.Add(item);
+                        Game1.player.team.newLostAndFoundItems.Value = true;
+                    });
+                    if (lost.Count > 0)
+                        notes.Add($"背包满了，奖品 {string.Join("、", lost)} 放进了镇长家的失物招领箱（节日后去镇长家门口的箱子里拿）");
+                    if (atNull && ev.CurrentCommand == waitingAt)
                         ev.CurrentCommand++;
                 }
                 else if (Game1.activeClickableMenu is ItemGrabMenu or ShopMenu or LetterViewerMenu)

@@ -157,12 +157,45 @@ namespace BlindWhaleFarmer
             _ => FarmerSprite.walkDown
         };
 
+        /// <summary>
+        /// 放走路动画。游戏每帧的 Farmer.updateMovementAnimation 看到没按方向键（movementDirections 为空），
+        /// 会把姿势重置成站着（帧序号和计时都清零），只靠 FarmerSprite.animate 的话每帧都从第一帧重来，人看着一直是同一个姿势。
+        /// 所以自己记走了多久，按它选帧。
+        /// </summary>
+        private static void AnimateWalk(int dir, ref float walkMs)
+        {
+            if (Player.isRidingHorse())
+                return; // 骑马的姿势游戏自己摆（showRiding），套走路动画反而是在马背上迈腿
+            var sprite = Player.FarmerSprite;
+            sprite.animate(WalkAnimation(dir), Game1.currentGameTime);
+            walkMs += (float)Game1.currentGameTime.ElapsedGameTime.TotalMilliseconds;
+            var anim = sprite.CurrentAnimation;
+            if (sprite.PauseForSingleAnimation || anim == null || anim.Count <= 1)
+                return;
+            int frameMs = Math.Max(1, anim[0].milliseconds);
+            int idx = (int)(walkMs / frameMs) % anim.Count;
+            sprite.currentAnimationIndex = idx;
+            sprite.CurrentFrame = anim[idx].frame;
+            sprite.UpdateSourceRect();
+        }
+
         /// <summary>沿路径逐格移动（直接驱动坐标，配合走路动画）。</summary>
         private IEnumerable<object> WalkPath(List<Point> path, Outcome o)
         {
             var loc = Loc;
+            // 鱼竿还在水里、或者停在蓄力抛竿（钓鱼被打断、鱼跑了没收竿）：先收好再走，
+            // 不然 UsingTool 一直是真，游戏不放走路动画，一路都是抛竿的姿势
+            if (Player.CurrentTool is FishingRod rod && Game1.activeClickableMenu == null
+                && (Player.UsingTool || rod.isFishing || rod.isTimingCast || rod.isCasting))
+            {
+                Player.completelyStopAnimatingOrDoingAction();
+                rod.resetState();
+                Player.FarmerSprite.StopAnimation();
+                yield return null;
+            }
             // 先对齐到当前格，避免半格偏移导致碰撞
             SnapToTile(Player.TilePoint);
+            float walkMs = 0;
             for (int i = 1; i < path.Count; i++)
             {
                 var target = new Vector2(path[i].X * 64, path[i].Y * 64);
@@ -204,7 +237,7 @@ namespace BlindWhaleFarmer
                         break;
                     }
                     Player.Position = pos + delta / len * speed;
-                    Player.FarmerSprite.animate(WalkAnimation(dir), Game1.currentGameTime);
+                    AnimateWalk(dir, ref walkMs);
                     yield return null;
                 }
                 var rejoin = new[] { i };
@@ -350,6 +383,18 @@ namespace BlindWhaleFarmer
                 + (blockers != null ? $"；那附近挡着的有：{blockers}。能清的用 clear_area 或 use_tool 清掉，清不掉就换条路" : "；那附近是墙或水，换个方向或换条路");
         }
 
+        /// <summary>手里拿着物品时换成一个工具或空格：避免进门、碰到村民时误送礼、误放置。</summary>
+        private static void PutAwayHeldItem()
+        {
+            if (Player.ActiveObject == null)
+                return;
+            int safe = Util.FindTool<Tool>();
+            if (safe < 0)
+                safe = Player.Items.IndexOf(null);
+            if (safe >= 0)
+                Player.CurrentToolIndex = safe;
+        }
+
         /// <summary>走到目标格旁边（上下左右之一）并面向目标。prefer 为优先站立的格子。</summary>
         private IEnumerable<object> GoAdjacent(Point target, Outcome o, Point? prefer = null)
         {
@@ -476,8 +521,10 @@ namespace BlindWhaleFarmer
                 var pts = affected.Select(v => new Point((int)v.X, (int)v.Y)).ToList();
                 if (harmful != null && pts.Any(harmful))
                     continue;
+                // 蓄 n 档费的体力（水壶还有水）是单下的 n+1 倍：有用的格子不到 n+1 个就比一格一格来更亏。
+                // 按“每份体力浇/锄几格”挑，一样划算的挑档数高的（省时间）
                 int useful = pts.Count(wanted);
-                if (useful > bestUseful)
+                if (useful >= power + 1 && useful * (best + 1) >= bestUseful * (power + 1))
                 {
                     best = power;
                     bestUseful = useful;
@@ -533,6 +580,9 @@ namespace BlindWhaleFarmer
             try
             {
                 var (_, name, _) = Observer.ClassifyFeature(Loc, new Vector2(p.X, p.Y));
+                // 大树桩、大石头、空心原木占 2x2，只记在左上角：点到它的其他格也要认出来，不然会当成空地
+                if (name == null && Loc.resourceClumps.FirstOrDefault(c => c.getBoundingBox().Contains(p.X * 64 + 32, p.Y * 64 + 32)) is { } clump)
+                    name = Observer.ClumpName(clump);
                 return name;
             }
             catch (NullReferenceException)
@@ -574,6 +624,10 @@ namespace BlindWhaleFarmer
             // 联机时农场工人的家是自己的小屋，FarmHouse 是主机的房子
             if (name.Equals("FarmHouse", StringComparison.OrdinalIgnoreCase) && !Game1.IsMasterGame && Utility.getHomeOfFarmer(Game1.player) is { } cabin)
                 return cabin;
+            // 秘密森林的内部名是 Woods，AI 常写 SecretWoods
+            if (name.Replace(" ", "").Replace("_", "") is var compact
+                && (compact.Equals("SecretWoods", StringComparison.OrdinalIgnoreCase) || compact.Equals("SecretForest", StringComparison.OrdinalIgnoreCase) || compact is "秘密森林" or "秘密树林"))
+                name = "Woods";
             var loc = Game1.getLocationFromName(name);
             if (loc != null)
                 return loc;
@@ -630,7 +684,21 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             string targetName = target.NameOrUniqueName;
+            // 森林西北角的大原木（2x2，左上角 1,6）挡着秘密森林入口，要钢斧以上才砍得动；先说清楚，免得 AI 到处乱砍
+            if (targetName == "Woods" && !Loc.NameOrUniqueName.Equals("Woods", StringComparison.OrdinalIgnoreCase)
+                && Game1.getLocationFromName("Forest") is { } forest
+                && forest.resourceClumps.FirstOrDefault(c => c.parentSheetIndex.Value == 602 && c.Tile.X <= 3 && c.Tile.Y <= 9) is { } bigLog)
+            {
+                int ax = (int)bigLog.Tile.X, ay = (int)bigLog.Tile.Y;
+                var axe = Player.Items.OfType<Axe>().FirstOrDefault();
+                string axeNote = axe == null ? "你背包里没有斧头"
+                    : axe.UpgradeLevel >= 2 ? $"你的{axe.DisplayName}砍得动：先 travel_to Forest，再 use_tool tool=axe x={ax} y={ay} times=15（会自动走到旁边，砍掉了自动停）"
+                    : $"你的{axe.DisplayName}砍不动，要先到铁匠铺把斧头升级成钢斧（upgrade_tool）";
+                o.Fail($"秘密森林入口被森林西北角的大原木挡着（Forest 的 ({ax},{ay})，占 2x2 格），需要钢斧或更好的斧头砍掉才能进。{axeNote}");
+                yield break;
+            }
             doorWaitNote = null;
+            string packNote = LeaveFarmPackNote(target);
             // 地图上被石头、树挡住的出口：这次不走了，换一条路线（比如农场南门堵了就经过小镇去森林）
             var blockedExits = new HashSet<string>();
             var triedVolcanoSwitches = new HashSet<string>();
@@ -656,7 +724,8 @@ namespace BlindWhaleFarmer
                         yield break;
                     }
                     var t = Player.TilePoint;
-                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : "") + doorWaitNote);
+                    o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : "") + doorWaitNote
+                        + (WormNote(Loc) is { } worms ? "。" + worms : "") + packNote);
                     yield break;
                 }
                 // 夜市（冬 15-17）那几天，游戏把去沙滩的人送到 BeachNightMarket 这张地图，名字不是 Beach 但就是沙滩
@@ -702,7 +771,11 @@ namespace BlindWhaleFarmer
                 // 马在附近、路又远就骑上（骑到门口，进门、坐车之前在 TakeExit 里下马）
                 foreach (var s in MaybeMountHorse(route))
                     yield return s;
-                foreach (var s in TakeExit(route[0], o))
+                // 这个出口是唯一的路（比如森林去秘密森林）：被新长出来的石头、树枝、杂草挡住时没法绕，就边走边清
+                string planTarget = IsBeach(targetName) ? "Beach" : targetName;
+                bool onlyRoute = Exits.PlanRoute(Loc, planTarget,
+                    new HashSet<string>(blockedExits) { Exits.ExitKey(exitFrom, route[0]) }) is not { Count: > 0 };
+                foreach (var s in TakeExit(route[0], o, onlyRoute))
                     yield return s;
                 // 火山里被矮人机关门挡住（比如从火山口的捷径下来，第 0 层的门要踩旁边的开关才开）：踩亮走得到的开关，再走一次
                 if (!o.Ok && o.Message.StartsWith("找不到通往") && Loc is StardewValley.Locations.VolcanoDungeon vdTravel && !triedVolcanoSwitches.Contains(exitFrom))
@@ -818,7 +891,8 @@ namespace BlindWhaleFarmer
                 o.Succeed();
         }
 
-        private IEnumerable<object> TakeExit(Exit e, Outcome o)
+        /// <param name="clearIfBlocked">没有别的路线时：普通寻路走不到出口，就清掉路上的石头、树枝、杂草再走（树、大石头不清）。</param>
+        private IEnumerable<object> TakeExit(Exit e, Outcome o, bool clearIfBlocked = false)
         {
             var from = Loc;
             switch (e.Kind)
@@ -833,6 +907,18 @@ namespace BlindWhaleFarmer
                             Math.Clamp(tile.Y, 0, Pathfinder.MapHeight(Loc) - 1)), 3);
                     foreach (var s in GoToAny(goals, o, $"去 {e.Target} 的出口"))
                         yield return s;
+                    if (!o.Ok && clearIfBlocked && o.Message.StartsWith("找不到通往") && Loc == from)
+                    {
+                        string why = o.Message;
+                        var cleared = new Outcome();
+                        foreach (var s in GoToAnyClearing(goals, cleared, $"去 {e.Target} 的出口"))
+                            yield return s;
+                        if (cleared.Ok)
+                            o.Succeed();
+                        else
+                            // 保留“找不到通往”开头，TravelCore 照旧按被挡处理（列出挡路的东西、让 AI 选）
+                            o.Fail($"{why}；这是唯一的路，试过边走边清石头、树枝、杂草也过不去（{cleared.Message}），挡路的可能是树或大石头，要用斧头/镐子 clear_area 清掉");
+                    }
                     if (!o.Ok)
                         yield break;
                     if (e.IsTouch)
@@ -940,6 +1026,26 @@ namespace BlindWhaleFarmer
                     }
                     break;
                 }
+                case ExitKind.Minecart:
+                {
+                    // 走到矿车旁边，直接按游戏选好目的地后的做法传送（跳过选站菜单；有票价就扣钱）
+                    foreach (var s in GoAdjacent(e.Tile, o, new Point(e.Tile.X, e.Tile.Y + 1)))
+                        yield return s;
+                    if (!o.Ok)
+                        yield break;
+                    foreach (var s in Dismount())
+                        yield return s;
+                    if (!Exits.MinecartUsable(Loc, e))
+                    {
+                        o.Fail($"坐不了去 {e.Target} 的矿车（没开通或钱不够）");
+                        yield break;
+                    }
+                    Face(e.Tile);
+                    if (e.Minecart.Price > 0)
+                        Player.Money -= e.Minecart.Price;
+                    Loc.MinecartWarp(e.Minecart);
+                    break;
+                }
             }
             // 巴士要等人走上车、开出画面才换地图，比走门慢得多
             int waitTicks = Exits.IsBoat(e) ? 4800 : e.Kind == ExitKind.Bus ? 2400 : 600;
@@ -1000,6 +1106,50 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 工具和交互 ─────────────────────────
 
+        /// <summary>这把工具对这一格的东西完全没用时返回原因（只管斧头/镐子，拿不准的不拦）。</summary>
+        private static string WrongTool(Tool tool, Point p)
+        {
+            if (tool is not (Axe or Pickaxe))
+                return null;
+            var px = new Point(p.X * 64 + 32, p.Y * 64 + 32);
+            if (Loc.resourceClumps.FirstOrDefault(c => c is not GiantCrop && c.getBoundingBox().Contains(px)) is { } clump)
+            {
+                var (needAxe, level) = clump.parentSheetIndex.Value switch
+                {
+                    600 => (true, 1),
+                    602 => (true, 2),
+                    672 => (false, 2),
+                    622 => (false, 3),
+                    752 or 754 or 756 or 758 => (false, 0),
+                    _ => (tool is Axe, -1)
+                };
+                if (level < 0)
+                    return null;
+                string name = Observer.ClumpName(clump);
+                if (needAxe != tool is Axe)
+                    return $"({p.X},{p.Y}) 是{name}，要用{(needAxe ? "斧头" : "镐子")}，{tool.DisplayName}没用";
+                if (tool.UpgradeLevel < level)
+                    return $"({p.X},{p.Y}) 是{name}，你的{tool.DisplayName}等级不够砍不动，先到铁匠铺升级（upgrade_tool）";
+                return null;
+            }
+            var v = new Vector2(p.X, p.Y);
+            var tileRect = new Rectangle(p.X * 64, p.Y * 64, 64, 64);
+            if (!Loc.objects.ContainsKey(v) && Loc.largeTerrainFeatures.OfType<Bush>().FirstOrDefault(b => b.getBoundingBox().Intersects(tileRect)) is { } bush
+                && !bush.isDestroyable())
+                return $"({p.X},{p.Y}) 是灌木丛，游戏里这种灌木（农场外的大多数）什么工具都砍不掉。要拿灌木后面的东西就换个方向绕过去，interact 站斜角也能够到";
+            if (Loc.objects.TryGetValue(v, out var obj))
+            {
+                if (tool is Axe && obj.IsBreakableStone())
+                    return $"({p.X},{p.Y}) 是{obj.DisplayName}，要用镐子敲，斧头没用";
+                if (tool is Pickaxe && obj.IsTwig())
+                    return $"({p.X},{p.Y}) 是{obj.DisplayName}，要用斧头砍，镐子没用";
+                return null;
+            }
+            if (tool is Pickaxe && Loc.terrainFeatures.TryGetValue(v, out var tf) && tf is Tree or FruitTree)
+                return $"({p.X},{p.Y}) 是树，要用斧头砍，镐子没用";
+            return null;
+        }
+
         public IEnumerable<object> UseTool(string toolSpec, int x, int y, int times)
         {
             int idx = Util.FindToolIndex(toolSpec);
@@ -1019,6 +1169,12 @@ namespace BlindWhaleFarmer
                 yield return o.Ok
                     ? ActionResult.Success($"({x},{y}) 在水中间够不着，{o.Message}")
                     : ActionResult.Fail(o.Message);
+                yield break;
+            }
+            // 工具不对路（斧头砍石头、镐子敲树、斧头等级砍不动大原木）：挥多少下都没用，看着像对空气挥，先说清楚
+            if (WrongTool(Player.Items[idx] as Tool, target) is { } wrong)
+            {
+                yield return ActionResult.Fail(wrong);
                 yield break;
             }
             foreach (var s in GoAdjacent(target, o))
@@ -1041,9 +1197,14 @@ namespace BlindWhaleFarmer
                 // 目标已经被清除就不用再敲了
                 if (before != null && TileName(target) != before)
                     break;
+                // 斧头、镐子对着空地挥：挥一下就停，别白白耗体力
+                if (before == null && Player.Items[idx] is Axe or Pickaxe)
+                    break;
             }
             string after = TileName(target) ?? "空地";
             string msg = $"对 ({x},{y}) 使用 {Player.Items[idx]?.DisplayName} {used} 次，目标从“{before ?? "空地"}”变为“{after}”，剩余体力 {(int)Player.Stamina}";
+            if (before == null && after == "空地" && Player.Items[idx] is Axe or Pickaxe)
+                msg += "。这格是空的，没东西可砍/敲：先 get_state 看树、树桩、石头的准确坐标（树桩砍完就没了，不用再砍）";
             // 砍倒树/敲碎石头后把掉落物捡起来（树要倒地后才掉木头，多等一会儿）
             if (before != null && after != before && o.Ok && !Blocked(out _))
             {
@@ -1061,6 +1222,21 @@ namespace BlindWhaleFarmer
 
         public IEnumerable<object> Interact(int? x, int? y, string npcName, string itemSpec)
         {
+            // 找人说话、背包里正好有要交给他的任务物品：直接交（空手说话游戏不会交任务，AI 常以为说话就能交）
+            if (string.IsNullOrWhiteSpace(itemSpec) && x == null && y == null && !string.IsNullOrWhiteSpace(npcName)
+                && FindVillager(npcName) is { } questNpc && !HasQuestReadyToTurnIn(questNpc))
+            {
+                int qi = -1;
+                for (int i = 0; i < Player.Items.Count && qi < 0; i++)
+                    if (Player.Items[i] is { } it && IsQuestDelivery(questNpc, it))
+                        qi = i;
+                if (qi >= 0)
+                {
+                    foreach (var s in DeliverQuestItem(questNpc, qi))
+                        yield return s;
+                    yield break;
+                }
+            }
             var o = new Outcome();
             NPC npc = null;
             if (!string.IsNullOrWhiteSpace(npcName))
@@ -1186,6 +1362,22 @@ namespace BlindWhaleFarmer
                 {
                     foreach (var s in GoAdjacent(target, o))
                         yield return s;
+                    // 上下左右被灌木、栅栏堵死（比如任务要找的失物塞在灌木丛里）：游戏里站斜角也能伸手够到，换斜角试
+                    if (!o.Ok && !Blocked(out _) && !NextTo(target))
+                    {
+                        var diag = new List<Point>();
+                        foreach (var (dx, dy) in new[] { (1, 1), (1, -1), (-1, 1), (-1, -1) })
+                            if (Pathfinder.IsPassable(Loc, target.X + dx, target.Y + dy))
+                                diag.Add(new Point(target.X + dx, target.Y + dy));
+                        if (diag.Count > 0)
+                        {
+                            var o2 = new Outcome();
+                            foreach (var s in GoToAny(diag, o2, $"({target.X},{target.Y}) 斜角"))
+                                yield return s;
+                            if (o2.Ok)
+                                o = o2;
+                        }
+                    }
                 }
                 if (!o.Ok)
                 {
@@ -1203,15 +1395,8 @@ namespace BlindWhaleFarmer
 
             if (itemIdx >= 0)
                 Player.CurrentToolIndex = itemIdx;
-            else if (Player.ActiveObject != null)
-            {
-                // 避免手里拿着东西时误送礼/误放置：换成一个工具或空格
-                int safe = Util.FindTool<Tool>();
-                if (safe < 0)
-                    safe = Player.Items.IndexOf(null);
-                if (safe >= 0)
-                    Player.CurrentToolIndex = safe;
-            }
+            else
+                PutAwayHeldItem();
 
             var before = Game1.activeClickableMenu;
             var fromLoc = Loc;
@@ -1538,6 +1723,26 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("没有可以播种的空耕地（先用 till_area 开垦；注意种子要当季）");
                 yield break;
             }
+            if (ReservedChecker()(seed) == PlayerReserved)
+            {
+                yield return ActionResult.Fail($"{seedName} 是玩家要求保留的，不能种，换别的种子");
+                yield break;
+            }
+            // 季末前长不熟的种子种下去，换季那天就枯死了：先拦下来说清楚
+            if (seed.Category == SObject.SeedsCategory && !loc.SeedsIgnoreSeasonsHere()
+                && Crop.TryGetData(Crop.ResolveSeedId(seed.ItemId, loc), out var cropData) && cropData.DaysInPhase is { Count: > 0 } phases)
+            {
+                int grow = phases.Sum();
+                int daysLeft = 28 - Game1.dayOfMonth;
+                var next = (Season)(((int)Game1.season + 1) % 4);
+                bool nextOk = cropData.Seasons?.Contains(next) ?? false;
+                if (grow > daysLeft && !nextOk)
+                {
+                    yield return ActionResult.Fail($"{seedName} 要长 {grow} 天才熟，这个季节只剩 {daysLeft} 天，换季那天会枯死，种了白种。"
+                        + "挑熟得快的种子，或者留到下次当季再种（温室、姜岛农场不受季节限制）");
+                    yield break;
+                }
+            }
 
             // 没给区域时按田来种：先把已经有作物的田补满、再种大块的田，一块种完再换下一块；零散的一两格耕地不种。
             // 以前是从近到远挑空耕地，种子会撒得到处都是，浇水收菜都要满农场跑。
@@ -1722,7 +1927,8 @@ namespace BlindWhaleFarmer
             var tiles = loc.terrainFeatures.Pairs
                 .Where(p => p.Value is HoeDirt hd && Observer.NeedsWater(hd))
                 .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
-            if (tiles.Count == 0)
+            var bowl = DryPetBowl(loc);
+            if (tiles.Count == 0 && bowl == null)
             {
                 yield return ActionResult.Success(CropsElsewhereNote(true) ?? "这里没有需要浇水的作物");
                 yield break;
@@ -1731,6 +1937,27 @@ namespace BlindWhaleFarmer
             var o = new Outcome();
             bool Thirsty(Point t) => loc.terrainFeatures.TryGetValue(new Vector2(t.X, t.Y), out var f) && f is HoeDirt d && Observer.NeedsWater(d);
             int charged = 0;
+            // 宠物水碗也顺便加满（每天早上会变空，宠物喝到水才加好感）
+            string bowlMsg = "";
+            if (bowl is Point bt)
+            {
+                if (Player.Items[canIdx] is WateringCan c0 && c0.WaterLeft <= 0)
+                    foreach (var s in RefillWateringCan(canIdx, o))
+                        yield return s;
+                if (o.Ok)
+                    foreach (var s in GoAdjacent(bt, o))
+                        yield return s;
+                if (o.Ok)
+                    foreach (var s in UseToolOnce(canIdx, bt, o, 0))
+                        yield return s;
+                bowlMsg = DryPetBowl(loc) == null ? "宠物水碗加满了；" : $"宠物水碗没加上（{(o.Ok ? "水壶没浇到" : o.Message)}）；";
+                o.Succeed();
+            }
+            if (tiles.Count == 0)
+            {
+                yield return ActionResult.Success(bowlMsg + "这里没有需要浇水的作物");
+                yield break;
+            }
             foreach (var p in Util.NearestOrder(Player.TilePoint, tiles).Take(Math.Clamp(max, 1, 300)))
             {
                 if (!Thirsty(p))
@@ -1769,8 +1996,47 @@ namespace BlindWhaleFarmer
             }
             int left = loc.terrainFeatures.Pairs.Count(p => p.Value is HoeDirt hd && Observer.NeedsWater(hd));
             int done = tiles.Count - tiles.Count(Thirsty);
-            string msg = $"浇了 {done} 株{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，还剩 {left} 株没浇，剩余体力 {(int)Player.Stamina}";
+            string msg = bowlMsg + $"浇了 {done} 株{(charged > 0 ? $"（蓄力 {charged} 次）" : "")}，还剩 {left} 株没浇，剩余体力 {(int)Player.Stamina}";
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；" + err : "")) : ActionResult.Fail(msg + "；" + err);
+        }
+
+        /// <summary>
+        /// 从农场（含农舍、农场上的建筑）出门去别处时，背包快满、又带着出门用不上的东西（种子、洒水器、肥料、木头石头）：
+        /// 到了以后提醒一句，下次出门前先 tidy_backpack。只提醒，不拦。
+        /// </summary>
+        private static string LeaveFarmPackNote(GameLocation target)
+        {
+            static bool OnFarm(GameLocation l) => l is Farm || l is FarmHouse || l.ParentBuilding?.GetParentLocation() is Farm;
+            if (!OnFarm(Loc) || OnFarm(target))
+                return "";
+            int free = Player.freeSpotsInInventory();
+            if (free > 4)
+                return "";
+            var farmOnly = Player.Items.OfType<SObject>()
+                .Where(o => o.Category is SObject.SeedsCategory or SObject.fertilizerCategory or SObject.buildingResources
+                    || o.QualifiedItemId is "(O)599" or "(O)621" or "(O)645")
+                .Select(o => o.DisplayName).Distinct().Take(5).ToList();
+            return $"。⚠ 出农场时背包只剩 {free} 个空位"
+                + (farmOnly.Count > 0 ? $"，还带着{string.Join("、", farmOnly)}这些在外面用不上的" : "")
+                + "，路上捡的东西容易装不下。下次出门前先在农场 tidy_backpack purpose=（mine/fish/town）整理一下";
+        }
+
+        /// <summary>这张图上有宠物、今天还没水的水碗：返回水碗那一格（带 PetBowl 属性的格子），没有就 null。下雨天游戏自己会加满。</summary>
+        internal static Point? DryPetBowl(GameLocation loc)
+        {
+            foreach (var b in loc.buildings)
+            {
+                if (b is not PetBowl bowl || bowl.watered.Value || !bowl.HasPet() || bowl.isUnderConstruction())
+                    continue;
+                for (int x = b.tileX.Value; x < b.tileX.Value + b.tilesWide.Value; x++)
+                    for (int y = b.tileY.Value; y < b.tileY.Value + b.tilesHigh.Value; y++)
+                    {
+                        string prop = null;
+                        if (b.doesTileHaveProperty(x, y, "PetBowl", "Buildings", ref prop))
+                            return new Point(x, y);
+                    }
+            }
+            return null;
         }
 
         /// <summary>
@@ -2080,9 +2346,9 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"背包里没有“{itemSpec}”");
                 yield break;
             }
-            if (!force && ReservedChecker()(Player.Items[idx]) is string reservedWhy)
+            if (ReservedChecker()(Player.Items[idx]) is string reservedWhy && (!force || reservedWhy == PlayerReserved))
             {
-                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，卖了就交不了，先留着（交完再卖多的）。{ForceHint}");
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，{(reservedWhy == PlayerReserved ? "不能出货" : "卖了就交不了，先留着（交完再卖多的）。" + ForceHint)}");
                 yield break;
             }
             if (!Player.Items[idx].canBeShipped())
@@ -2180,9 +2446,9 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"背包里没有能扔的“{itemSpec}”（工具、武器、任务物品不能扔）");
                 yield break;
             }
-            if (!force && ReservedChecker()(Player.Items[idx]) is string reservedWhy)
+            if (ReservedChecker()(Player.Items[idx]) is string reservedWhy && (!force || reservedWhy == PlayerReserved))
             {
-                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，别扔，扔别的（石头、泥土、杂物）。{ForceHint}");
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，别扔，扔别的（石头、泥土、杂物）。{(reservedWhy == PlayerReserved ? "" : ForceHint)}");
                 yield break;
             }
             var item = Player.Items[idx];
@@ -2241,9 +2507,9 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(why);
                 yield break;
             }
-            if (!force && ReservedChecker()(Player.Items[idx]) is string reservedWhy)
+            if (ReservedChecker()(Player.Items[idx]) is string reservedWhy && (!force || reservedWhy == PlayerReserved))
             {
-                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，吃了就交不了，换别的吃（get_state 背包里标了【留着】的都别吃）。{ForceHint}");
+                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，{(reservedWhy == PlayerReserved ? "" : "吃了就交不了，")}换别的吃（get_state 背包里标了【留着】的都别吃）。{(reservedWhy == PlayerReserved ? "" : ForceHint)}");
                 yield break;
             }
             foreach (var s in WaitPlayerFree())
@@ -2332,6 +2598,24 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("已经卖完了");
                 yield break;
             }
+            // 自动采集器每个鸡舍/畜棚放一台就够（玛妮那里 2.5 万一台）：先数一数哪些还没有，别重复买
+            if (salable.QualifiedItemId == "(BC)165")
+            {
+                var houses = AnimalBuildings();
+                var without = houses.Where(h => !h.house.objects.Values.Any(o => o.QualifiedItemId == "(BC)165")).ToList();
+                int inBag = Player.Items.Where(i => i?.QualifiedItemId == "(BC)165").Sum(i => i.Stack);
+                int need = without.Count - inBag;
+                if (need <= 0)
+                {
+                    var with = houses.Except(without).Select(h => $"{h.building.GetIndoorsName()}({h.building.tileX.Value},{h.building.tileY.Value})");
+                    yield return ActionResult.Fail(
+                        $"不用买：有动物的鸡舍/畜棚{(with.Any() ? $"（{string.Join("、", with)}）" : "")}都已经放了自动采集器"
+                        + (inBag > 0 ? $"，背包里还有 {inBag} 台没放（place_item 放进还缺的那间）" : "")
+                        + "。自动采集器每间一台就够，多买没用");
+                    yield break;
+                }
+                count = Math.Min(count, need);
+            }
             int moneyBefore = Player.Money;
             if (info.Price * count > moneyBefore && info.Price > 0)
             {
@@ -2376,6 +2660,11 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var item = Player.Items[idx];
+            if (ReservedChecker()(item) == PlayerReserved)
+            {
+                yield return ActionResult.Fail($"{item.DisplayName} 是玩家要求保留的，不能卖");
+                yield break;
+            }
             if (!shop.highlightItemToSell(item) || shop.currency != 0)
             {
                 yield return ActionResult.Fail($"这家店不收 {item.DisplayName}（大部分作物可以放进农场出货箱）");

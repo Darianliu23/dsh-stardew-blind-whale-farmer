@@ -23,6 +23,10 @@ namespace BlindWhaleFarmer
         /// 返回一个判断函数：这件东西是不是任务、特别订单、社区中心收集包要交的（返回原因，不是返回 null）。
         /// 数量比要交的多时不算（多出来的可以吃、可以卖）。先把任务和收集包算好，背包几十格挨个查也不慢。
         /// </summary>
+        /// <summary>设置里的 ReservedItems：玩家要留着的东西，逗号分隔。</summary>
+        public static string ReservedItems = "";
+        internal const string PlayerReserved = "玩家要求保留";
+
         internal static Func<Item, string> ReservedChecker()
         {
             var needs = QuestNeeds();
@@ -40,12 +44,17 @@ namespace BlindWhaleFarmer
                     }
                 }
             }
+            var keepNames = (ReservedItems ?? "").Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Util.StripQuality).Where(n => n.Length > 0).ToArray();
             return item =>
             {
                 if (item == null)
                     return null;
                 if (item is SObject o && o.questItem.Value)
                     return "任务物品";
+                // 玩家在设置里点名要留的（名字完全一样才算，免得“草莓”把草莓种子也算进去）
+                if (keepNames.Any(n => item.DisplayName.Equals(n, StringComparison.OrdinalIgnoreCase) || item.Name.Equals(n, StringComparison.OrdinalIgnoreCase)))
+                    return PlayerReserved;
                 foreach (var (match, count, why) in needs)
                 {
                     try
@@ -499,7 +508,11 @@ namespace BlindWhaleFarmer
 
         /// <summary>已经被现有洒水器浇到的格子。</summary>
         private static HashSet<Vector2> SprinklerCovered(GameLocation loc) =>
-            loc.objects.Values.Where(o => o.IsSprinkler()).SelectMany(o => o.GetSprinklerTiles()).ToHashSet();
+            loc.objects.Values.Where(o => o.IsSprinkler()).SelectMany(o => o.GetSprinklerTiles()).Where(v => !NoSprinklers(loc, v)).ToHashSet();
+
+        /// <summary>海滩农场的沙地等格子带 NoSprinklers：洒水器放不上去，也浇不到这格（Object.ApplySprinkler / placementAction）。</summary>
+        internal static bool NoSprinklers(GameLocation loc, Vector2 v) =>
+            loc.doesTileHavePropertyNoNull((int)v.X, (int)v.Y, "NoSprinklers", "Back") == "T";
 
         /// <summary>这只洒水器放在 tile 上能新浇到几格耕地（已经被别的洒水器浇到的不算）。范围由游戏自己算，普通 4 格、优质 3x3、铱制 5x5。</summary>
         private static int SprinklerGain(GameLocation loc, SObject sprinkler, Point tile, HashSet<Vector2> covered)
@@ -507,14 +520,14 @@ namespace BlindWhaleFarmer
             if (sprinkler.getOne() is not SObject probe)
                 return 0;
             probe.TileLocation = new Vector2(tile.X, tile.Y);
-            return probe.GetSprinklerTiles().Count(v => !covered.Contains(v) && loc.terrainFeatures.TryGetValue(v, out var f) && f is HoeDirt);
+            return probe.GetSprinklerTiles().Count(v => !covered.Contains(v) && !NoSprinklers(loc, v) && loc.terrainFeatures.TryGetValue(v, out var f) && f is HoeDirt);
         }
 
         /// <summary>能放洒水器的格子：没有东西、没有作物（空耕地可以）、走得到。</summary>
         private static bool CanHoldSprinkler(GameLocation loc, Point t)
         {
             var v = new Vector2(t.X, t.Y);
-            if (!loc.isTileOnMap(t.X, t.Y) || loc.Objects.ContainsKey(v))
+            if (!loc.isTileOnMap(t.X, t.Y) || loc.Objects.ContainsKey(v) || NoSprinklers(loc, v))
                 return false;
             if (loc.terrainFeatures.TryGetValue(v, out var f))
                 return f is HoeDirt { crop: null };
@@ -626,6 +639,9 @@ namespace BlindWhaleFarmer
             // 选的格子种着作物时那个位置本身放不了，只和现在真能放的位置比
             string later = SprinklerAfterHarvest(loc, o, covered, onCrop ? bestGain : Math.Max(gain, bestGain));
             string laterNote = later != null ? "。" + later : "";
+            if (NoSprinklers(loc, new Vector2(tile.X, tile.Y)))
+                return $"({tile.X},{tile.Y}) 是沙地之类放不了洒水器的格子（洒水器也浇不到这种格子，海滩农场只有一块非沙地能用）"
+                    + (best.HasValue ? $"。能放的位置里最好的是 ({best.Value.X},{best.Value.Y})，能浇到 {bestGain} 格耕地" : "。这附近没有能放洒水器又浇得到耕地的位置，这块田只能手动浇水");
             if (onCrop)
                 return $"({tile.X},{tile.Y}) 上种着作物，放不了{name}" + (best.HasValue ? $"。现在能放的位置里最好的是 ({best.Value.X},{best.Value.Y})，能浇到 {bestGain} 格耕地" : "") + laterNote;
             if (gain == 0)
@@ -738,8 +754,12 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"哪个箱子里都没有“{item}”" + (bag > 0 ? $"（背包里有 {bag} 个）" : ""));
                 yield break;
             }
-            yield return ActionResult.Success((filter != null ? $"“{item}”一共 {hits} 个，在：\n" : "")
-                + sb.ToString().TrimEnd() + "\n（take_items 要先 travel_to 到箱子所在地点）");
+            // 背包里同名的也列出来（带品质），不然 AI 只看箱子会以为背包里没有金星的
+            var inBag = filter == null ? null : Player.Items.Where(i => i != null && filter(i)).ToList();
+            yield return ActionResult.Success((filter != null ? $"“{item}”箱子里一共 {hits} 个，在：\n" : "")
+                + sb.ToString().TrimEnd()
+                + (inBag is { Count: > 0 } ? $"\n背包里还有：{string.Join("、", inBag.Select(Util.ItemLabel))}" : "")
+                + "\n（take_items 要先 travel_to 到箱子所在地点；背包里每样东西的品质看 get_state 的背包，没写星就是普通）");
         }
     }
 }

@@ -421,6 +421,11 @@ namespace BlindWhaleFarmer
                 yield return null;
             if (!rod.isNibbling)
             {
+                // 浮漂还在水里，和没咬钩一样把竿收回来，不然人一直保持钓鱼的姿势
+                if (rod.isFishing && Game1.activeClickableMenu == null)
+                    Player.EndUsingTool();
+                foreach (var _ in WaitPlayerFree(300))
+                    yield return null;
                 o.Fail("鱼跑了");
                 yield break;
             }
@@ -561,8 +566,9 @@ namespace BlindWhaleFarmer
             }
         }
 
-        /// <summary>拿走物品界面里的东西，返回拿不下、丢在地上的物品名；taken 不为 null 时记下拿到的每一样。</summary>
-        internal static List<string> GrabAll(ItemGrabMenu grab, List<string> taken = null)
+        /// <summary>拿走物品界面里的东西，返回拿不下、丢在地上的物品名；taken 不为 null 时记下拿到的每一样。
+        /// overflow 不为 null 时拿不下的东西交给它，不丢地上（见 AddOrMakeRoom）。</summary>
+        internal static List<string> GrabAll(ItemGrabMenu grab, List<string> taken = null, Action<Item> overflow = null)
         {
             var dropped = new List<string>();
             var items = grab.ItemsToGrabMenu?.actualInventory;
@@ -582,7 +588,7 @@ namespace BlindWhaleFarmer
                             items.RemoveAt(at);
                     }
                     // 背包满时不直接丢：好装备直接穿上，贵重的把最不值钱的一格换出去
-                    var onGround = AddOrMakeRoom(item);
+                    var onGround = AddOrMakeRoom(item, overflow);
                     if (!onGround.Contains(item))
                         taken?.Add(label); // 它自己掉在地上了就不算拿到
                     dropped.AddRange(onGround.Select(Util.ItemLabel));

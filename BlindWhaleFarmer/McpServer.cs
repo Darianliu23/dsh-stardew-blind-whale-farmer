@@ -556,6 +556,7 @@ namespace BlindWhaleFarmer
                     ["freezeTime"] = c.McpFreezeTime,
                     ["idleSeconds"] = c.McpIdleSeconds,
                     ["extraInstructions"] = c.ExtraInstructions,
+                    ["reservedItems"] = c.ReservedItems,
                     ["guideFile"] = c.GuideFile
                 },
                 ["session"] = mod.Session?.Status() ?? "不限时长"

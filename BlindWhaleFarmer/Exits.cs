@@ -16,7 +16,9 @@ namespace BlindWhaleFarmer
         /// <summary>农场上的建筑门。</summary>
         BuildingDoor,
         /// <summary>巴士：巴士站的售票机（去沙漠，要买票）、沙漠里停着的巴士（回巴士站，免费）。</summary>
-        Bus
+        Bus,
+        /// <summary>矿车（巴士站、镇上、矿洞口、采石场之间；锅炉房收集包或 Joja 矿车项目完成后才通）。</summary>
+        Minecart
     }
 
     internal sealed class Exit
@@ -34,6 +36,9 @@ namespace BlindWhaleFarmer
         public int FriendPoints;
         /// <summary>LockedDoorWarp 的营业时间（游戏时间，比如 900、1600）；不是有营业时间的门时为 -1。</summary>
         public int OpenTime = -1, CloseTime = -1;
+        /// <summary>矿车的目的地，和整条线路的开通条件。</summary>
+        public StardewValley.GameData.Minecarts.MinecartDestinationData Minecart;
+        public string MinecartUnlock;
 
         /// <summary>和 GameLocation.lockedDoorWarp 一样判断好感门槛（冬天这类门不限好感）。</summary>
         public bool FriendshipOk(GameLocation from) =>
@@ -47,6 +52,7 @@ namespace BlindWhaleFarmer
                 ExitKind.Warp => "出口",
                 ExitKind.Door => "门",
                 ExitKind.Bus => Target is "IslandSouth" or "BoatTunnel" ? "船" : "巴士",
+                ExitKind.Minecart => "矿车",
                 _ => "建筑门"
             };
             return $"{kind} ({Tile.X},{Tile.Y}) → {Target}{Note}";
@@ -82,7 +88,8 @@ namespace BlindWhaleFarmer
                 (e.Kind != ExitKind.Bus || e.Target != "Desert" || BusRepaired)
                 && (e.Target != "BoatTunnel" || e.Kind != ExitKind.Door || Game1.player.mailReceived.Contains("willyBackRoomInvitation"))
                 && (e.Kind != ExitKind.Bus || e.Target != "IslandSouth" || BoatRepaired)
-                && (e.Target != "QiNutRoom" || StardewValley.Locations.IslandWest.IsQiWalnutRoomDoorUnlocked(out _))));
+                && (e.Target != "QiNutRoom" || StardewValley.Locations.IslandWest.IsQiWalnutRoomDoorUnlocked(out _))
+                && (e.Kind != ExitKind.Minecart || MinecartUsable(loc, e))));
 
             foreach (var b in loc.buildings)
             {
@@ -186,6 +193,8 @@ namespace BlindWhaleFarmer
                     string action = loc.doesTileHaveProperty(x, y, "Action", "Buildings");
                     if (!string.IsNullOrEmpty(action))
                     {
+                        if (action.StartsWith("MinecartTransport"))
+                            list.AddRange(MinecartExits(action, x, y));
                         var e = ParseDoorAction(action, x, y);
                         if (e != null)
                             list.Add(e);
@@ -265,6 +274,10 @@ namespace BlindWhaleFarmer
                     break;
                 case "WarpCommunityCenter":
                     return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "CommunityCenter" };
+                // 皮埃尔家通往卡洛琳阳光房的门（GameLocation.performAction，和卡洛琳 2 心以上才开）
+                case "Warp_Sunroom_Door" when Game1.getLocationFromName("Sunroom") != null:
+                    return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "Sunroom", TargetTile = new Point(5, 13),
+                        FriendNpc = "Caroline", FriendPoints = 500, Note = "（卡洛琳的阳光房，要和卡洛琳有 2 心好感）" };
                 // 威利鱼店里通往后屋船坞的门（FishShop.performAction，收到邀请信才开）
                 case "WarpBoatTunnel" when Game1.getLocationFromName("BoatTunnel") != null:
                     return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "BoatTunnel", TargetTile = new Point(6, 12), Note = "（威利的船坞）" };
@@ -277,6 +290,43 @@ namespace BlindWhaleFarmer
 
         /// <summary>从当前地点到目标地点的一串出口（BFS，最多 12 跳）。</summary>
         /// <summary>一个出口的标识：Get 每次可能给新对象，不能直接比较对象。</summary>
+        /// <summary>矿车站（Action: MinecartTransport [线路] [本站 Id]）能去的每一站，各算一个出口。开没开通在 Get 里每次现查。</summary>
+        private static IEnumerable<Exit> MinecartExits(string action, int x, int y)
+        {
+            var parts = action.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string networkId = parts.Length > 1 ? parts[1] : "Default";
+            string exclude = parts.Length > 2 ? parts[2] : null;
+            Dictionary<string, StardewValley.GameData.Minecarts.MinecartNetworkData> data;
+            try
+            {
+                data = DataLoader.Minecarts(Game1.content);
+            }
+            catch
+            {
+                yield break;
+            }
+            if (!data.TryGetValue(networkId, out var network) || network?.Destinations == null)
+                yield break;
+            foreach (var d in network.Destinations)
+            {
+                if (d == null || string.IsNullOrWhiteSpace(d.TargetLocation) || d.Id.Equals(exclude, StringComparison.OrdinalIgnoreCase)
+                    || Game1.getLocationFromName(d.TargetLocation) == null)
+                    continue;
+                yield return new Exit
+                {
+                    Kind = ExitKind.Minecart, Tile = new Point(x, y), Target = d.TargetLocation, TargetTile = d.TargetTile,
+                    Minecart = d, MinecartUnlock = network.UnlockCondition,
+                    Note = d.Price > 0 ? $"（坐矿车，{d.Price}g）" : "（坐矿车，免费）"
+                };
+            }
+        }
+
+        /// <summary>矿车现在能不能坐：线路开通了（锅炉房收集包/Joja 矿车项目）、这一站的条件满足、钱够。骑着马的话坐之前先下马（马留在原地，第二天自己回家）。</summary>
+        public static bool MinecartUsable(GameLocation loc, Exit e) =>
+            e.Minecart != null
+            && GameStateQuery.CheckConditions(e.MinecartUnlock, loc) && GameStateQuery.CheckConditions(e.Minecart.Condition, loc)
+            && Game1.player.Money >= e.Minecart.Price && !e.Target.Equals(loc.NameOrUniqueName, StringComparison.OrdinalIgnoreCase);
+
         public static string ExitKey(string fromName, Exit e) => $"{fromName}>{e.Target}@{e.Tile.X},{e.Tile.Y}";
 
         /// <param name="avoid">这次走不通的出口（ExitKey），规划时绕开。</param>

@@ -128,6 +128,18 @@ namespace BlindWhaleFarmer
         /// 把当前地图上（或身边 radius 格内）的野生采集物挨个走过去采了：从最近的开始，一次最多 max 样。
         /// 和手动按交互键一样（算采集经验和品质）；任务专用的、有村民站着的、背包装不下的跳过。
         /// </summary>
+        /// <summary>地图上扭动的“蚯蚓”（远古斑点/种子点）：有就返回一句提示（坐标 + 用锄头挖），没有返回 null。</summary>
+        internal static string WormNote(GameLocation loc, Func<Point, bool> filter = null)
+        {
+            if (Util.FindTool<Hoe>() < 0)
+                return null;
+            var spots = loc.objects.Pairs.Where(kv => kv.Value.QualifiedItemId is "(O)590" or "(O)SeedSpot")
+                .Select(kv => new Point((int)kv.Key.X, (int)kv.Key.Y)).Where(p => filter == null || filter(p))
+                .OrderBy(p => Util.Manhattan(p, Player.TilePoint)).ToList();
+            return spots.Count == 0 ? null
+                : $"地上有 {spots.Count} 处扭动的“蚯蚓”（远古斑点/种子点，能挖出古物、种子），不算采集品，要用锄头挖：use_tool tool=hoe x= y=，或 clear_area 圈住它们。位置：{Util.Coords(spots, 8)}";
+        }
+
         public IEnumerable<object> Forage(int? radius, int max)
         {
             var loc = Loc;
@@ -196,6 +208,9 @@ namespace BlindWhaleFarmer
 
             string where = r == 0 ? $" {loc.NameOrUniqueName} 这张地图上" : $"身边 {r} 格内";
             string free = $"背包空位 {Player.freeSpotsInInventory()} 个";
+            // 远古斑点、种子点（地上扭动的“蚯蚓”）不是采集品，forage 不管：告诉 AI 用锄头挖
+            if (WormNote(loc, InRange) is { } worms)
+                free += "。" + worms;
             string full = noRoom.Count > 0 ? $"；背包装不下，没采：{string.Join("、", noRoom.Distinct())}" : "";
             if (picked.Count == 0)
             {
