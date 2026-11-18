@@ -604,6 +604,24 @@ namespace BlindWhaleFarmer
         /// <param name="askBeforeDetour">近路被挡时停下来让 AI 选开路还是绕路（travel_to 用）。默认直接绕：回家睡觉、去节日这些顺路的走法没工夫停下来选。</param>
         private IEnumerable<object> TravelInner(string name, Outcome o, bool exactName = false, bool askBeforeDetour = false)
         {
+            horseNote = null;
+            foreach (var s in TravelCore(name, o, exactName, askBeforeDetour))
+                yield return s;
+            // 骑着马到了（或者半路停下）：先下马，不然接下来用工具、开箱子、捡东西都不行
+            if (Player.isRidingHorse())
+            {
+                var t0 = Player.TilePoint;
+                foreach (var s in Dismount())
+                    yield return s;
+                if (o.Ok)
+                    o.Succeed(o.Message.Replace($"位置 ({t0.X},{t0.Y})", $"位置 ({Player.TilePoint.X},{Player.TilePoint.Y})") + "（骑马来的，马留在旁边）");
+            }
+            if (o.Ok && horseNote != null)
+                o.Succeed(o.Message + horseNote);
+        }
+
+        private IEnumerable<object> TravelCore(string name, Outcome o, bool exactName, bool askBeforeDetour)
+        {
             // exactName：name 已经是游戏里的地点名（比如跟着主机进他的 FarmHouse），不要再换成自己的小屋
             var target = exactName ? Game1.getLocationFromName(name) : ResolveLocation(name);
             if (target == null)
@@ -681,6 +699,9 @@ namespace BlindWhaleFarmer
                     yield break;
                 }
                 string exitFrom = Loc.NameOrUniqueName;
+                // 马在附近、路又远就骑上（骑到门口，进门、坐车之前在 TakeExit 里下马）
+                foreach (var s in MaybeMountHorse(route))
+                    yield return s;
                 foreach (var s in TakeExit(route[0], o))
                     yield return s;
                 // 火山里被矮人机关门挡住（比如从火山口的捷径下来，第 0 层的门要踩旁边的开关才开）：踩亮走得到的开关，再走一次
@@ -859,6 +880,9 @@ namespace BlindWhaleFarmer
                         }
                         doorWaitNote = $"（到门口还没开门，等了 {Utility.CalculateMinutesBetweenTimes(startTime, Game1.timeOfDay)} 分钟）";
                     }
+                    foreach (var s in Dismount())
+                        yield return s;
+                    Face(e.Tile);
                     Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
                     break;
                 }
@@ -868,6 +892,9 @@ namespace BlindWhaleFarmer
                         yield return s;
                     if (!o.Ok)
                         yield break;
+                    foreach (var s in Dismount())
+                        yield return s;
+                    Face(e.Tile);
                     if (!e.Building.doAction(new Vector2(e.Tile.X, e.Tile.Y), Player))
                         Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
                     break;
@@ -877,6 +904,8 @@ namespace BlindWhaleFarmer
                     // 售票机 / 沙漠里的巴士：交互后问“要不要坐车”，选“是”以后人自己走上车，巴士开走再换地图
                     if (e.IsTouch)
                     {
+                        foreach (var s in Dismount())
+                            yield return s;
                         // 沙漠的巴士：踩到车门那格就弹出问题，走路会被这个界面打断，所以不看走路的结果，看问题出来没有
                         foreach (var s in GoToAny(new List<Point> { e.Tile }, o, $"去 {e.Target} 的{(Exits.IsBoat(e) ? "船" : "巴士")}"))
                             yield return s;
@@ -890,6 +919,9 @@ namespace BlindWhaleFarmer
                             yield return s;
                         if (!o.Ok)
                             yield break;
+                        foreach (var s in Dismount())
+                            yield return s;
+                        Face(e.Tile);
                         Loc.checkAction(new xLocation(e.Tile.X, e.Tile.Y), Game1.viewport, Player);
                     }
                     foreach (var s in WaitTicks(10))
@@ -1246,6 +1278,13 @@ namespace BlindWhaleFarmer
         /// <summary>交互没反应时说清楚为什么：机器还在加工、机器空着、手里拿着干草但点的不是食槽……</summary>
         private static string WhyNothingHappened(Point target)
         {
+            // 玩家的箱子游戏只认真的右键点击（Chest.checkForAction），interact 打不开：说清楚该用哪个工具，别说成“机器是空的”
+            if (Loc.objects.TryGetValue(new Vector2(target.X, target.Y), out var chestObj) && chestObj is StardewValley.Objects.Chest { playerChest.Value: true } chest)
+            {
+                var items = chest.GetItemsForPlayer().Where(i => i != null).ToList();
+                return $"是{chest.DisplayName}（{(items.Count == 0 ? "空的" : "里面有 " + string.Join("、", items.Take(8).Select(i => $"{i.DisplayName}x{i.Stack}")) + (items.Count > 8 ? " 等" : ""))}）："
+                    + $"箱子不用 interact，取东西用 take_items（可以传 x={target.X} y={target.Y} 指定这个箱子），放东西用 store_items";
+            }
             if (Loc.objects.TryGetValue(new Vector2(target.X, target.Y), out var obj) && obj.bigCraftable.Value)
             {
                 if (obj.heldObject.Value != null && obj.MinutesUntilReady > 0)

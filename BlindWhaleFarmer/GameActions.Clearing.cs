@@ -39,9 +39,11 @@ namespace BlindWhaleFarmer
                 return VolcanoCanWithWater() >= 0;
             if (!Loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var obj) || obj.isPassable())
                 return false;
-            // 矿洞外面只清杂草、捡野菜（不花体力，也不会砸掉玩家摆的东西）；石头、木桶只在矿洞里清
+            // 矿洞外面清杂草、捡野菜，地上自然长的小石头、树枝也清（游戏里的杂物，不是玩家摆的东西）；木桶只在矿洞里有
             if (!InDungeon)
-                return obj.IsWeeds() || IsGrabbable(obj);
+                return obj.IsWeeds() || IsGrabbable(obj)
+                    || obj.IsBreakableStone() && Util.FindTool<Pickaxe>() >= 0
+                    || obj.IsTwig() && Util.FindTool<Axe>() >= 0;
             // 墙上不会有这些东西，保险起见：Buildings 层有图块的格子清了也走不了
             if (Loc.map?.GetLayer("Buildings")?.Tiles[p.X, p.Y] != null)
                 return false;
@@ -88,7 +90,10 @@ namespace BlindWhaleFarmer
             }
             // 石头只能用镐子；杂草和木桶优先用镰刀/武器砍，不费体力
             int tool = -1;
-            if (!obj.IsBreakableStone())
+            // 树枝只有斧头砍得动（Object.performToolAction）
+            if (obj.IsTwig())
+                tool = Util.FindTool<Axe>();
+            else if (!obj.IsBreakableStone())
             {
                 tool = Util.FindTool<MeleeWeapon>(w => w.isScythe());
                 if (tool < 0)
@@ -242,7 +247,8 @@ namespace BlindWhaleFarmer
         private IEnumerable<object> PickUpForageNearby(GameLocation loc, int walkDir, List<Point> route = null, int[] rejoin = null)
         {
             int r = ForageRadius;
-            if (r <= 0 || pickingForage || Game1.CurrentEvent != null || Game1.activeClickableMenu != null)
+            // 骑着马捡不了东西（GameLocation.checkAction 骑马时对物件直接返回 false），赶路时就不顺手采了
+            if (r <= 0 || pickingForage || Player.isRidingHorse() || Game1.CurrentEvent != null || Game1.activeClickableMenu != null)
                 yield break;
             var home = Player.TilePoint;
             var targets = new List<Point>();
@@ -354,19 +360,27 @@ namespace BlindWhaleFarmer
                     if (!o.Ok)
                         yield break;
                 }
+                // 骑着马用不了工具：清路前先下马，清完马还在旁边就再骑上
+                var horse = Player.mount;
+                foreach (var s in Dismount())
+                    yield return s;
                 foreach (var s in ClearObstacle(path[block], o))
                     yield return s;
                 if (!o.Ok)
                     yield break;
+                if (horse != null && horse.currentLocation == Loc && horse.rider == null
+                    && Util.Manhattan(horse.TilePoint, Player.TilePoint) <= 3)
+                    foreach (var s in MountHorse(horse))
+                        yield return s;
             }
             o.Fail($"去{label}的路上障碍太多");
         }
 
         /// <summary>
-        /// 在矿洞里普通寻路到不了这些站位时，改走清路的路线。返回 false 表示不需要（不在矿洞，或者正常能走到）。
+        /// 普通寻路到不了这些站位时（四周被杂草、石头、树枝堵住），改走清路的路线。返回 false 表示不需要（正常能走到，或者清了也没用）。
         /// </summary>
         private static bool NeedsClearing(Point target, List<Point> stands) =>
-            InDungeon && (stands.Count == 0 || Pathfinder.FindPath(Loc, Player.TilePoint, stands, 20000) == null)
+            (stands.Count == 0 || Pathfinder.FindPath(Loc, Player.TilePoint, stands, 20000) == null)
             && StandOrClearTiles(target).Count > 0;
     }
 }
