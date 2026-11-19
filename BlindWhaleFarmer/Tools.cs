@@ -98,11 +98,12 @@ namespace BlindWhaleFarmer
                 j => () => a.HarvestCrops(OptInt(j, "max") ?? 300),
                 P("max", "integer", "最多收几株", false));
 
-            Add("clear_area", "清理一个矩形区域里的杂物：石头用镐、杂草和草用镰刀、树枝/树苗/树桩用斧头、远古斑点用锄头。默认不砍大树。一次最多60处。不给坐标就清你周围（左右上下各 radius 格，默认 4）。", 400,
-                j => () => a.ClearArea(OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "radius"), OptBool(j, "include_trees") ?? false),
+            Add("clear_area", "清理一个矩形区域里的杂物：石头用镐、杂草和草用镰刀、树枝/树苗/树桩用斧头、远古斑点用锄头。默认不砍大树。一次最多60处（从离你最近的开始）。不给坐标就清你周围（左右上下各 radius 格，默认 4）；all=true 清整张地图（比如把农场上的杂草石头一批批清掉）。", 400,
+                j => () => a.ClearArea(OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "radius"), OptBool(j, "include_trees") ?? false, OptBool(j, "all") ?? false),
                 P("x1", "integer", "左上 x（四个坐标都不给就清周围）", false), P("y1", "integer", "左上 y", false), P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false),
                 P("radius", "integer", "不给坐标时清周围几格（1~8），默认 4", false),
-                P("include_trees", "boolean", "是否也砍大树（很耗体力）", false));
+                P("include_trees", "boolean", "是否也砍大树（很耗体力）", false),
+                P("all", "boolean", "清整张地图（忽略坐标和 radius），每次从最近的清 60 处", false));
 
             Add("forage", "采集：把当前地图上的野生采集物（地图上的 *，季节野菜、贝壳、蘑菇、海草……）从最近的开始挨个走过去采了。不传 radius 就采整张地图，传了只采身边几格。背包装不下的跳过。", 300,
                 j => () => a.Forage(OptInt(j, "radius"), OptInt(j, "max") ?? 30),
@@ -280,6 +281,9 @@ namespace BlindWhaleFarmer
             Add("mastery", "精通（五项技能都 10 级后）：继续攒经验涨精通等级，每级去森林的精通洞穴在一个技能的台子上领一份奖励（耕种=铱金镰刀等，每个技能只能领一次）。不传 skill 列出精通进度和各技能奖励；传 skill 就自己走进洞里领。", 300,
                 j => () => a.Mastery(OptStr(j, "skill")),
                 P("skill", "string", "farming/mining/fishing/foraging/combat（或 耕种/采矿/钓鱼/采集/战斗），可省略=只看", false));
+
+            Add("mermaid_show", "夜市（冬季 15-17 日 17:00-24:30）：自己走进沙滩上的美人鱼船看表演（免费，一分多钟），演完按顺序敲贝壳拿珍珠（每个存档一次，拿过就只看表演）。", 600,
+                j => () => a.MermaidShow());
 
             Add("feed_parrot", "姜岛：给鹦鹉交金核桃解锁东西（第一只鹦鹉 1、乌龟让路 10、农舍 20、信箱 5、方尖碑 20、鹦鹉快递 10、挖掘场的桥 10、岛上商人 10、度假村 20、火山桥/捷径各 5）。不传 which 列出现在能交的；传名字就走过去交。", 300,
                 j => () => a.FeedParrot(OptStr(j, "which")),

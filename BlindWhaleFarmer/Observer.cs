@@ -91,6 +91,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(order);
                 if (GameActions.MasteryHint() is string mastery)
                     sb.AppendLine(mastery);
+                if (GameActions.NightMarketHint() is string market)
+                    sb.AppendLine(market);
                 if (GameActions.BooksellerHint() is string books)
                     sb.AppendLine(books);
                 if (GameActions.UnreadItemsHint() is string unread)
@@ -166,7 +168,7 @@ namespace BlindWhaleFarmer
             });
             Safe(sb, () => AppendMine(sb, loc, pt));
             if (loc is MermaidHouse)
-                sb.AppendLine("美人鱼表演：进来几秒后自动开演，整场一分多钟（现实时间，约合游戏里 2 小时）。用 wait minutes=120 等它演完再走，别进来转一圈就出去");
+                sb.AppendLine("美人鱼表演：进来几秒后自动开演，整场一分多钟（现实时间）。用 mermaid_show 等它演完并按顺序敲贝壳拿珍珠，别进来转一圈就出去（出去再进来要重新看）");
 
             sb.AppendLine();
             sb.AppendLine("## 背包（序号: 物品）");
@@ -218,6 +220,8 @@ namespace BlindWhaleFarmer
                 AppendCrops(sb, loc, pt);
                 if (loc is Farm && GameActions.FieldOverview(loc) is string fields)
                     sb.AppendLine(Once("fields", fields));
+                if (loc is Farm && FarmClutterHint(loc) is string clutter)
+                    sb.AppendLine(clutter);
                 if (loc is not Farm)
                 {
                     CountCrops(Game1.getFarm(), out int needWater, out int ready, out int total);
@@ -638,6 +642,25 @@ namespace BlindWhaleFarmer
             44 or 46 => "巨型作物（用斧头）",
             _ => "大型障碍物"
         };
+
+        /// <summary>农场上还剩多少杂草、石头、树枝（游戏每天还会在农场上新长杂草和小石头）。少于 15 处不提。</summary>
+        private static string FarmClutterHint(GameLocation farm)
+        {
+            int weeds = 0, stones = 0, twigs = 0;
+            foreach (var key in farm.Objects.Keys)
+            {
+                switch (ClassifyFeature(farm, key).ch)
+                {
+                    case 'w': weeds++; break;
+                    case 'o': stones++; break;
+                    case '/': twigs++; break;
+                }
+            }
+            if (weeds + stones + twigs < 15)
+                return null;
+            return $"农场杂物：杂草 {weeds}、小石头 {stones}、树枝 {twigs}（游戏每天还会新长杂草）。挡路也占地方；"
+                + "有空闲体力就用 clear_area all=true 清（每次从离你最近的开始清 60 处，可以多调用几次），清出来的木头、石头、纤维都有用";
+        }
 
         /// <summary>单个格子的分类：地图字符、名称、建议做法。</summary>
         public static (char ch, string name, string hint) ClassifyFeature(GameLocation loc, Vector2 v)

@@ -640,6 +640,12 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>平常的沙滩，或者夜市那几天顶替它的地图。</summary>
+        /// <summary>夜市（冬 15-17）里才有的地方：美人鱼表演船、深海潜水艇。</summary>
+        private static bool IsNightMarketVenue(string name) =>
+            name != null && (name.Equals("MermaidHouse", StringComparison.OrdinalIgnoreCase) || name.Equals("Submarine", StringComparison.OrdinalIgnoreCase));
+
+        private static bool IsNightMarketDay() => Utility.IsPassiveFestivalDay("NightMarket");
+
         private static bool IsBeach(string name) =>
             name != null && (name.Equals("Beach", StringComparison.OrdinalIgnoreCase) || name.Equals("BeachNightMarket", StringComparison.OrdinalIgnoreCase));
 
@@ -744,8 +750,15 @@ namespace BlindWhaleFarmer
                         yield break;
                     continue;
                 }
-                // 别的地图上通往沙滩的出口写的都是 Beach，所以要去夜市地图时也按 Beach 找路，到了再认
-                var route = Exits.PlanRoute(Loc, IsBeach(targetName) ? "Beach" : targetName, blockedExits);
+                // 别的地图上通往沙滩的出口写的都是 Beach，所以要去夜市地图时也按 Beach 找路，到了再认。
+                // 美人鱼船、潜水艇的门只在夜市地图上：没到夜市地图之前先去沙滩
+                bool viaNightMarket = IsNightMarketVenue(targetName) && Loc is not BeachNightMarket;
+                if (IsNightMarketVenue(targetName) && !IsNightMarketDay())
+                {
+                    o.Fail($"{targetName} 在夜市里（冬季 15-17 日晚上 17:00 起），今天没有夜市");
+                    yield break;
+                }
+                var route = Exits.PlanRoute(Loc, IsBeach(targetName) || viaNightMarket ? "Beach" : targetName, blockedExits);
                 if (route == null || route.Count == 0)
                 {
                     o.Fail(blockedWhy != null ? $"{blockedWhy}；试过的其他路线也走不通" : $"找不到从 {Loc.NameOrUniqueName} 到 {targetName} 的路线");
@@ -772,7 +785,7 @@ namespace BlindWhaleFarmer
                 foreach (var s in MaybeMountHorse(route))
                     yield return s;
                 // 这个出口是唯一的路（比如森林去秘密森林）：被新长出来的石头、树枝、杂草挡住时没法绕，就边走边清
-                string planTarget = IsBeach(targetName) ? "Beach" : targetName;
+                string planTarget = IsBeach(targetName) || viaNightMarket ? "Beach" : targetName;
                 bool onlyRoute = Exits.PlanRoute(Loc, planTarget,
                     new HashSet<string>(blockedExits) { Exits.ExitKey(exitFrom, route[0]) }) is not { Count: > 0 };
                 foreach (var s in TakeExit(route[0], o, onlyRoute))
@@ -2227,8 +2240,15 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>不给坐标时清自己周围（左右上下各 radius 格）；坐标只给了一半算参数错误。</summary>
-        public IEnumerable<object> ClearArea(int? x1, int? y1, int? x2, int? y2, int? radius, bool includeTrees)
+        public IEnumerable<object> ClearArea(int? x1, int? y1, int? x2, int? y2, int? radius, bool includeTrees, bool all = false)
         {
+            if (all)
+            {
+                // 整张地图：从离自己最近的开始清 60 处
+                foreach (var s in ClearArea(0, 0, Pathfinder.MapWidth(Loc) - 1, Pathfinder.MapHeight(Loc) - 1, includeTrees))
+                    yield return s;
+                yield break;
+            }
             int given = new[] { x1, y1, x2, y2 }.Count(v => v.HasValue);
             if (given != 0 && given != 4)
             {
@@ -2253,7 +2273,8 @@ namespace BlindWhaleFarmer
 
             // 每格：用哪个工具、最多敲几下
             var jobs = new List<(Point p, int tool, int maxHits)>();
-            foreach (var p in RectTiles(x1, y1, x2, y2, 400))
+            // 整个区域都要看（以前只看前 400 格，大区域下半片的杂物根本没算进来）
+            foreach (var p in RectTiles(x1, y1, x2, y2, 20000))
             {
                 var v = new Vector2(p.X, p.Y);
                 var (ch, _, _) = Observer.ClassifyFeature(loc, v);
@@ -2274,7 +2295,7 @@ namespace BlindWhaleFarmer
             if (jobs.Count == 0)
             {
                 // 只说区域里真有的：大型障碍物（树桩、原木、大石头）要升级的斧头/镐子，树要 include_trees
-                var left = RectTiles(x1, y1, x2, y2, 400).Select(p => Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).Item1).ToList();
+                var left = RectTiles(x1, y1, x2, y2, 20000).Select(p => Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).Item1).ToList();
                 var notes = new List<string>();
                 if (left.Contains('R'))
                     notes.Add("大型障碍物 R（树桩、原木、大石头）要升级过的斧头或镐子");
@@ -2283,7 +2304,9 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Success("区域内没有可以清理的东西" + (notes.Count > 0 ? "（" + string.Join("；", notes) + "）" : ""));
                 yield break;
             }
-            jobs = jobs.Take(60).ToList();
+            int totalJobs = jobs.Count;
+            var me0 = Player.TilePoint;
+            jobs = jobs.OrderBy(j => Util.Manhattan(j.p, me0)).Take(60).ToList();
             var order = Util.NearestOrder(Player.TilePoint, jobs.Select(j => j.p));
             int cleared = 0;
             string err = null;
@@ -2293,7 +2316,10 @@ namespace BlindWhaleFarmer
                 var job = jobs.First(j => j.p == p);
                 string before = TileName(p);
                 if (before == null)
+                {
+                    cleared++; // 前面挥镰刀/斧头时顺带清掉了（镰刀一扫是一片）
                     continue;
+                }
                 foreach (var s in GoAdjacent(p, o))
                     yield return s;
                 if (!o.Ok)
@@ -2319,8 +2345,8 @@ namespace BlindWhaleFarmer
                     cleared++;
             }
             string msg = $"清理了 {cleared}/{order.Count} 处，剩余体力 {(int)Player.Stamina}";
-            if (jobs.Count >= 60)
-                msg += "（一次最多处理 60 处，区域里可能还有）";
+            if (totalJobs > 60)
+                msg += $"（一次最多处理 60 处，这次先清了离你最近的，区域里还有约 {totalJobs - cleared} 处，体力够就再调用一次）";
             // 敲完马上走开时掉落物还在弹，不会被吸过来：最后回头把区域里的掉落物捡一遍
             if (!Blocked(out _))
             {
