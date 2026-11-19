@@ -156,7 +156,8 @@ namespace BlindWhaleFarmer
                 j => () => a.UseItem(Str(j, "item")),
                 P("item", "string", "物品名称或背包序号"));
 
-            Add("open_shop", "在商店所在地点打开商店界面（店主要在场、在营业时间）。不传 shop_id 就自动判断：SeedShop→杂货店，Blacksmith→铁匠，ScienceHouse→木匠，FishShop→鱼店，Saloon→酒吧。", 20,
+            Add("open_shop", "在商店所在地点打开商店界面（店主要在场、在营业时间）。不传 shop_id 就自动判断：SeedShop→杂货店，Blacksmith→铁匠，ScienceHouse→木匠，FishShop→鱼店，Saloon→酒吧，"
+                + "Forest→旅行货车（周五、周日），Sewer→科罗布斯（卖星之果实等），QiNutRoom→齐钻商店，Mine→矮人，SandyHouse→桑迪，Desert→沙漠商人，Club→赌场，IslandNorth→岛上商人，VolcanoDungeon5→火山矮人。", 20,
                 j => () => a.OpenShop(OptStr(j, "shop_id")),
                 P("shop_id", "string", "商店ID，可省略", false));
 
@@ -278,7 +279,17 @@ namespace BlindWhaleFarmer
                 j => () => a.PrizeMachine(OptInt(j, "count"), OptBool(j, "look") ?? false),
                 P("count", "integer", "换几张，默认全部", false), P("look", "boolean", "只看接下来的奖品", false));
 
-            Add("mastery", "精通（五项技能都 10 级后）：继续攒经验涨精通等级，每级去森林的精通洞穴在一个技能的台子上领一份奖励（耕种=铱金镰刀等，每个技能只能领一次）。不传 skill 列出精通进度和各技能奖励；传 skill 就自己走进洞里领。", 300,
+            Add("perfection", "查完美度（通关目标）：总百分比和每一项（出货、方尖碑、黄金时钟、怪物讨伐、好感、技能、星之果实、烹饪、制作、钓鱼、金色核桃）还缺什么。不花游戏时间。", 10,
+                j => () => a.Perfection(OptStr(j, "detail")),
+                P("detail", "string", "想看某一项的完整清单：ship / friends / cooking / crafting / fish", false));
+
+            Add("pan", "用淘盘淘矿：自己找现在哪个地点有淘盘点（河、湖边水面闪光的地方，社区中心鱼缸修好后才有），走过去淘一盘，出铜铁金矿、晶球，有时有宝石。背包里要有淘盘。", 300,
+                j => () => a.PanOre());
+
+            Add("monster_goals","查冒险家公会的怪物讨伐目标：每种怪打了多少、要多少、奖励领没领。不花游戏时间。", 10,
+                j => () => a.MonsterGoals());
+
+            Add("mastery","精通（五项技能都 10 级后）：继续攒经验涨精通等级，每级去森林的精通洞穴在一个技能的台子上领一份奖励（耕种=铱金镰刀等，每个技能只能领一次）。不传 skill 列出精通进度和各技能奖励；传 skill 就自己走进洞里领。", 300,
                 j => () => a.Mastery(OptStr(j, "skill")),
                 P("skill", "string", "farming/mining/fishing/foraging/combat（或 耕种/采矿/钓鱼/采集/战斗），可省略=只看", false));
 
@@ -296,12 +307,25 @@ namespace BlindWhaleFarmer
             Add("repair_boat", "去威利鱼店后屋的船坞修去姜岛的船（社区中心修好或 Joja 路线走完后威利来信邀请才进得去）：把背包里够数的材料交上——硬木 200、铱锭 5、电池组 5，可以分几次交；全交齐的第二天船就能开，之后 travel_to IslandSouth 坐船去姜岛（船票 1000g，回来免费）。", 180,
                 j => () => a.RepairBoat());
 
+            Add("joja", "Joja 路线（不修社区中心、改花钱）：action=status 看会员和项目进度；join 去 JojaMart 找 Morris 办会员（5000g，社区中心收集包从此作废，要先看过社区中心开场剧情）；buy 用社区发展表买项目，project 传编号或名字：1 巴士 40000g、2 矿车 15000g、3 桥 25000g、4 温室 35000g、5 清理大石头 20000g，一天只能下一单、第二天生效；五个都买完、看完仓库剧情后 project=theater 买电影院 500000g。", 180,
+                j => () => a.Joja(OptStr(j, "action"), OptStr(j, "project")),
+                P("action", "string", "status（默认）/ join / buy", false),
+                P("project", "string", "buy 时要买的项目：1-5、名字（巴士/矿车/桥/温室/清理大石头）或 theater", false));
+
+            Add("field_office", "姜岛考察站（IslandFieldOffice，要先从北边洞里救出蜗牛教授）：action=donate（默认）把背包里还缺的化石全交给蜗牛教授，拼齐一组（骨架 6 块/蛇 3 块/蝙蝠/青蛙）给金核桃等奖励，会顺手领走；status 看还缺哪些化石；survey 回答墙上的调查（紫花 22、紫海星 18，一次答一个）。全部完成触发完结剧情。", 180,
+                j => () => a.FieldOfficeAction(OptStr(j, "action")),
+                P("action", "string", "donate（默认）/ status / survey", false));
+
+            Add("grandpa", "爷爷的评价（第三年春 1 日早上在农场神龛点蜡烛）：action=status（默认）看现在能得几分、每项差什么；diamond 往神龛放一颗钻石，第二天早上重新评（没满 4 根时用）；statue 4 根蜡烛都亮后去神龛领完美雕像（放下后每天出铱矿石）。", 120,
+                j => () => a.Grandpa(OptStr(j, "action")),
+                P("action", "string", "status（默认）/ diamond / statue", false));
+
             Add("buy_animal", "去 Marnie 的牧场（AnimalShop）买动物，自动放进有空位的鸡舍/畜棚并起名。不传 type 会列出能买的动物和价格。", 240,
                 j => () => a.BuyAnimal(OptStr(j, "type"), OptStr(j, "name"), OptInt(j, "count") ?? 1),
                 P("type", "string", "动物种类，如 Chicken、Cow、Goat、Duck、Pig（中英文都可以）", false),
                 P("name", "string", "名字（可省略，自动起名）", false), P("count", "integer", "买几只，默认 1", false));
 
-            Add("build", "找木匠 Robin（ScienceHouse）在农场建造或升级建筑（鸡舍 Coop、畜棚 Barn、筒仓 Silo 等；Big Coop 等是升级）。不传 building 会列出能建的和价格。"
+            Add("build", "在农场建造或升级建筑：普通建筑找木匠 Robin（鸡舍 Coop、畜棚 Barn、筒仓 Silo 等；Big Coop 等是升级），魔法建筑找法师（方尖碑 Earth/Water/Desert/Island Obelisk、黄金时钟 Gold Clock、祝尼魔小屋 Junimo Hut；要先拿回魔法墨水，当场建好），会自己判断找谁、自己走过去。不传 building 会列出能建的和价格。"
                 + "推荐不传 x,y：会自动规划位置（同类建筑排成一排、四周留一格路、门口下方空两格、不贴着田）。自己给坐标时也按这些规则检查，不合适会拒绝并给出建议位置。", 300,
                 j => () => a.Build(OptStr(j, "building"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false),
                 P("building", "string", "建筑名（中英文都可以），可省略", false),

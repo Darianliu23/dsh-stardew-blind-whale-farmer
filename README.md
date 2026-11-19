@@ -133,7 +133,7 @@ SMAPI 控制台命令（调试用）：
 - 背包里能捐给博物馆的东西、能交给社区中心收集包的材料
 - 附近能不能钓鱼；矿洞层数、下楼梯/竖井/电梯/出口的坐标
 
-## AI 能做什么（64 个工具）
+## AI 能做什么（72 个工具）
 
 | 类别 | 工具 |
 |---|---|
@@ -142,14 +142,15 @@ SMAPI 控制台命令（调试用）：
 | 批量农活 | `till_area`（不给坐标只给格数就挨着田扩）、`plant_seeds`、`water_crops`（水壶空了自动去灌水）、`harvest_crops`、`clear_area`（不给坐标就清自己周围）、`forage`（把地图上的野生采集物挨个采了） |
 | 钓鱼 | `fish`（自动找岸边、按钓鱼等级算抛竿力度、等咬钩、提竿、自动玩钓鱼小游戏、收宝箱，一次最多连钓 20 竿） |
 | 动物 | `care_animals`（自动进每个鸡舍/畜棚：捡蛋和羊毛、清空自动采集器、食槽放干草、摸动物、挤奶/剪毛；可开关动物门） |
-| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托）、`special_orders`（刘易斯家门口的特别订单、齐先生核桃房的齐挑战：看内容、接订单、查进度）、`special_order_dropbox`（把订单要的东西放进指定地点的投递箱）、`prize_machine`（领订单奖券、去刘易斯家的奖券机换奖品）、`repair_boat`（交材料修威利去姜岛的船；修好后 `travel_to` 会自己坐船来回）、`feed_parrot`（给姜岛的鹦鹉交金核桃解锁东西）、`collect_walnuts`（摇核桃灌木、挖地下埋着的金核桃）、`mastery`（五项技能满级后去精通洞穴领精通奖励）、`mermaid_show`（夜市看美人鱼表演、敲贝壳拿珍珠） |
+| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地；方尖碑、黄金时钟、祝尼魔小屋这些魔法建筑会自己去法师塔建）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托）、`special_orders`（刘易斯家门口的特别订单、齐先生核桃房的齐挑战：看内容、接订单、查进度）、`special_order_dropbox`（把订单要的东西放进指定地点的投递箱）、`prize_machine`（领订单奖券、去刘易斯家的奖券机换奖品）、`repair_boat`（交材料修威利去姜岛的船；修好后 `travel_to` 会自己坐船来回）、`feed_parrot`（给姜岛的鹦鹉交金核桃解锁东西）、`collect_walnuts`（摇核桃灌木、挖地下埋着的金核桃）、`mastery`（五项技能满级后去精通洞穴领精通奖励）、`mermaid_show`（夜市看美人鱼表演、敲贝壳拿珍珠）、`joja`（Joja 路线：办会员、买社区发展项目和电影院）、`field_office`（姜岛考察站：交化石、答调查、领奖励）、`grandpa`（爷爷的评价：看分数、放钻石重新评价、领雕像） |
+| 进度 | `perfection`（完美度每一项还缺什么）、`monster_goals`（冒险家公会的怪物讨伐进度） |
 | 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，附近有矿石宝石节点会先敲，可坐电梯直达；`where=volcano` 爬姜岛火山：浇冷岩浆、踩机关开关开门，一直到火山口）、`use_bomb`（放炸弹并跑出爆炸范围；打倒的木乃伊会自动用炸弹炸死） |
-| 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵） |
+| 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵）、`pan`（自己找淘盘点、走过去淘矿） |
 | 联机 | `say`（在游戏聊天里说话）、`set_mode`（换联机模式）、`wait_chat`（等别人说话）、`follow`（跟着别的玩家走）、`propose`（拿结婚戒指向别的玩家求婚） |
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
-| 经济 | `ship_items`（出货箱）、`open_shop`、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取；不指定箱子时同样的东西存到已经有它的箱子里）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。背包快满或者战利品（矿石、宝石、晶球、采集品、怪物掉落……）攒多了，`travel_to` 回到农场和睡觉前会自动收进箱子，鱼和作物留在身上。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
+| 经济 | `ship_items`（出货箱）、`open_shop`（也能开矮人、桑迪、沙漠商人、下水道的科罗布斯、齐钻商店、岛上商人、火山矮人这些特殊商店）、`buy`、`sell`、`craft`、`store_items` / `take_items`（箱子存取；不指定箱子时同样的东西存到已经有它的箱子里）、`tidy_backpack`（一键整理背包：每类工具留最好的，其余存进农场箱子；传 purpose=mine/fish/farm/town 只带这次出门用得上的）、`list_chests`（所有箱子里有什么、某样东西在哪个箱子）、`trash_item`（背包满了又回不去箱子时扔掉东西）。背包快满或者战利品（矿石、宝石、晶球、采集品、怪物掉落……）攒多了，`travel_to` 回到农场和睡觉前会自动收进箱子，鱼和作物留在身上。任务、特别订单、收集包要交的东西在背包里标【留着】，吃、卖、扔都会被拦下 |
 | 界面 | `dialogue`、`menu_click`（按序号或名字点）、`close_menu`、`read_mail`（把信箱里的信一次读完）、`choose_profession`、`skip_event`、`festival`（参加节日：入场、打招呼、开始主活动、离开）、`leave_festival` |
 | 时间 | `sleep`（自动回家上床）、`wait`（一次最多两小时）、`cancel_action`（中止正在执行的长动作） |
 | 记忆 | `update_notes` |

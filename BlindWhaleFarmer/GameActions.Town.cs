@@ -583,7 +583,7 @@ namespace BlindWhaleFarmer
         private static string BlueprintCost(CarpenterMenu.BlueprintEntry bp) =>
             $"{bp.BuildCost}g" + (bp.BuildMaterials != null && bp.BuildMaterials.Count > 0
                 ? " + " + string.Join(" + ", bp.BuildMaterials.Select(m => $"{m.Amount}个{Util.ObjectName(m.ItemId)}"))
-                : "") + $"，工期 {bp.BuildDays} 天";
+                : "") + (bp.BuildDays > 0 ? $"，工期 {bp.BuildDays} 天" : bp.MagicalConstruction ? "，当场建好" : "，当天建好");
 
         /// <summary>建这个还差什么：钱差多少、每样材料身上有几个、差几个。</summary>
         private static string BlueprintMissing(CarpenterMenu.BlueprintEntry bp)
@@ -626,29 +626,54 @@ namespace BlindWhaleFarmer
         public IEnumerable<object> Build(string buildingSpec, int? x, int? y, bool force = false)
         {
             var o = new Outcome();
-            // 出门前先查：在施工、没这个图纸、材料或钱不够，都不用跑这一趟
-            if (Game1.IsThereABuildingUnderConstruction("Robin") || Player.daysUntilHouseUpgrade.Value > 0)
-            {
-                yield return ActionResult.Fail("Robin 正在施工，同一时间只能建一个，等完工再来");
-                yield break;
-            }
-
             var farm = Game1.getFarm();
-            // 用木匠界面对象拿到可建列表、价格和扣材料的逻辑（不显示界面）
-            var menu = new CarpenterMenu("Robin", farm);
-            var bp = string.IsNullOrWhiteSpace(buildingSpec) ? null :
-                menu.Blueprints.FirstOrDefault(b => b.Id.Equals(buildingSpec, StringComparison.OrdinalIgnoreCase) || b.DisplayName.Equals(buildingSpec, StringComparison.OrdinalIgnoreCase))
-                ?? menu.Blueprints.FirstOrDefault(b => b.Id.Contains(buildingSpec, StringComparison.OrdinalIgnoreCase) || b.DisplayName.Contains(buildingSpec, StringComparison.OrdinalIgnoreCase));
+            // 用木匠界面对象拿到可建列表、价格和扣材料的逻辑（不显示界面）。
+            // 法师（拿回魔法墨水以后）建方尖碑、黄金时钟、祝尼魔小屋这些，用法师塔里那本书，和 Robin 是两份图纸
+            bool hasWizard = Player.mailReceived.Contains("hasPickedUpMagicInk") || Player.hasMagicInk;
+            var menus = new List<(string builder, CarpenterMenu menu)> { ("Robin", new CarpenterMenu("Robin", farm)) };
+            if (hasWizard)
+                menus.Add(("Wizard", new CarpenterMenu("Wizard", farm)));
+            string builder = null;
+            CarpenterMenu menu = null;
+            CarpenterMenu.BlueprintEntry bp = null;
+            if (!string.IsNullOrWhiteSpace(buildingSpec))
+            {
+                foreach (bool exact in new[] { true, false })
+                {
+                    foreach (var (who, m) in menus)
+                    {
+                        bp = m.Blueprints.FirstOrDefault(b => exact
+                            ? b.Id.Equals(buildingSpec, StringComparison.OrdinalIgnoreCase) || b.DisplayName.Equals(buildingSpec, StringComparison.OrdinalIgnoreCase)
+                            : b.Id.Contains(buildingSpec, StringComparison.OrdinalIgnoreCase) || b.DisplayName.Contains(buildingSpec, StringComparison.OrdinalIgnoreCase));
+                        if (bp != null)
+                        {
+                            (builder, menu) = (who, m);
+                            break;
+                        }
+                    }
+                    if (bp != null)
+                        break;
+                }
+            }
             if (bp == null)
             {
-                var lines = menu.Blueprints.Select(b =>
+                var sections = menus.Select(pair => (pair.builder == "Robin" ? "Robin 可以建：\n" : "法师可以建（魔法建筑，当场建好）：\n") + string.Join("\n", pair.menu.Blueprints.Select(b =>
                 {
-                    menu.SetNewActiveBlueprint(b);
-                    string ok = menu.DoesFarmerHaveEnoughResourcesToBuild() ? "【材料够】" : "";
+                    pair.menu.SetNewActiveBlueprint(b);
+                    string ok = pair.menu.DoesFarmerHaveEnoughResourcesToBuild() ? "【材料够】" : "";
                     string up = b.IsUpgrade ? $"（由 {b.UpgradeFrom} 升级）" : "";
                     return $"{b.DisplayName}({b.Id}){up}{ok}：{BlueprintCost(b)}";
-                });
-                yield return ActionResult.Fail("Robin 可以建：\n" + string.Join("\n", lines) + "\n（升级农舍用 upgrade_house）");
+                })));
+                string wizardNote = hasWizard ? "" : "\n（方尖碑、黄金时钟要找法师建：先做完法师给的魔法墨水任务，从女巫沼泽拿回墨水）";
+                yield return ActionResult.Fail((string.IsNullOrWhiteSpace(buildingSpec) ? "" : $"没有叫“{buildingSpec}”的图纸。") + string.Join("\n", sections) + "\n（升级农舍用 upgrade_house）" + wizardNote);
+                yield break;
+            }
+            bool wizard = builder == "Wizard";
+            string builderName = wizard ? "法师" : "Robin";
+            // 出门前先查：在施工、没这个图纸、材料或钱不够，都不用跑这一趟
+            if (Game1.IsThereABuildingUnderConstruction(builder) || (!wizard && Player.daysUntilHouseUpgrade.Value > 0))
+            {
+                yield return ActionResult.Fail($"{builderName} 正在施工，同一时间只能建一个，等完工再来");
                 yield break;
             }
             menu.SetNewActiveBlueprint(bp);
@@ -658,12 +683,27 @@ namespace BlindWhaleFarmer
                 yield break;
             }
 
-            foreach (var s in GoToShopkeeper("ScienceHouse", "Robin", "Carpenter", o))
-                yield return s;
-            if (!o.Ok)
+            if (wizard)
             {
-                yield return ActionResult.Fail(o.Message);
-                yield break;
+                // 法师塔里那本建筑书，法师在不在都能用
+                if (Loc.Name != "WizardHouse")
+                    foreach (var s in TravelInner("WizardHouse", o))
+                        yield return s;
+                if (Loc.Name != "WizardHouse")
+                {
+                    yield return ActionResult.Fail("去法师塔失败：" + o.Message);
+                    yield break;
+                }
+            }
+            else
+            {
+                foreach (var s in GoToShopkeeper("ScienceHouse", "Robin", "Carpenter", o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail(o.Message);
+                    yield break;
+                }
             }
             // 路上可能花了钱、用掉了材料：到了再核对一次
             menu.SetNewActiveBlueprint(bp);
@@ -702,8 +742,8 @@ namespace BlindWhaleFarmer
                 if (bp.BuildDays < 1)
                     target.FinishConstruction();
                 else
-                    Game1.netWorldState.Value.MarkUnderConstruction("Robin", target);
-                yield return ActionResult.Success($"Robin 开始把 ({target.tileX.Value},{target.tileY.Value}) 的 {bp.UpgradeFrom} 升级成 {bp.DisplayName}，{bp.BuildDays} 天后完工，花费 {BlueprintCost(bp)}");
+                    Game1.netWorldState.Value.MarkUnderConstruction(builder, target);
+                yield return ActionResult.Success($"{builderName} 开始把 ({target.tileX.Value},{target.tileY.Value}) 的 {bp.UpgradeFrom} 升级成 {bp.DisplayName}，{bp.BuildDays} 天后完工，花费 {BlueprintCost(bp)}");
                 yield break;
             }
 
@@ -756,10 +796,13 @@ namespace BlindWhaleFarmer
             }
             // 与木匠界面 tryToBuild 成功后的处理一致
             if (constructed.isUnderConstruction())
-                Game1.netWorldState.Value.MarkUnderConstruction("Robin", constructed);
+                Game1.netWorldState.Value.MarkUnderConstruction(builder, constructed);
             menu.ConsumeResources();
-            Game1.playSound("axe");
-            yield return ActionResult.Success($"Robin 开始在农场 ({spot.Value.X},{spot.Value.Y}) 建 {bp.DisplayName}（{data.Size.X}x{data.Size.Y}），{bp.BuildDays} 天后完工，花费 {BlueprintCost(bp)}");
+            Game1.playSound(wizard ? "wand" : "axe");
+            yield return ActionResult.Success(constructed.isUnderConstruction()
+                ? $"{builderName} 开始在农场 ({spot.Value.X},{spot.Value.Y}) 建 {bp.DisplayName}（{data.Size.X}x{data.Size.Y}），{bp.BuildDays} 天后完工，花费 {BlueprintCost(bp)}"
+                : $"{builderName} 在农场 ({spot.Value.X},{spot.Value.Y}) 建好了 {bp.DisplayName}（{data.Size.X}x{data.Size.Y}），花费 {BlueprintCost(bp)}"
+                  + (bp.Id.Contains("Obelisk") ? "。方尖碑 interact 一下就传送" : ""));
         }
 
         public IEnumerable<object> UpgradeHouse()

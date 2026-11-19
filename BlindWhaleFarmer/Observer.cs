@@ -93,6 +93,10 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(mastery);
                 if (GameActions.NightMarketHint() is string market)
                     sb.AppendLine(market);
+                if (GameActions.SlayerRewardHint() is string slayer)
+                    sb.AppendLine(slayer);
+                if (GameActions.PanHint() is string panHint)
+                    sb.AppendLine(panHint);
                 if (GameActions.BooksellerHint() is string books)
                     sb.AppendLine(books);
                 if (GameActions.UnreadItemsHint() is string unread)

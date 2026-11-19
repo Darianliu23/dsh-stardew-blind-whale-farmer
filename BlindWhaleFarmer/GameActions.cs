@@ -2245,7 +2245,7 @@ namespace BlindWhaleFarmer
             if (all)
             {
                 // 整张地图：从离自己最近的开始清 60 处
-                foreach (var s in ClearArea(0, 0, Pathfinder.MapWidth(Loc) - 1, Pathfinder.MapHeight(Loc) - 1, includeTrees))
+                foreach (var s in ClearArea(0, 0, Pathfinder.MapWidth(Loc) - 1, Pathfinder.MapHeight(Loc) - 1, includeTrees, wholeMap: true))
                     yield return s;
                 yield break;
             }
@@ -2265,7 +2265,7 @@ namespace BlindWhaleFarmer
                 yield return s;
         }
 
-        public IEnumerable<object> ClearArea(int x1, int y1, int x2, int y2, bool includeTrees)
+        public IEnumerable<object> ClearArea(int x1, int y1, int x2, int y2, bool includeTrees, bool wholeMap = false)
         {
             var loc = Loc;
             int axe = Util.FindTool<Axe>(), pick = Util.FindTool<Pickaxe>(), hoe = Util.FindTool<Hoe>();
@@ -2285,7 +2285,7 @@ namespace BlindWhaleFarmer
                     case '/': jobs.Add((p, axe, 2)); break;
                     case '?': jobs.Add((p, hoe, 2)); break;
                     case 'd': jobs.Add((p, scythe >= 0 ? scythe : axe, 2)); break;
-                    case '"': if (scythe >= 0) jobs.Add((p, scythe, 2)); break;
+                    case '"': if (scythe >= 0 && !wholeMap) jobs.Add((p, scythe, 2)); break; // 清整张图时不割草：草是牲口的干草来源
                     case 't': jobs.Add((p, axe, 8)); break; // 长到第 3、4 阶段的树苗有 10 点血，初始斧头一下 2 点，要 5 下
                     case 'S': jobs.Add((p, axe, 10)); break;
                     case 'T': if (includeTrees) jobs.Add((p, axe, 25)); break;
@@ -2308,7 +2308,7 @@ namespace BlindWhaleFarmer
             var me0 = Player.TilePoint;
             jobs = jobs.OrderBy(j => Util.Manhattan(j.p, me0)).Take(60).ToList();
             var order = Util.NearestOrder(Player.TilePoint, jobs.Select(j => j.p));
-            int cleared = 0;
+            int cleared = 0, unreachable = 0;
             string err = null;
             var o = new Outcome();
             foreach (var p in order)
@@ -2327,6 +2327,7 @@ namespace BlindWhaleFarmer
                     err = o.Message;
                     if (Blocked(out _))
                         break;
+                    unreachable++;
                     continue;
                 }
                 for (int hit = 0; hit < job.maxHits; hit++)
@@ -2347,11 +2348,14 @@ namespace BlindWhaleFarmer
             string msg = $"清理了 {cleared}/{order.Count} 处，剩余体力 {(int)Player.Stamina}";
             if (totalJobs > 60)
                 msg += $"（一次最多处理 60 处，这次先清了离你最近的，区域里还有约 {totalJobs - cleared} 处，体力够就再调用一次）";
-            // 敲完马上走开时掉落物还在弹，不会被吸过来：最后回头把区域里的掉落物捡一遍
+            if (unreachable > 0)
+                msg += $"；{unreachable} 处走不到旁边（被围住或在水边、悬崖上），跳过了";
+            // 敲完马上走开时掉落物还在弹，不会被吸过来：最后回头把这次清过的那一片的掉落物捡一遍（清整张图时不满地图跑）
             if (!Blocked(out _))
             {
                 var pickup = new List<string>();
-                foreach (var s in CollectDebris(new Rectangle(Math.Min(x1, x2) - 2, Math.Min(y1, y2) - 2, Math.Abs(x2 - x1) + 5, Math.Abs(y2 - y1) + 5), pickup))
+                int bx1 = order.Min(q => q.X), by1 = order.Min(q => q.Y), bx2 = order.Max(q => q.X), by2 = order.Max(q => q.Y);
+                foreach (var s in CollectDebris(new Rectangle(bx1 - 2, by1 - 2, bx2 - bx1 + 5, by2 - by1 + 5), pickup))
                     yield return s;
                 if (pickup.Count > 0)
                     msg += "；" + string.Join("；", pickup);
@@ -2569,8 +2573,102 @@ namespace BlindWhaleFarmer
             ["Hospital"] = "Hospital",
         };
 
+        /// <summary>
+        /// 不是站在店主面前开的店：游戏里是对着柜台、货车、书本按动作键开，这里在对应地点直接开（条件照游戏判断）。
+        /// 返回 null = 这个地点没有这类店；返回 (null, 原因) = 有但现在开不了。
+        /// </summary>
+        private (string shopId, string why)? SpecialShopHere()
+        {
+            switch (Loc)
+            {
+                case Forest forest:
+                    if (!forest.travelingMerchantDay)
+                        return (null, "旅行货车只在周五、周日来森林（夜市期间在沙滩），今天没有");
+                    if (Game1.timeOfDay >= 2000)
+                        return (null, "旅行货车 20:00 就收摊了");
+                    return ("Traveler", null);
+                case BeachNightMarket:
+                    return ("Traveler", null);
+                case Sewer:
+                    return ("ShadowShop", null);
+                case Club:
+                    return ("Casino", null);
+                case IslandNorth north:
+                    return north.traderActivated.Value ? ("IslandTrade", null) : (null, "岛上商人还没请来：先在姜岛北边给鹦鹉 10 颗金色核桃（feed_parrot which=Trader）");
+                case VolcanoDungeon { level.Value: 5 }:
+                    return Player.canUnderstandDwarves ? ("VolcanoShop", null) : (null, "火山里的矮人说矮人语，要先拿到矮人语翻译书（矿洞里的四张矮人卷轴捐给博物馆）");
+                case Mine:
+                    return Player.canUnderstandDwarves ? ("Dwarf", null) : (null, "矿洞口的矮人说矮人语，要先拿到矮人语翻译书（四张矮人卷轴捐给博物馆）");
+                case Desert:
+                    return ("DesertTrade", null);
+            }
+            return Loc.Name switch
+            {
+                "QiNutRoom" => ("QiGemShop", null),
+                "SandyHouse" => ("Sandy", null),
+                _ => null,
+            };
+        }
+
+        /// <summary>这些店在哪开（不在那里时告诉 AI 先 travel_to 过去）。</summary>
+        private static readonly Dictionary<string, string> SpecialShopWhere = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Traveler"] = "森林 Forest（周五、周日，夜市时在沙滩）",
+            ["ShadowShop"] = "下水道 Sewer（科罗布斯，要生锈钥匙）",
+            ["Casino"] = "沙漠赌场 Club（要会员卡）",
+            ["IslandTrade"] = "姜岛北边 IslandNorth",
+            ["VolcanoShop"] = "火山第 5 层 VolcanoDungeon5",
+            ["Dwarf"] = "矿洞口 Mine",
+            ["DesertTrade"] = "沙漠 Desert",
+            ["QiGemShop"] = "齐先生的核桃房 QiNutRoom",
+            ["Sandy"] = "沙漠绿洲 SandyHouse",
+        };
+        private static readonly ICollection<string> SpecialShopIds = SpecialShopWhere.Keys;
+
         public IEnumerable<object> OpenShop(string shopId)
         {
+            if (Blocked(out string blockedWhy))
+            {
+                yield return ActionResult.Fail(blockedWhy);
+                yield break;
+            }
+            if ((string.IsNullOrWhiteSpace(shopId) || SpecialShopIds.Contains(shopId.Trim())) && SpecialShopHere() is var (specialId, specialWhy))
+            {
+                if (specialId == null)
+                {
+                    yield return ActionResult.Fail(specialWhy);
+                    yield break;
+                }
+                if (!string.IsNullOrWhiteSpace(shopId) && !shopId.Trim().Equals(specialId, StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return ActionResult.Fail($"{shopId} 不在这里，这里的店是 {specialId}");
+                    yield break;
+                }
+                var so = new Outcome();
+                if (specialId == "Traveler" && Loc is Forest cartForest)
+                {
+                    // 走到货车跟前（和游戏一样对着货车开）
+                    var cart = cartForest.GetTravelingMerchantCartTile();
+                    foreach (var s in GoAdjacent(new Point(cart.X + 4, cart.Y + 1), so))
+                        yield return s;
+                }
+                // 店主站在柜台后的（矮人、桑迪）要用带地点的重载找店主；其余是对着柜台/货车/机器开的，没有店主
+                bool specialOpened = specialId is "Dwarf" or "Sandy" or "DesertTrade"
+                    ? Utility.TryOpenShopMenu(specialId, Loc)
+                    : Utility.TryOpenShopMenu(specialId, null, playOpenSound: true);
+                foreach (var s in WaitTicks(15))
+                    yield return s;
+                if (specialOpened && Game1.activeClickableMenu is ShopMenu)
+                    yield return ActionResult.Success("已打开商店：\n" + observer.DescribeMenu());
+                else
+                    yield return ActionResult.Fail("商店没开（店主不在或者不在营业时间）");
+                yield break;
+            }
+            if (!string.IsNullOrWhiteSpace(shopId) && SpecialShopWhere.TryGetValue(shopId.Trim(), out string shopWhere))
+            {
+                yield return ActionResult.Fail($"{shopId} 在{shopWhere}，先 travel_to 过去再 open_shop");
+                yield break;
+            }
             if (string.IsNullOrWhiteSpace(shopId) && !ShopByLocation.TryGetValue(Loc.Name, out shopId))
             {
                 yield return ActionResult.Fail("这里没有商店（皮埃尔的店在 SeedShop，铁匠在 Blacksmith，木匠在 ScienceHouse，威利在 FishShop）");
