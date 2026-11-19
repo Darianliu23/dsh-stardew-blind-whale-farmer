@@ -157,6 +157,7 @@ namespace BlindWhaleFarmer
             Exits.ClearCache();
             // 每次读档算新的一次游玩，时长重新计
             Session.Reset();
+            Session.OnSaveLoaded();
             // 读档会用存档里的选项覆盖 Game1.options
             RestorePauseOptionIfNeeded();
         }

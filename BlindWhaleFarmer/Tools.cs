@@ -344,6 +344,9 @@ namespace BlindWhaleFarmer
                 new[] { P("notes", "string", "完整的新笔记内容") }));
             Schema.Add(Fn("cancel_action", "中止正在执行的长动作（钓鱼、下矿、wait、走路……）。动作卡住、或者你改主意了想先做别的时用；被中止的动作可能只做了一半，之后先 get_state 看看情况。",
                 Array.Empty<Param>()));
+            Schema.Add(Fn("play_for", "玩家要你玩一段时间时先调用它记下时长：“玩半小时”“玩一个小时”传 minutes（现实分钟），“玩 4 个游戏日”“玩一周”“玩到季末”传 days（游戏日，今天算第 1 天）。"
+                + "记下后每个动作结果后面会写还剩多少：没玩够就一件接一件地做，一天做完就 sleep、醒来接着玩，不要做完一件就停下来汇报或问玩家；玩够了会提醒你收尾汇报。玩家说“不玩了/先停下”时两项都传 0 取消。",
+                new[] { P("minutes", "integer", "现实分钟数：半小时 30，一小时 60；不按现实时间就传 0", false), P("days", "integer", "游戏日数：玩 4 天传 4，一周 7；不按游戏日就传 0", false) }));
         }
 
         private static Param P(string name, string type, string desc, bool required = true) => new(name, type, desc, required);
@@ -388,7 +391,7 @@ namespace BlindWhaleFarmer
             };
         }
 
-        public bool IsKnown(string name) => name is "update_notes" or "cancel_action" || specs.ContainsKey(name);
+        public bool IsKnown(string name) => name is "update_notes" or "cancel_action" or "play_for" || specs.ContainsKey(name);
 
         /// <summary>只查信息、马上出结果的工具：内置 AI 在跑的时候 MCP 也能用（不占动作队列，不会打断它）。</summary>
         public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests" };
@@ -422,6 +425,15 @@ namespace BlindWhaleFarmer
 
         public async Task<string> Execute(string name, string arguments)
         {
+            string result = await ExecuteCore(name, arguments).ConfigureAwait(false);
+            // 玩家说了“玩半小时”：每个动作后面写还剩几分钟，免得 AI 做完一件事就停下汇报
+            if (Session != null && name is not ("play_for" or "update_notes" or "reserve_items") && Session.GoalReminder() is string goal)
+                result += "\n" + goal;
+            return result;
+        }
+
+        private async Task<string> ExecuteCore(string name, string arguments)
+        {
             JsonObject args;
             string jsonFixed = null;
             try
@@ -447,6 +459,16 @@ namespace BlindWhaleFarmer
 
             if (name == "update_notes")
                 return updateNotes(OptStr(args, "notes") ?? "");
+
+            if (name == "play_for")
+            {
+                if (Session == null)
+                    return "失败：这里没有游玩计时";
+                int? minutes = OptInt(args, "minutes"), days = OptInt(args, "days");
+                if (minutes == null && days == null)
+                    return "失败：要传 minutes（现实分钟，半小时就是 30）或 days（游戏日，玩 4 天就是 4）；两项都传 0 是取消";
+                return Session.SetGoal(minutes ?? 0, days ?? 0);
+            }
 
             if (!specs.TryGetValue(name, out var spec))
                 return $"失败：没有叫 {name} 的工具";

@@ -27,7 +27,7 @@ function fakeGame() {
         state.posts.push(msg)
         res.end(JSON.stringify({ message: '已应用', revision: state.revision }))
       } else {
-        res.end(JSON.stringify({ instance: 'x', revision: state.revision }))
+        res.end(JSON.stringify({ instance: 'x', revision: state.revision, goal: state.goal ?? null }))
       }
     })
   })
@@ -408,4 +408,111 @@ test('设置是 volatile：DSH 交来的是活引用，配置卡片改了值不�
   assert.equal(state.posts.at(-1).settings.forageRadius, 5)
   dispose()
   server.close()
+})
+
+test('按时长续玩：玩家要的时长没玩够、AI 正常说完就停了，自动发“接着玩”；玩够了、被打断、没玩游戏都不发', async () => {
+  const { server, state, port } = await fakeGame()
+  try {
+    // 没玩够：发一条带剩余时间的“接着玩”
+    {
+      const { agent, service } = fakeAgents()
+      const f = fakeCtx({ agents: service })
+      try {
+        state.goal = { minutes: 30, played: 2.4, pending: true }
+        plugin.apply(f.ctx, { port })
+        playTurn(f.emit, { last: [{ type: 'text', text: '爸爸～本鱼把 35 株全浇了一遍' }] })
+        await wait(1900)
+        assert.equal(agent.sent.length, 1)
+        assert.equal(agent.sent[0].content[0].text, plugin.goalContinueText(state.goal))
+        assert.ok(agent.sent[0].content[0].text.includes('还剩约 28 分钟'))
+        assert.ok(f.logs.some((l) => l.includes('玩家要玩 30 分钟，还没玩够')))
+      } finally {
+        f.dispose()
+      }
+    }
+    // 按游戏日：“玩 4 个游戏日”睡了一觉就停了
+    {
+      const { agent, service } = fakeAgents()
+      const f = fakeCtx({ agents: service })
+      try {
+        state.goal = { minutes: 0, played: 0, days: 4, daysDone: 1, pending: true }
+        plugin.apply(f.ctx, { port })
+        playTurn(f.emit, { last: [{ type: 'text', text: '东西塞箱子，回屋睡到夏 21 日' }] })
+        await wait(1900)
+        assert.equal(agent.sent.length, 1)
+        const text = agent.sent[0].content[0].text
+        assert.ok(text.includes('玩 4 个游戏日，现在才第 2/4 天'), text)
+        assert.ok(text.includes('sleep'))
+        assert.ok(!text.includes('分钟'))
+        assert.ok(f.logs.some((l) => l.includes('玩家要玩 4 个游戏日，还没玩够')))
+      } finally {
+        f.dispose()
+      }
+    }
+    const cases = [
+      { goal: { minutes: 30, played: 31, pending: false }, turn: {} },
+      { goal: null, turn: {} },
+      { goal: { minutes: 30, played: 2, pending: true }, turn: { reason: 'aborted' } },
+      { goal: { minutes: 30, played: 2, pending: true }, turn: { tool: 'bash' } },
+      { goal: { minutes: 30, played: 2, pending: true }, turn: {}, config: { autoContinue: false } },
+      { goal: { minutes: 30, played: 2, pending: true }, turn: {}, userTyped: true },
+    ]
+    for (const c of cases) {
+      const { agent, service } = fakeAgents()
+      if (c.userTyped) agent.inbox.nextTurn.push({ id: 'u' })
+      const f = fakeCtx({ agents: service })
+      try {
+        state.goal = c.goal
+        plugin.apply(f.ctx, { port, ...c.config })
+        playTurn(f.emit, { last: [{ type: 'text', text: '好了' }], ...c.turn })
+        await wait(1900)
+        assert.equal(agent.sent.length, 0, JSON.stringify(c))
+      } finally {
+        f.dispose()
+      }
+    }
+  } finally {
+    server.close()
+  }
+})
+
+test('按时长续玩：游戏动作一直失败时也受次数上限管', async () => {
+  const { server, state, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    state.goal = { minutes: 30, played: 1, pending: true }
+    plugin.apply(f.ctx, { port, autoContinueMax: 2 })
+    for (let i = 0; i < 3; i++) {
+      playTurn(f.emit, { ok: false, last: [{ type: 'text', text: '没浇成' }] })
+      await wait(100)
+    }
+    await wait(1900)
+    assert.equal(agent.sent.length, 2)
+    assert.ok(f.logs.some((l) => l.includes('不再自动续玩')))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('按时长续玩：会话里有 DSH 的 /目标 在跑时交给它续，不重复发；目标停了才发', async () => {
+  const { server, state, port } = await fakeGame()
+  try {
+    for (const [phase, expected] of [['active', 0], ['paused', 1]]) {
+      const { agent, service } = fakeAgents()
+      const f = fakeCtx({ agents: service, goals: { get: (a) => (a === agent ? { phase } : undefined) } })
+      try {
+        state.goal = { minutes: 30, played: 2, pending: true }
+        plugin.apply(f.ctx, { port })
+        playTurn(f.emit, { last: [{ type: 'text', text: '浇完了' }] })
+        await wait(1900)
+        assert.equal(agent.sent.length, expected, phase)
+      } finally {
+        f.dispose()
+      }
+    }
+  } finally {
+    server.close()
+  }
 })

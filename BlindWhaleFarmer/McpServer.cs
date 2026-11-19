@@ -39,7 +39,8 @@ namespace BlindWhaleFarmer
 - 一个工具执行完会返回结果文字；动作执行期间游戏时间照常流逝，你思考时游戏时间是冻结的。
 - 长动作（fish、water_crops、wait 等）可能要几十秒到几分钟，fish 一次建议 casts 不超过 5。
 - “内置 AI”是模组自带的另一个 AI：玩家在游戏里按 F8 启动，它会自己接管游戏，花的是玩家自己的 API 额度。你就是在玩游戏的 AI，不需要、也不要去启动它。它和你不能同时操作：它运行时你只能查信息（get_state、get_guide、gift_info、bundle_info），其他工具会返回“内置 AI 正在运行”。玩家让你来玩时，用 toggle_ai 传 on=false 停掉它，或请玩家按 F8。
-- get_state 说游戏还在标题画面时，用 load_save 读取存档（不传参数读最近玩的那个）。";
+- get_state 说游戏还在标题画面时，用 load_save 读取存档（不传参数读最近玩的那个）。
+- 玩家让你玩一段时间（“玩半小时”“玩 4 个游戏日”）时，先用 play_for 记下（现实时间传 minutes，游戏日传 days），然后一件事做完直接接着做下一件、一天做完就 sleep 醒来接着玩，玩够之前不要停下来汇报或问玩家下一步；每个动作结果后面会写还剩多少。";
 
         private readonly ModEntry mod;
         private readonly HttpListener listener = new();
@@ -358,7 +359,7 @@ namespace BlindWhaleFarmer
                 return "失败：游戏里的内置 AI 正在运行，它运行时只能用 get_state、get_guide、gift_info、bundle_info。"
                        + "要自己操作就先用 toggle_ai 传 on=false 停掉它（或在游戏里按 " + mod.Config.ToggleKey + "）";
             }
-            if (mod.PlayerInControl && !InfoTools.Contains(name) && name != "update_notes" && name != "reserve_items")
+            if (mod.PlayerInControl && !InfoTools.Contains(name) && name is not ("update_notes" or "reserve_items" or "play_for"))
                 return $"失败：玩家按 {mod.Config.TakeOverKey} 接管了游戏，现在由玩家自己操作，你的动作都会被拒绝。"
                        + $"不要再尝试游戏动作：停下来向玩家汇报刚才在做什么、遇到了什么问题，等玩家在游戏里再按 {mod.Config.TakeOverKey} 交还、并告诉你继续";
 
@@ -563,7 +564,11 @@ namespace BlindWhaleFarmer
                     ["reservedItems"] = c.ReservedItems,
                     ["guideFile"] = c.GuideFile
                 },
-                ["session"] = mod.Session?.Status() ?? "不限时长"
+                ["session"] = mod.Session?.Status() ?? "不限时长",
+                // 玩家在聊天里要求的游玩时长：插件在 AI 提前停下时据此自动续玩
+                ["goal"] = mod.Session?.Goal is { } g
+                    ? new JsonObject { ["minutes"] = g.Minutes, ["played"] = Math.Round(g.Played, 1), ["days"] = g.Days, ["daysDone"] = g.DaysDone, ["pending"] = mod.Session.GoalPending && !mod.PlayerInControl && mod.Agent?.Running != true }
+                    : null
             };
         }
 
