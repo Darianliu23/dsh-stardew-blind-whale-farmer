@@ -2577,7 +2577,25 @@ namespace BlindWhaleFarmer
                 ?? shop.forSale.FirstOrDefault(s => s.DisplayName.Contains(spec, StringComparison.OrdinalIgnoreCase) || s.Name.Contains(spec, StringComparison.OrdinalIgnoreCase));
         }
 
-        public IEnumerable<object> Buy(string spec, int count)
+        /// <summary>已学会、做出来就是这件商品的制作配方（不含烹饪）；没有返回 null。</summary>
+        private static CraftingRecipe KnownRecipeFor(ISalable salable)
+        {
+            if (salable is StardewValley.Object { IsRecipe: true })
+                return null;
+            foreach (string key in Player.craftingRecipes.Keys)
+            {
+                try
+                {
+                    var recipe = new CraftingRecipe(key);
+                    if (recipe.createItem()?.QualifiedItemId == salable.QualifiedItemId)
+                        return recipe;
+                }
+                catch { /* 坏配方（别的模组删了物品）跳过 */ }
+            }
+            return null;
+        }
+
+        public IEnumerable<object> Buy(string spec, int count, bool force = false)
         {
             if (Game1.activeClickableMenu is not ShopMenu shop)
             {
@@ -2616,6 +2634,19 @@ namespace BlindWhaleFarmer
                 }
                 count = Math.Min(count, need);
             }
+            // 会做而且背包里材料够：先自己做，别花钱买（箱子、稻草人、肥料之类常被白买）
+            string craftNote = null;
+            if (info.Price > 0 && KnownRecipeFor(salable) is { } recipe)
+            {
+                string need = string.Join("、", recipe.recipeList.Select(kv => $"{Util.ObjectName(kv.Key)} x{kv.Value}"));
+                if (!force && recipe.doesFarmerHaveIngredientsInInventory())
+                {
+                    yield return ActionResult.Fail($"先别买：你会做 {recipe.DisplayName}，背包里的材料够做（每个要 {need}），"
+                        + $"用 craft recipe={recipe.DisplayName} 自己做，能省 {info.Price}g 一个。材料要留着干别的、真要买就再调用一次并传 force=true");
+                    yield break;
+                }
+                craftNote = $"（提示：你会做{recipe.DisplayName}，每个要 {need}，以后材料够就用 craft 自己做，比买省钱）";
+            }
             int moneyBefore = Player.Money;
             if (info.Price * count > moneyBefore && info.Price > 0)
             {
@@ -2642,7 +2673,7 @@ namespace BlindWhaleFarmer
             yield return null;
             int spent = moneyBefore - Player.Money;
             yield return spent > 0 || info.Price == 0
-                ? ActionResult.Success($"买了 {count} 个 {name}，花费 {spent}g，剩余 {Player.Money}g")
+                ? ActionResult.Success($"买了 {count} 个 {name}，花费 {spent}g，剩余 {Player.Money}g{craftNote}")
                 : ActionResult.Fail($"没买成 {name}（钱或交换物不够，或者不能购买）");
         }
 

@@ -89,6 +89,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(quest);
                 if (GameActions.SpecialOrderHint() is string order)
                     sb.AppendLine(order);
+                if (GameActions.MasteryHint() is string mastery)
+                    sb.AppendLine(mastery);
                 if (GameActions.BooksellerHint() is string books)
                     sb.AppendLine(books);
                 if (GameActions.UnreadItemsHint() is string unread)

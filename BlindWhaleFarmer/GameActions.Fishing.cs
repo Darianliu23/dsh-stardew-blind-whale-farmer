@@ -174,6 +174,45 @@ namespace BlindWhaleFarmer
             return spots.OrderByDescending(s => s.Clear).ThenBy(s => ShoreGap(loc, s)).ThenBy(s => Util.Manhattan(s.Stand, from)).ToList();
         }
 
+        /// <summary>这张图现在冒泡的那一格（fishSplashPoint），没有返回 null。</summary>
+        private static Point? SplashPoint(GameLocation loc) =>
+            loc.fishSplashPoint.Value is { } p && p != Point.Zero ? p : null;
+
+        private static Point Landing(FishingSpot s) =>
+            new(s.Stand.X + DirVec[s.Dir].X * s.Distance, s.Stand.Y + DirVec[s.Dir].Y * s.Distance);
+
+        /// <summary>
+        /// 能把浮漂正好抛进冒泡那一格的站位，取走得到的最近一个。游戏里浮漂落在泡上：等咬钩的时间缩到 1/4，
+        /// 钓上来的鱼按离岸再远一格、外加鱼饵加成算（FishingRod 里 fishSplashPoint 的两处判断）。没有泡或抛不中返回 null。
+        /// </summary>
+        private static FishingSpot SplashSpot(GameLocation loc, Point from, out List<Point> path)
+        {
+            path = null;
+            if (SplashPoint(loc) is not Point target || !Fishable(loc, target.X, target.Y))
+                return null;
+            var cands = new Dictionary<Point, FishingSpot>();
+            int clear = FishingRod.distanceToLand(target.X, target.Y, loc);
+            for (int dir = 0; dir < 4; dir++)
+            {
+                var d = DirVec[dir];
+                for (int k = 2; k <= MaxCastDistance(Player, dir); k++)
+                {
+                    var stand = new Point(target.X - d.X * k, target.Y - d.Y * k);
+                    if (!loc.isTileOnMap(stand.X, stand.Y) || loc.isWaterTile(stand.X, stand.Y) || !Pathfinder.IsPassable(loc, stand.X, stand.Y)
+                        || Pathfinder.IsTouchWarp(loc, stand.X, stand.Y))
+                        continue;
+                    // 和 BestCast 一样：要站在岸边（前两格内有水），不隔着陆地往远处抛
+                    if (!loc.isWaterTile(stand.X + d.X, stand.Y + d.Y) && !loc.isWaterTile(stand.X + d.X * 2, stand.Y + d.Y * 2))
+                        continue;
+                    cands.TryAdd(stand, new FishingSpot(stand, dir, k, clear));
+                }
+            }
+            if (cands.Count == 0)
+                return null;
+            path = Pathfinder.FindPath(loc, from, cands.Keys.ToList());
+            return path != null && path.Count > 0 ? cands[path[^1]] : cands.TryGetValue(from, out var here) ? here : null;
+        }
+
         /// <summary>附近没有钓鱼点时：这张地图最近的水在哪个方向、多远；整张图没有水就说去哪。</summary>
         private static string NearestWaterHint(GameLocation loc, Point from)
         {
@@ -241,6 +280,9 @@ namespace BlindWhaleFarmer
             }
 
             var o = new Outcome();
+            // 水面在冒泡（fishSplashPoint）：优先站到能抛中泡的地方，咬钩快、鱼也好
+            if (spot == null)
+                spot = SplashSpot(loc, Player.TilePoint, out _);
             if (spot == null)
             {
                 var spots = FindFishingSpots(loc, Player.TilePoint, 30);
@@ -276,7 +318,7 @@ namespace BlindWhaleFarmer
             }
 
             var caught = new List<string>();
-            int misses = 0, junk = 0;
+            int misses = 0, junk = 0, splashCasts = 0;
             string stopReason = null;
             try
             {
@@ -303,6 +345,18 @@ namespace BlindWhaleFarmer
                         stopReason = "太晚了，该回家睡觉";
                         break;
                     }
+                    // 泡每隔一阵会换地方（潜水艇里每 10 分钟有 1/4 几率消失再冒出来）：没指定坐标就跟着泡挪
+                    if (!x.HasValue && SplashPoint(Loc) is Point splash && Landing(spot) != splash
+                        && SplashSpot(Loc, Player.TilePoint, out _) is { } chase)
+                    {
+                        var moved = new Outcome();
+                        foreach (var s in GoToAny(new[] { chase.Stand }, moved, "冒泡的地方"))
+                            yield return s;
+                        if (moved.Ok)
+                            spot = chase;
+                    }
+                    if (SplashPoint(Loc) is Point onSplash && Landing(spot) == onSplash)
+                        splashCasts++;
                     var one = new Outcome();
                     foreach (var s in FishOnce(rodIdx, spot, one))
                         yield return s;
@@ -332,6 +386,10 @@ namespace BlindWhaleFarmer
                 summary += "：" + string.Join("、", caught);
             if (misses > 0)
                 summary += $"，跑掉/没咬钩 {misses} 次";
+            if (splashCasts > 0)
+                summary += $"，其中 {splashCasts} 竿抛在冒泡的地方（咬钩快、鱼更好）";
+            else if (!x.HasValue && SplashPoint(Loc) is Point far)
+                summary += $"。水面 ({far.X},{far.Y}) 在冒泡（抛中咬钩快、鱼更好），但从岸边抛不到那么远：钓鱼等级越高抛得越远（4 级、8 级各多一格）";
             if (stopReason != null)
                 summary += $"（{stopReason}）";
             if (stopReason == BagFullForFishing && TripClutterHint("fish") is string clutter)
@@ -341,7 +399,7 @@ namespace BlindWhaleFarmer
             if (caught.Count >= 2 && junk * 2 > caught.Count)
                 summary += $"。⚠ 在 {Loc.NameOrUniqueName} 这里钓上来的大半是垃圾（{junk}/{caught.Count}），这片水没什么鱼，别在这里钓了：用 travel_to 去 Beach（海边）、Mountain（山上的湖）或 Town / Forest（河）再 fish";
             // 落点离岸近（浅水）：游戏按离岸距离算鱼的大小和品质，太近垃圾也多
-            else if (spot.Clear <= 2)
+            else if (spot.Clear <= 2 && Loc is not StardewValley.Locations.Submarine)
                 summary += $"。提示：落点离岸只有 {spot.Clear} 格，是浅水，鱼小、品质低、垃圾多（离岸 5 格最好）。"
                     + (x.HasValue ? "fish 不传坐标，我会找离岸更远的点；" : "附近找不到更深的点了，")
                     + "去码头、栈桥尽头或者伸进湖里的岸边，往开阔水面抛";

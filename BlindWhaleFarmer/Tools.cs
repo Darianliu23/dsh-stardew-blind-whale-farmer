@@ -159,9 +159,10 @@ namespace BlindWhaleFarmer
                 j => () => a.OpenShop(OptStr(j, "shop_id")),
                 P("shop_id", "string", "商店ID，可省略", false));
 
-            Add("buy", "在已打开的商店里购买。", 20,
-                j => () => a.Buy(Str(j, "item"), OptInt(j, "count") ?? 1),
-                P("item", "string", "商品名称或商店列表序号"), P("count", "integer", "数量", false));
+            Add("buy", "在已打开的商店里购买。自己会做（craft）而且材料够的东西会先拦下，提醒你自己做省钱。", 20,
+                j => () => a.Buy(Str(j, "item"), OptInt(j, "count") ?? 1, OptBool(j, "force") ?? false),
+                P("item", "string", "商品名称或商店列表序号"), P("count", "integer", "数量", false),
+                P("force", "boolean", "会做也要买（材料要留着别的用时）", false));
 
             Add("sell", "在已打开的商店里出售背包物品（立即得钱，价格和出货箱一样）。", 20,
                 j => () => a.Sell(Str(j, "item"), OptInt(j, "count")),
@@ -275,6 +276,10 @@ namespace BlindWhaleFarmer
             Add("prize_machine", "奖券：先去订单板左边的小机器领完成特别订单攒下的奖券，再去刘易斯家（ManorHouse）的奖券机一张换一个奖品（奖品按固定顺序排，有种子、神秘盒、星之果茶、家具、技能书等）。look=true 只看接下来的奖品不换。", 300,
                 j => () => a.PrizeMachine(OptInt(j, "count"), OptBool(j, "look") ?? false),
                 P("count", "integer", "换几张，默认全部", false), P("look", "boolean", "只看接下来的奖品", false));
+
+            Add("mastery", "精通（五项技能都 10 级后）：继续攒经验涨精通等级，每级去森林的精通洞穴在一个技能的台子上领一份奖励（耕种=铱金镰刀等，每个技能只能领一次）。不传 skill 列出精通进度和各技能奖励；传 skill 就自己走进洞里领。", 300,
+                j => () => a.Mastery(OptStr(j, "skill")),
+                P("skill", "string", "farming/mining/fishing/foraging/combat（或 耕种/采矿/钓鱼/采集/战斗），可省略=只看", false));
 
             Add("feed_parrot", "姜岛：给鹦鹉交金核桃解锁东西（第一只鹦鹉 1、乌龟让路 10、农舍 20、信箱 5、方尖碑 20、鹦鹉快递 10、挖掘场的桥 10、岛上商人 10、度假村 20、火山桥/捷径各 5）。不传 which 列出现在能交的；传名字就走过去交。", 300,
                 j => () => a.FeedParrot(OptStr(j, "which")),
