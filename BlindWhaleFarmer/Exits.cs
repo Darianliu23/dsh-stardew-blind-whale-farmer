@@ -329,8 +329,17 @@ namespace BlindWhaleFarmer
 
         public static string ExitKey(string fromName, Exit e) => $"{fromName}>{e.Target}@{e.Tile.X},{e.Tile.Y}";
 
+        /// <summary>
+        /// 地图里被墙隔开、互不相通的区域编号（大多数地图只有一块，都是 0）。
+        /// 后山（Backwoods）右下角从巴士站上来、通隧道的那一小块和农场北门到山上的那条路不通，
+        /// 不分开的话会规划出“巴士站→后山→山上”这种走不通的路线。
+        /// </summary>
+        public static int Area(string locationName, Point tile) =>
+            locationName.Equals("Backwoods", StringComparison.OrdinalIgnoreCase) && tile.X >= 22 && tile.Y >= 26 ? 1 : 0;
+
         /// <param name="avoid">这次走不通的出口（ExitKey），规划时绕开。</param>
-        public static List<Exit> PlanRoute(GameLocation from, string targetName, ISet<string> avoid = null)
+        /// <param name="avoidLocation">路过不了的地图（比如在布置节日的小镇），除非它就是目的地。</param>
+        public static List<Exit> PlanRoute(GameLocation from, string targetName, ISet<string> avoid = null, string avoidLocation = null)
         {
             if (from.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 return new List<Exit>();
@@ -349,31 +358,41 @@ namespace BlindWhaleFarmer
                 !StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(name, out int n)
                 || n == 0 || (toVolcano && n <= toLevel) || (fromVolcano && n < fromLevel);
 
+            // 路线图的点是“地图#区域”：同一张地图被墙隔成互不相通的几块时（见 Area），只走同一块里的出口
+            string Key(string n, int area) => n + "#" + area;
             var prev = new Dictionary<string, (string, Exit)>(StringComparer.OrdinalIgnoreCase);
-            var queue = new Queue<(string name, int depth)>();
-            queue.Enqueue((from.NameOrUniqueName, 0));
-            prev[from.NameOrUniqueName] = (null, null);
+            var queue = new Queue<(string name, int area, int depth)>();
+            int startArea = from == Game1.currentLocation && Game1.player != null ? Area(from.NameOrUniqueName, Game1.player.TilePoint) : 0;
+            queue.Enqueue((from.NameOrUniqueName, startArea, 0));
+            prev[Key(from.NameOrUniqueName, startArea)] = (null, null);
 
             while (queue.Count > 0)
             {
-                var (name, depth) = queue.Dequeue();
+                var (name, area, depth) = queue.Dequeue();
                 if (depth >= 12)
                     continue;
                 var loc = Game1.getLocationFromName(name);
                 if (loc == null)
                     continue;
                 // 好感不够进不去的门（比如玛鲁房间的侧门）不走，同一个目标通常还有正门
-                foreach (var e in Get(loc).Where(e => e.FriendshipOk(loc)))
+                // 去同一个地方有正门也有侧门（比如玛鲁房间的侧门也通科学之家）时先走正门：要好感的门排在后面
+                foreach (var e in Get(loc).Where(e => e.FriendshipOk(loc)).OrderBy(e => e.FriendNpc != null))
                 {
+                    if (Area(name, e.Tile) != area)
+                        continue;
                     if (avoid != null && avoid.Contains(ExitKey(name, e)))
                         continue;
-                    if (prev.ContainsKey(e.Target) || !VolcanoOk(e.Target))
+                    string next = Key(e.Target, Area(e.Target, e.TargetTile));
+                    if (prev.ContainsKey(next) || !VolcanoOk(e.Target))
                         continue;
-                    prev[e.Target] = (name, e);
+                    if (avoidLocation != null && e.Target.Equals(avoidLocation, StringComparison.OrdinalIgnoreCase)
+                        && !e.Target.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    prev[next] = (Key(name, area), e);
                     if (e.Target.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                     {
                         var route = new List<Exit>();
-                        string cur = e.Target;
+                        string cur = next;
                         while (prev[cur].Item2 != null)
                         {
                             route.Add(prev[cur].Item2);
@@ -382,7 +401,7 @@ namespace BlindWhaleFarmer
                         route.Reverse();
                         return route;
                     }
-                    queue.Enqueue((e.Target, depth + 1));
+                    queue.Enqueue((e.Target, Area(e.Target, e.TargetTile), depth + 1));
                 }
             }
             return null;

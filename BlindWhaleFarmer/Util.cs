@@ -10,6 +10,27 @@ namespace BlindWhaleFarmer
 {
     internal static class Util
     {
+        /// <summary>玩家箱子里有没有这样东西：有就返回“地点(x,y) 几个”（最多列 3 处），没有返回 null。</summary>
+        internal static string ItemInChests(string qualifiedId)
+        {
+            var found = new System.Collections.Generic.List<string>();
+            StardewValley.Utility.ForEachLocation(loc =>
+            {
+                foreach (var p in loc.objects.Pairs)
+                    if (p.Value is StardewValley.Objects.Chest c && c.playerChest.Value && found.Count < 3)
+                    {
+                        int n = 0;
+                        foreach (var i in c.GetItemsForPlayer())
+                            if (i != null && i.QualifiedItemId == qualifiedId)
+                                n += i.Stack;
+                        if (n > 0)
+                            found.Add($"{loc.NameOrUniqueName}({(int)p.Key.X},{(int)p.Key.Y}) {n} 个");
+                    }
+                return found.Count < 3;
+            });
+            return found.Count == 0 ? null : string.Join("、", found);
+        }
+
         public static string Season => SeasonName(Game1.currentSeason);
 
         public static string SeasonName(string season) => season?.ToLowerInvariant() switch

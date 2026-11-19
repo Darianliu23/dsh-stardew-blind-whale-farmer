@@ -153,7 +153,7 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail((full ? "箱子满了，" : "背包里没有符合的东西可存（工具要写全名才存），") + ChestSummary(chest));
                 yield break;
             }
-            yield return ActionResult.Success($"存进 ({tile.X},{tile.Y}) 的箱子：{string.Join("、", stored)}{(full ? "；箱子满了，剩下的还在背包里" : "")}。{ChestSummary(chest)}");
+            yield return ActionResult.Success($"存进 ({tile.X},{tile.Y}) 的箱子：{string.Join("、", stored)}{(full ? $"；箱子满了，没放进去的还在背包里：{string.Join("、", Player.Items.Where(i => i != null && Wanted(i)).Select(i => $"{i.DisplayName}x{i.Stack}"))}" : "")}。{ChestSummary(chest)}");
         }
 
         /// <summary>

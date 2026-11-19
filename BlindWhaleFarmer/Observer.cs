@@ -95,6 +95,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(market);
                 if (GameActions.SlayerRewardHint() is string slayer)
                     sb.AppendLine(slayer);
+                if (GameActions.FarmCaveHint() is string cave)
+                    sb.AppendLine(cave);
                 if (GameActions.PanHint() is string panHint)
                     sb.AppendLine(panHint);
                 if (GameActions.BooksellerHint() is string books)
@@ -555,7 +557,30 @@ namespace BlindWhaleFarmer
         }
 
         public static bool NeedsWater(HoeDirt hd)
-            => hd.crop != null && !hd.crop.dead.Value && !hd.isWatered() && hd.needsWatering() && !hd.readyForHarvest();
+            => hd.crop != null && !hd.crop.dead.Value && !hd.isWatered() && hd.needsWatering() && !hd.readyForHarvest() && !DiesAtSeasonChange(hd);
+
+        /// <summary>
+        /// 季末最后一天、明天换季就会枯死的作物（和 Crop.newDay 一样：室外、不是四季都能种的地方、下个季节不在作物的季节里）。
+        /// 浇了也白浇。温室、姜岛（SeedsIgnoreSeasonsHere）和跨季作物不算。
+        /// </summary>
+        public static bool DiesAtSeasonChange(HoeDirt hd)
+        {
+            var crop = hd?.crop;
+            var loc = hd?.Location;
+            if (crop == null || loc == null || Game1.dayOfMonth != 28 || !loc.IsOutdoors || loc.SeedsIgnoreSeasonsHere())
+                return false;
+            // 有自己季节的地方（比如沙漠以外的特殊地图）不按全局换季推
+            if (loc.GetSeason() != Game1.season)
+                return false;
+            var next = (Season)(((int)Game1.season + 1) % 4);
+            var seasons = crop.GetData()?.Seasons;
+            return seasons != null && !seasons.Contains(next);
+        }
+
+        /// <summary>这块地图上明天换季会枯死、今天还没熟的作物数。</summary>
+        public static int DoomedCrops(GameLocation loc)
+            => loc == null ? 0 : loc.terrainFeatures.Pairs.Count(p => p.Value is HoeDirt hd && hd.crop != null && !hd.crop.dead.Value
+                && !hd.readyForHarvest() && DiesAtSeasonChange(hd));
 
         public static int DaysLeft(Crop crop)
         {

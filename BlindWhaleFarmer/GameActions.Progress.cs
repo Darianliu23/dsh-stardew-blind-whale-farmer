@@ -154,7 +154,82 @@ namespace BlindWhaleFarmer
                 return null;
             var ready = SlayerGoals().Where(g => g.done && !g.collected).Select(g => g.name).ToList();
             return ready.Count == 0 ? null
-                : $"冒险家公会：讨伐目标 {string.Join("、", ready)} 已完成、奖励还没领，去 AdventureGuild 找 Gil（interact npc=Gil）领";
+                : $"冒险家公会：讨伐目标 {string.Join("、", ready)} 已完成、奖励还没领，用 interact npc=Gil 领（Gil 坐在冒险家公会里，会自动走过去点他）";
+        }
+
+        // 冒险家公会里 Gil 不是普通的 NPC（不在地图的人物列表里），游戏是点他坐的那几格（Buildings 层这些图块）跟他说话领奖励
+        private static readonly int[] GilTileIndexes = { 1291, 1292, 1355, 1356, 1357, 1358 };
+
+        internal static bool IsGilName(string name) =>
+            !string.IsNullOrWhiteSpace(name) && (name.Trim().Equals("Gil", StringComparison.OrdinalIgnoreCase) || name.Trim() == "吉尔");
+
+        /// <summary>走到冒险家公会 Gil 的椅子旁边点他：有完成没领的讨伐目标就领奖励、把奖励物品收进背包。</summary>
+        public IEnumerable<object> TalkToGil()
+        {
+            if (Loc is not AdventureGuild)
+            {
+                var go = new Outcome();
+                foreach (var s in TravelInner("AdventureGuild", go))
+                    yield return s;
+                if (!go.Ok || Loc is not AdventureGuild)
+                {
+                    yield return ActionResult.Fail($"去冒险家公会找 Gil 失败：{go.Message}");
+                    yield break;
+                }
+            }
+            var guild = (AdventureGuild)Loc;
+            var gilTiles = new List<Microsoft.Xna.Framework.Point>();
+            int w = Pathfinder.MapWidth(guild), h = Pathfinder.MapHeight(guild);
+            for (int x = 0; x < w; x++)
+                for (int y = 0; y < h; y++)
+                    if (Array.IndexOf(GilTileIndexes, guild.getTileIndexAt(x, y, "Buildings", "1")) >= 0)
+                        gilTiles.Add(new Microsoft.Xna.Framework.Point(x, y));
+            if (gilTiles.Count == 0)
+            {
+                yield return ActionResult.Fail("在冒险家公会里没找到 Gil 坐的位置");
+                yield break;
+            }
+            var o = new Outcome();
+            foreach (var s in GoAdjacentToAny(gilTiles, o))
+                yield return s;
+            if (!o.Ok)
+            {
+                yield return ActionResult.Fail($"走不到 Gil 旁边：{o.Message}");
+                yield break;
+            }
+            var me = Player.TilePoint;
+            var tile = gilTiles.OrderBy(t => Util.Manhattan(t, me)).First();
+            Player.faceGeneralDirection(new Microsoft.Xna.Framework.Vector2(tile.X, tile.Y) * 64f);
+            var ready = SlayerGoals().Where(g => g.done && !g.collected).Select(g => g.name).ToList();
+            guild.checkAction(new xTile.Dimensions.Location(tile.X, tile.Y), Game1.viewport, Player);
+            foreach (var s in WaitTicks(15))
+                yield return s;
+            string said = Game1.activeClickableMenu is StardewValley.Menus.DialogueBox db ? db.getCurrentString() : "";
+            // 有奖励台词时先说话，说完才弹奖励界面
+            foreach (var s in ClickThroughDialogue(_ => 0))
+                yield return s;
+            foreach (var s in WaitTicks(10))
+                yield return s;
+            var got = new List<string>();
+            var dropped = new List<string>();
+            if (Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu grab)
+                dropped = GrabAll(grab, got);
+            foreach (var s in CloseDialogues())
+                yield return s;
+            if (ready.Count == 0)
+            {
+                yield return ActionResult.Success($"跟 Gil 说了话，没有完成了还没领的讨伐奖励{(said != "" ? "。他说：" + said.Replace("^", " ") : "")}（讨伐进度用 monster_goals 看）");
+                yield break;
+            }
+            var still = SlayerGoals().Where(g => g.done && !g.collected).Select(g => g.name).ToList();
+            string msg = $"找 Gil 领了讨伐奖励（{string.Join("、", ready)}）";
+            if (got.Count > 0)
+                msg += "，拿到 " + string.Join("、", got);
+            if (dropped.Count > 0)
+                msg += $"；背包满了，{string.Join("、", dropped)} 掉在脚边，空出位置走过去捡";
+            if (still.Count > 0)
+                msg += $"；{string.Join("、", still)} 的奖励还没领到，再 interact npc=Gil 一次";
+            yield return ActionResult.Success(msg);
         }
 
         public IEnumerable<object> MonsterGoals()
@@ -163,7 +238,7 @@ namespace BlindWhaleFarmer
             var lines = goals.Select(g => $"- {g.name}：{Math.Min(g.kills, g.count)}/{g.count}" + (g.collected ? "（奖励已领）" : g.done ? "（完成了，奖励没领，找 Gil）" : ""));
             string head = goals.All(g => g.done) ? "怪物讨伐目标全部完成（完美度这项 10% 拿到了）" : $"怪物讨伐目标 {goals.Count(g => g.done)}/{goals.Count} 完成";
             yield return ActionResult.Success(head + "：\n" + string.Join("\n", lines)
-                + "\n（完成后去冒险家公会 AdventureGuild 找 Gil 领奖励：interact npc=Gil）");
+                + "\n（完成后去冒险家公会 AdventureGuild 找 Gil 领奖励：interact npc=Gil，会自动走过去点他坐的位置）");
         }
     }
 }

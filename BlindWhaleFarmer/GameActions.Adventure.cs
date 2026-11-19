@@ -142,6 +142,11 @@ namespace BlindWhaleFarmer
             }
             var loc = Loc;
             var pots = loc.objects.Pairs.Where(p => p.Value is CrabPot).Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
+            if (pots.Count == 0 && loc is StardewValley.Locations.BeachNightMarket)
+            {
+                yield return ActionResult.Fail("夜市（冬季 15-17 日）期间海滩换成了夜市的地图，海滩上的蟹笼这几天碰不到（游戏本身就是这样，手动玩也收不了）。蟹笼里的东西不会丢，夜市结束后再来收");
+                yield break;
+            }
             if (pots.Count == 0)
             {
                 yield return ActionResult.Fail("这里没有蟹笼（在鱼店买或用配方制作，用 place_item 放到水边的水面上）");
@@ -234,10 +239,18 @@ namespace BlindWhaleFarmer
             public readonly HashSet<Monster> Unreachable = new();
             /// <summary>打了不掉血、这次不再打的怪。</summary>
             public readonly HashSet<Monster> Immune = new();
+            /// <summary>每只怪连着砍中却没掉血的次数（探索时会反复调 FightInner，计数要跨调用累计）。</summary>
+            public readonly Dictionary<Monster, int> NoEffect = new();
         }
 
         private static IEnumerable<Monster> LiveMonsters(GameLocation loc) =>
-            loc.characters.OfType<Monster>().Where(m => m.Health > 0 && !m.IsInvisible && !IsDownedMummy(m));
+            loc.characters.OfType<Monster>().Where(m => m.Health > 0 && !m.IsInvisible && !IsDownedMummy(m) && !NeverHurtable(m));
+
+        /// <summary>怎么打都不掉血的怪（takeDamage 恒返回 -1）：火山传送带房间里的尖刺机关、剧情里的蝙蝠。不当怪打，当障碍绕开。</summary>
+        internal static bool NeverHurtable(Monster m) => m is Spiker || m is Bat { Age: 789 };
+
+        /// <summary>暂时打不到的怪：潜在岩浆里的岩浆潜伏者（浮上来才打得到）。</summary>
+        private static bool HiddenNow(Monster m) => m is LavaLurk lurk && lurk.currentState.Value == LavaLurk.State.Submerged;
 
         /// <summary>
         /// 倒在地上的木乃伊（Mummy.takeDamage：血打到 0 时不死，血回满、倒地 10 秒再爬起来）。倒地期间不动、碰到不扣血，
@@ -523,18 +536,18 @@ namespace BlindWhaleFarmer
             Monster chasing = null;
             int unreachableReset = Game1.ticks;
             var walk = new Outcome();
-            var noEffect = new Dictionary<Monster, int>();
-            // 连着 8 下砍中也不掉血就别打了（会飞的怪多半只是没砍中，木乃伊倒地时等它起来）
+            var noEffect = st.NoEffect;
+            // 连着 8 下也不掉血就别打了（会飞的怪多半只是没砍中，放宽到 20 下；木乃伊倒地时等它起来）
             void NoteSwing(Monster m, int hpBefore)
             {
-                if (m.Health < hpBefore || m.isGlider.Value || (m is Mummy mummy && mummy.reviveTimer.Value > 0))
+                if (m.Health < hpBefore || (m is Mummy mummy && mummy.reviveTimer.Value > 0))
                 {
                     noEffect.Remove(m);
                     return;
                 }
                 noEffect.TryGetValue(m, out int n);
                 noEffect[m] = ++n;
-                if (n >= 8)
+                if (n >= (m.isGlider.Value ? 20 : 8))
                     st.Immune.Add(m);
             }
             while (Game1.ticks - start < maxSeconds * 60)
@@ -572,7 +585,7 @@ namespace BlindWhaleFarmer
                                         || Util.Manhattan(chasing.TilePoint, me) > radius + 10))
                     chasing = null;
                 var target = chasing ?? LiveMonsters(Loc)
-                    .Where(m => !unreachable.Contains(m) && !st.Immune.Contains(m) && Util.Manhattan(m.TilePoint, me) <= radius)
+                    .Where(m => !unreachable.Contains(m) && !st.Immune.Contains(m) && !HiddenNow(m) && Util.Manhattan(m.TilePoint, me) <= radius)
                     .OrderBy(m => IsHealer(m) ? 0 : ShellClosed(m) ? 2 : 1) // 缩壳的岩石蟹不动也不打人，放到最后
                     .ThenBy(m => Vector2.Distance(m.GetBoundingBox().Center.ToVector2(), Player.StandingPixel.ToVector2()))
                     .FirstOrDefault();
@@ -1112,6 +1125,8 @@ namespace BlindWhaleFarmer
             var chestNotes = new List<string>();
             var skippedChests = new HashSet<Point>();
             var skippedBoulders = new HashSet<Point>();
+            // 走不到的石头（隔着岩浆、水、墙）：记下来不再试，接着试更远的，别因为最近几块够不着就停下
+            var skippedStones = new HashSet<(int level, Point pt)>();
             // 走不过去的竖井，和当时已经敲掉了多少块石头：再敲掉几块以后路可能通了，到时再试
             var skippedShafts = new Dictionary<Point, int>();
             int boulders = 0, shaftJumps = 0;
@@ -1159,9 +1174,9 @@ namespace BlindWhaleFarmer
                          + "先腾位置：吃掉食物（eat），或者用 trash_item 扔掉最不值钱的东西，再走过去捡，然后继续 explore_mine。下一层之前不捡就丢了";
                     break;
                 }
-                if (Game1.timeOfDay >= 2300)
+                if (TimeToHeadHome() is string late)
                 {
-                    stop = "已经 23 点了，该回家睡觉";
+                    stop = late;
                     break;
                 }
 
@@ -1251,9 +1266,13 @@ namespace BlindWhaleFarmer
                     continue;
                 }
 
-                // 3) 有楼梯就下
+                // 3) 有楼梯就下。下之前先把附近值钱的矿/宝石节点敲了（炸弹炸出楼梯时旁边常有矿），太远的不绕、体力不够也不敲
                 var ladder = NearestMineTile(mine, 173);
-                if (ladder.HasValue)
+                bool oresBeforeLadder = ladder.HasValue && Player.Stamina >= Player.MaxStamina * 0.2f && NearestThreat(3) == null
+                    && mine.objects.Pairs.Any(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId)
+                        && Util.Manhattan(new Point((int)kv.Key.X, (int)kv.Key.Y), Player.TilePoint) <= MineExtraRange + 2
+                        && !skippedStones.Contains((mine.mineLevel, new Point((int)kv.Key.X, (int)kv.Key.Y))));
+                if (ladder.HasValue && !oresBeforeLadder)
                 {
                     foreach (var s in GoAdjacent(ladder.Value, o))
                         yield return s;
@@ -1275,7 +1294,7 @@ namespace BlindWhaleFarmer
 
                 // 3.5) 背包里有炸弹、附近有一片值得炸的石头（罩住 2 个以上矿/宝石节点，或者 8 块以上石头；体力不到三成时 3 块就炸）：
                 //      炸一颗省体力、更快找到楼梯，炸出来的东西捡回来。骷髅洞穴里留 2 颗炸木乃伊用。身边有怪、血不到一半时不炸
-                if (blastBombs < bombBudget && NearestThreat(4) == null && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
+                if (!oresBeforeLadder && blastBombs < bombBudget && NearestThreat(4) == null && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
                 {
                     var bombs = BombsInBag();
                     int reserve = mine.mineLevel > 120 ? 2 : 0;
@@ -1301,8 +1320,11 @@ namespace BlindWhaleFarmer
 
                 // 3) 敲最近的石头找楼梯。矿石、宝石、晶球节点也是“石头”，只是值钱：多走几步也先敲它们
                 var stones = mine.objects.Pairs.Where(p => p.Value.IsBreakableStone())
-                    .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), valuable: ValuableNodeIds.Contains(p.Value.ItemId))).ToList();
-                bool hit = false;
+                    .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), valuable: ValuableNodeIds.Contains(p.Value.ItemId)))
+                    .Where(t => !skippedStones.Contains((mine.mineLevel, t.pt)))
+                    // 楼梯已经有了：只敲附近值钱的节点，敲完就下楼
+                    .Where(t => !oresBeforeLadder || t.valuable && Util.Manhattan(t.pt, Player.TilePoint) <= MineExtraRange + 2).ToList();
+                bool hit = false, skippedStone = false;
                 // 有竖井但被石头围着：优先敲通往竖井那个方向的石头，而不是只敲离自己最近的（这时不挑矿）
                 Point? digToward = shaft.HasValue && skippedShafts.ContainsKey(shaft.Value) ? shaft : null;
                 foreach (var (stone, valuable) in stones.OrderBy(t => Util.Manhattan(t.pt, Player.TilePoint)
@@ -1313,6 +1335,11 @@ namespace BlindWhaleFarmer
                     if (!o.Ok)
                     {
                         o.Succeed();
+                        if (!Blocked(out _) && Loc == mine)
+                        {
+                            skippedStones.Add((mine.mineLevel, stone));
+                            skippedStone = true;
+                        }
                         continue;
                     }
                     int hpBefore = Player.health;
@@ -1343,6 +1370,12 @@ namespace BlindWhaleFarmer
                     break;
                 }
                 if (hit)
+                    continue;
+                // 这几块够不着，但这层还有别的石头没试过：下一轮试更远的
+                if (skippedStone && stones.Any(t => !skippedStones.Contains((mine.mineLevel, t.pt))))
+                    continue;
+                // 楼梯边上的矿都够不着：回到开头直接下楼
+                if (oresBeforeLadder)
                     continue;
 
                 // 4) 小石头都够不着：多半是矿石巨石（2x2）挡了路，任何镐子都能敲碎（游戏里 752/754/756/758 只要求是镐子）

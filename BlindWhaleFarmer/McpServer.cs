@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -260,6 +261,42 @@ namespace BlindWhaleFarmer
             }
         }
 
+        private static readonly Dictionary<string, string> SectionAliases = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["basic"] = "基本状态", ["menu"] = "当前界面", ["location"] = "位置", ["inventory"] = "背包", ["bag"] = "背包",
+            ["equipment"] = "穿戴", ["chests"] = "箱子", ["chest"] = "箱子", ["exits"] = "出口", ["people"] = "人物", ["npc"] = "人物",
+            ["crops"] = "作物", ["objects"] = "附近物体", ["map"] = "地图", ["quests"] = "任务", ["quest"] = "任务"
+        };
+
+        /// <summary>get_state 只留要看的几段（按“## 标题”切）。基本状态、当前界面总留着；第一个标题前的内容也留着。</summary>
+        internal static string FilterSections(string text, string section)
+        {
+            var want = section.Split(new[] { ',', '，', '、', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => SectionAliases.TryGetValue(s, out var zh) ? zh : s).ToList();
+            want.Add("基本状态");
+            want.Add("当前界面");
+            var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?=^## )", System.Text.RegularExpressions.RegexOptions.Multiline);
+            var kept = new List<string>();
+            var names = new List<string>();
+            foreach (var p in parts)
+            {
+                if (!p.StartsWith("## "))
+                {
+                    if (p.Trim().Length > 0)
+                        kept.Add(p);
+                    continue;
+                }
+                string title = p.Substring(3, Math.Max(0, p.IndexOf((char)10) - 3)).Trim();
+                names.Add(title);
+                // 只比标题括号前的部分（“穿戴（背包里有更好的鞋子…）”不算背包）
+                string head = title.Split('（', '(')[0];
+                if (want.Any(w => head.Contains(w, StringComparison.OrdinalIgnoreCase)))
+                    kept.Add(p);
+            }
+            string res = string.Join("", kept).TrimEnd();
+            return res + Environment.NewLine + Environment.NewLine + $"（只给了 section={section} 这几段；全部段落：{string.Join("、", names.Select(n => n.Split('（', '(')[0]))}）";
+        }
+
         private JsonArray ToolList()
         {
             var list = new JsonArray
@@ -268,13 +305,15 @@ namespace BlindWhaleFarmer
                 {
                     ["name"] = "get_state",
                     ["description"] = "读取当前游戏状态的文字描述：时间天气、体力金钱、当前界面（对话/商店/信件等）、位置、背包、出口、人物和动物、作物、附近物体坐标、以你为中心的字符地图、任务。每次决定行动前先调用。"
-                        + "箱子、穿戴、田地规划、出口、图例这几段和上次一样时只写“没变化”（10 分钟内），要全部重看传 full=true。",
+                        + "箱子、穿戴、田地规划、出口、图例这几段和上次一样时只写“没变化”（10 分钟内），要全部重看传 full=true。"
+                        + "只想看一两样（比如只看背包、只看任务）就传 section，省得每次读一大段。",
                     ["inputSchema"] = new JsonObject
                     {
                         ["type"] = "object",
                         ["properties"] = new JsonObject
                         {
-                            ["full"] = new JsonObject { ["type"] = "boolean", ["description"] = "true 时没变化的段落也全部给出（换了会话、记不清箱子里有什么时用）" }
+                            ["full"] = new JsonObject { ["type"] = "boolean", ["description"] = "true 时没变化的段落也全部给出（换了会话、记不清箱子里有什么时用）" },
+                            ["section"] = new JsonObject { ["type"] = "string", ["description"] = "只看某几段，逗号分隔：基本状态、当前界面、位置、背包、穿戴、箱子、出口、人物、作物、附近物体、地图、任务（也认英文 basic/menu/location/inventory/equipment/chests/exits/people/crops/objects/map/quests）。基本状态和当前界面总会带上。不传就是全部" }
                         }
                     }
                 },
@@ -371,20 +410,23 @@ namespace BlindWhaleFarmer
                 {
                     result = await mod.MainThread.Invoke(() =>
                         Context.IsWorldReady ? mod.Observer.Build(IsTrue(args?["full"])) : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
+                    string section = args?["section"] is JsonValue sv && sv.TryGetValue(out string ss) && !string.IsNullOrWhiteSpace(ss) ? ss : null;
+                    if (section != null && Context.IsWorldReady)
+                        result = FilterSections(result, section);
                     // 本次游玩进度和玩家的额外要求放最前面（它们可以在 DSH 设置里随时改，不在连接时的说明里）
                     var head = new List<string>();
                     if (mod.PlayerInControl)
                         head.Add($"【玩家接管中】玩家按 {mod.Config.TakeOverKey} 接管了游戏，你的游戏动作都会被拒绝。停下来向玩家汇报，等玩家交还");
                     if (mod.Session?.Status() is string session)
                         head.Add("【" + session + "】");
-                    if (!string.IsNullOrWhiteSpace(mod.Config.ExtraInstructions))
+                    if (section == null && !string.IsNullOrWhiteSpace(mod.Config.ExtraInstructions))
                         head.Add("【玩家的额外要求】" + mod.Config.ExtraInstructions.Trim());
                     if (Context.IsWorldReady && GameActions.TakeExpiredReserveNote() is string expired)
                         head.Add("【留着的东西到日子了】" + expired);
-                    if (Context.IsWorldReady && GameActions.ReservedSummary() is string keep)
+                    if (section == null && Context.IsWorldReady && GameActions.ReservedSummary() is string keep)
                         head.Add("【玩家要留着的东西】" + keep);
                     // 笔记按存档保存（模组 data 文件夹），内置 AI 每步都能看到；MCP 客户端换了会话也要能接着上次的计划玩
-                    if (Context.IsWorldReady)
+                    if (section == null && Context.IsWorldReady)
                         head.Add("【你的长期笔记】" + (string.IsNullOrWhiteSpace(mod.Agent?.Notes)
                             ? "（空。建议用 update_notes 写下目标和计划，换会话后也能接着玩）"
                             : mod.Agent.Notes.Trim()));

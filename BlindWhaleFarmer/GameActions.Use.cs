@@ -34,7 +34,7 @@ namespace BlindWhaleFarmer
         /// 拿起背包里的一样东西“使用”，和玩家手持右键一样（Object.performUseAction，成功就消耗一个）：
         /// 读书、读秘密纸条、用图腾（传送、求雨、宝藏）、吹马笛。秘密纸条的内容直接读出来，信件界面自动关掉。
         /// </summary>
-        public IEnumerable<object> UseItem(string itemSpec)
+        public IEnumerable<object> UseItem(string itemSpec, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec, IsUsable);
             if (idx < 0)
@@ -55,6 +55,17 @@ namespace BlindWhaleFarmer
 
             var obj = (SObject)Player.Items[idx];
             string name = obj.DisplayName;
+            // 传送图腾：农场 —— 走回去来得及就别浪费：走路要一个半小时以上、或者走到家已经过了 23:00 才值得用
+            if (obj.QualifiedItemId == "(O)688" && !force && Loc is not Farm && EstimateMinutesToBed() is int walk && walk < 90)
+            {
+                int arrive = FromMinutes(ToMinutes(Game1.timeOfDay) + walk);
+                if (arrive <= 2300)
+                {
+                    yield return ActionResult.Fail($"现在 {Game1.timeOfDay / 100}:{Game1.timeOfDay % 100:00}，从这里走回家大约 {walk} 分钟，{arrive / 100}:{arrive % 100:00} 前就能到，"
+                        + $"没必要用{name}（图腾不便宜，留到深夜赶不回去、或者在很远的地方时再用）。走回去用 travel_to Farm 或 sleep；确实要现在用就加 force=true");
+                    yield break;
+                }
+            }
             // 游戏按宽度折行时会在中文中间塞空格（“双倍木 头”），去掉
             string desc = System.Text.RegularExpressions.Regex.Replace(obj.getDescription()?.Replace("\n", " ").Trim() ?? "",
                 @"(?<=\p{IsCJKUnifiedIdeographs})\s+(?=\p{IsCJKUnifiedIdeographs})", "");

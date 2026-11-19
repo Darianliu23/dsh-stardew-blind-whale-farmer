@@ -31,6 +31,49 @@ namespace BlindWhaleFarmer
             ["Mon"] = "周一", ["Tue"] = "周二", ["Wed"] = "周三", ["Thu"] = "周四", ["Fri"] = "周五", ["Sat"] = "周六", ["Sun"] = "周日"
         };
 
+        /// <summary>
+        /// 营业时间里店主也会出门（比如去镇上办事、去健身课）：按她今天的日程说清楚现在在哪、几点回店里。
+        /// early=true 是出发前用：她正在店里或者正往店里走、或者等她回来不超过半小时，返回 null（照常出发）。
+        /// 看不出来（没有日程）返回 null。
+        /// </summary>
+        private static string ShopkeeperOut(string npc, string shop, int walk, bool early)
+        {
+            var who = Game1.getCharacterFromName(npc);
+            if (who == null)
+                return null;
+            string here = who.currentLocation?.NameOrUniqueName;
+            if (early && here != null && here.Equals(shop, StringComparison.OrdinalIgnoreCase))
+                return null;
+            var schedule = who.Schedule;
+            int now = Game1.timeOfDay;
+            int? back = null;
+            if (schedule != null)
+            {
+                var past = schedule.Where(kv => kv.Key <= now).OrderByDescending(kv => kv.Key).Select(kv => kv.Value).FirstOrDefault();
+                // 最近一段日程就是回店里：在路上了
+                if (early && past != null && shop.Equals(past.targetLocationName, StringComparison.OrdinalIgnoreCase))
+                    return null;
+                // 下班以后才回家（比如晚上回卧室）不算回柜台
+                int close = ShopHours.TryGetValue(npc, out var hrs) ? hrs.close : 2600;
+                back = schedule.Where(kv => kv.Key > now && kv.Key < close && shop.Equals(kv.Value.targetLocationName, StringComparison.OrdinalIgnoreCase))
+                    .Select(kv => (int?)kv.Key).OrderBy(k => k).FirstOrDefault();
+            }
+            else if (early)
+                return null;
+            string name = NpcName(npc);
+            string where = who.currentLocation == null ? "" : $"{name}现在在{who.currentLocation.DisplayName}（{here} {who.TilePoint.X},{who.TilePoint.Y}）";
+            if (here != null && here.Equals(shop, StringComparison.OrdinalIgnoreCase))
+                where = $"{name}在店里但不在柜台（{who.TilePoint.X},{who.TilePoint.Y}），可能刚回来还在走，过一会儿再试";
+            if (back.HasValue)
+            {
+                if (early && Utility.CalculateMinutesBetweenTimes(now, back.Value) - walk <= DoorWaitMinutes)
+                    return null;
+                return $"{where}，按{name}今天的日程 {Util.TimeString(back.Value)} 回店里。先干别的，到时候再来（wait 可以写 until={Util.TimeString(back.Value)}）";
+            }
+            return schedule == null ? (where == "" ? null : where)
+                : $"{where}，按{name}今天的日程下班前不会再回柜台了，明天再来";
+        }
+
         /// <summary>出发前判断店主今天、现在会不会在柜台：不在就返回原因（没把握的情况返回 null，到了再看）。</summary>
         private static string ShopkeeperAway(string npc, int walk = 0)
         {
@@ -57,7 +100,8 @@ namespace BlindWhaleFarmer
             // 先看今天、现在店主在不在柜台，免得走过去才发现白跑
             var shopRoute = Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase) ? null : Exits.PlanRoute(Loc, location);
             int walk = shopRoute is { Count: > 0 } ? RouteMinutes(shopRoute, shopRoute.Count - 1) : 0;
-            if (!Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase) && ShopkeeperAway(npc, walk) is string away)
+            if (!Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase)
+                && (ShopkeeperAway(npc, walk) ?? ShopkeeperOut(npc, location, walk, true)) is string away)
             {
                 o.Fail(away);
                 yield break;
@@ -91,7 +135,8 @@ namespace BlindWhaleFarmer
             }
             if (!Loc.characters.Any(c => c.Name == npc))
             {
-                o.Fail($"{npc} 现在不在店里（看营业时间：Clint 9:00-16:00，Marnie 9:00-16:00 周一周二休息，Robin 9:00-17:00 周二休息）");
+                o.Fail(ShopkeeperOut(npc, location, 0, false)
+                    ?? $"{npc} 现在不在店里（看营业时间：Clint 9:00-16:00，Marnie 9:00-16:00 周一周二休息，Robin 9:00-17:00 周二休息）");
                 yield break;
             }
             var counter = counterAction != null ? FindTileAction(Loc, counterAction) : null;
@@ -417,6 +462,25 @@ namespace BlindWhaleFarmer
             if (q == null || q.accepted.Value || !Game1.CanAcceptDailyQuest())
                 return null;
             return $"镇上告示板（Town，皮埃尔杂货店门口）今天有委托任务：{q.GetName()}（用 quest_board 查看/接受）";
+        }
+
+        /// <summary>农场山洞（果蝠掉的水果 / 蘑菇箱）有东西可收时的提示。没有返回 null。</summary>
+        public static string FarmCaveHint()
+        {
+            if (Game1.getLocationFromName("FarmCave") is not GameLocation cave || Game1.MasterPlayer.caveChoice.Value <= 0)
+                return null;
+            int fruit = cave.objects.Values.Count(o => o.IsSpawnedObject);
+            var boxes = cave.objects.Pairs
+                .Where(p => p.Value.QualifiedItemId == "(BC)128" && p.Value.heldObject.Value != null && p.Value.MinutesUntilReady <= 0)
+                .Select(p => $"({(int)p.Key.X},{(int)p.Key.Y})").ToList();
+            if (fruit == 0 && boxes.Count == 0)
+                return null;
+            var todo = new List<string>();
+            if (fruit > 0)
+                todo.Add($"地上有 {fruit} 个果蝠带来的水果，进洞后用 forage 捡");
+            if (boxes.Count > 0)
+                todo.Add($"{boxes.Count} 个蘑菇箱长好了，进洞后对每个 interact：{string.Join(" ", boxes)}");
+            return "农场山洞（FarmCave，农舍北边的洞口）有东西可收：" + string.Join("；", todo) + "。隔几天就去收一次";
         }
 
         public IEnumerable<object> QuestBoard(bool accept)

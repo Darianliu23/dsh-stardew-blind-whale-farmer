@@ -82,7 +82,9 @@ namespace BlindWhaleFarmer
                     ? $"；放进 {d.GetDropboxLocationName()} 的投递箱，用 special_order_dropbox"
                     : obj is DeliverObjective dv && !string.IsNullOrEmpty(dv.targetName.Value)
                         ? $"；拿到后用 give_gift npc={dv.targetName.Value} item=东西名 交给{NpcName(dv.targetName.Value)}（交任务不算送礼，不受次数限制；要一次交够数，同一堆）"
-                        : "";
+                        : obj is CollectObjective
+                            ? "；只算接单以后第一次进背包的（每天去鸡舍捡新蛋、收新产物就会涨），箱子里拿出来的和接单前背包里就有的不算"
+                            : "";
                 sb.AppendLine(progress ? $"  目标：{text}（{obj.GetCount()}/{obj.GetMaxCount()}{(obj.IsComplete() ? "，已完成" : "")}{where}）" : $"  目标：{text}{(where != "" ? "（" + where.TrimStart('；') + "）" : "")}");
             }
             // 法师的“灵外质”订单：灵外质只在订单进行中从幽灵身上掉（约 9.5%，捡到一个后就不再掉），幽灵在矿洞 51～69 层（每层最多一只），骷髅洞穴的暗层也有
@@ -238,6 +240,21 @@ namespace BlindWhaleFarmer
                 targets = targets.Where(t => t.order.GetName().Contains(orderName.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
             if (targets.Count == 0)
             {
+                // 投递箱目标已经放够、订单却还没完成：说清楚是还差别的目标，不是没认到订单
+                var doneBox = Player.team.specialOrders
+                    .Where(s => s.questState.Value == SpecialOrderStatus.InProgress
+                        && (string.IsNullOrWhiteSpace(orderName) || s.GetName().Contains(orderName.Trim(), StringComparison.OrdinalIgnoreCase))
+                        && s.objectives.OfType<DonateObjective>().Any(d => !string.IsNullOrEmpty(d.dropBox.Value) && d.IsComplete()))
+                    .ToList();
+                if (doneBox.Count > 0)
+                {
+                    var s0 = doneBox[0];
+                    var left = s0.objectives.Where(ob => !ob.IsComplete())
+                        .Select(ob => $"{s0.Parse(ob.GetDescription() ?? "")?.Trim()}（{ob.GetCount()}/{ob.GetMaxCount()}）").ToList();
+                    yield return ActionResult.Fail($"“{s0.GetName()}”投递箱那一项已经放够了，不用再放"
+                        + (left.Count > 0 ? $"；订单还差：{string.Join("；", left)}。用 special_orders 看每个目标怎么算" : ""));
+                    yield break;
+                }
                 yield return ActionResult.Fail("没有要往投递箱里放东西的特别订单" + (string.IsNullOrWhiteSpace(orderName) ? "" : $"（名字含“{orderName}”的）")
                     + "。用 special_orders 看正在做的订单");
                 yield break;
@@ -334,7 +351,7 @@ namespace BlindWhaleFarmer
             }
             if (tickets + pending == 0)
             {
-                yield return ActionResult.Fail("没有奖券：完成刘易斯家门口的特别订单、或者帮人做完告示板的委托有时会给奖券。奖券机接下来的奖品：" + Upcoming(3));
+                yield return ActionResult.Fail("背包里没有奖券，什么都没兑换。" + (Util.ItemInChests("(O)PrizeTicket") is string inChest ? $"箱子里有奖券：{inChest}，先 take_items 拿出来再兑换。" : "完成刘易斯家门口的特别订单、或者帮人做完告示板的委托有时会给奖券。") + "（仅供参考：奖券机接下来的奖品是 " + Upcoming(3) + "）");
                 yield break;
             }
             var o = new Outcome();

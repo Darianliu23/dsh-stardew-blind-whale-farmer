@@ -237,6 +237,67 @@ namespace BlindWhaleFarmer
             return $"{name} x{ing.stack}{quality}";
         }
 
+        /// <summary>
+        /// 鱼在哪、什么时候能钓（读 Data/Fish 的季节、天气、时间，和 Data/Locations 里哪些地图放了这种鱼）。
+        /// 不是鱼返回 null。条件很复杂的（比如只在某片水域、要特定条件）以游戏为准，这里只给个大概。
+        /// </summary>
+        public static string FishWhereWhen(string qualifiedId)
+        {
+            if (qualifiedId == null || !qualifiedId.StartsWith("(O)"))
+                return null;
+            string id = qualifiedId.Substring(3);
+            Dictionary<string, string> fish;
+            try { fish = DataLoader.Fish(Game1.content); } catch { return null; }
+            if (!fish.TryGetValue(id, out string raw))
+                return null;
+            string[] f = raw.Split("/");
+            if (f.Length > 1 && f[1] == "trap")
+                return "蟹笼：" + (f.Length > 4 && f[4] == "ocean" ? "放海里" : "放淡水（河、湖）里");
+            var parts = new List<string>();
+            if (f.Length > 6)
+            {
+                var seasons = ArgUtility.SplitBySpace(f[6]);
+                parts.Add(seasons.Length >= 4 ? "四季" : string.Join("", seasons.Select(s => s switch
+                    { "spring" => "春", "summer" => "夏", "fall" => "秋", "winter" => "冬", _ => s })) + "季");
+            }
+            if (f.Length > 7 && f[7] != "both")
+                parts.Add(f[7] == "rainy" ? "雨天" : "晴天");
+            if (f.Length > 5)
+            {
+                var hours = ArgUtility.SplitBySpace(f[5]);
+                var spans = new List<string>();
+                for (int i = 0; i + 1 < hours.Length; i += 2)
+                    if (int.TryParse(hours[i], out int a) && int.TryParse(hours[i + 1], out int b) && !(a <= 600 && b >= 2600))
+                        spans.Add($"{Util.TimeString(a)}-{Util.TimeString(Math.Min(b, 2600))}");
+                parts.Add(spans.Count > 0 ? string.Join("、", spans) : "全天");
+            }
+            var where = new List<string>();
+            foreach (var (name, data) in Game1.locationData)
+            {
+                // Temp、fishingGame 是节日小游戏用的临时地图
+                if (name is "Default" or "Temp" or "fishingGame" || data?.Fish == null)
+                    continue;
+                if (data.Fish.Any(s => s.ItemId == qualifiedId || s.ItemId == id))
+                {
+                    string label = name switch
+                    {
+                        "UndergroundMine" => "矿洞20/60/100层",
+                        "Submarine" => "夜市潜水艇",
+                        "Caldera" => "火山口",
+                        _ when name.StartsWith("Island") => "姜岛",
+                        _ => Game1.getLocationFromName(name)?.DisplayName,
+                    };
+                    label = label != null && label != name ? $"{label}({name})" : name;
+                    if (name.StartsWith("Island") && where.Any(w => w.StartsWith("姜岛")))
+                        continue;
+                    where.Add(name.StartsWith("Island") ? "姜岛" : label);
+                }
+            }
+            if (where.Count > 0)
+                parts.Add("在 " + string.Join("/", where.Take(5)) + (where.Count > 5 ? " 等" : ""));
+            return string.Join("，", parts);
+        }
+
         /// <summary>和 Bundle.IsValidItemForThisIngredientDescription 相同的判断（不含腌制品的风味细节，提交时以游戏判断为准）。</summary>
         public static bool Matches(Item item, BundleIngredientDescription ing, bool ignoreStack = false)
         {

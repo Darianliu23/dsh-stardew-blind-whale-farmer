@@ -354,19 +354,43 @@ namespace BlindWhaleFarmer
             return result;
         }
 
+        /// <summary>被房门挡住时：房间主人按今天的日程什么时候出门（出了门就能在外面找到他）。</summary>
+        private string OwnersOutNote(List<Point> path)
+        {
+            var notes = new List<string>();
+            foreach (var name in path.Select(p => Pathfinder.InteriorDoor(Loc, p)).Where(d => d != null && !Pathfinder.CanOpenDoor(Loc, d)).SelectMany(d => d.Skip(1)).Distinct())
+            {
+                var npc = Game1.getCharacterFromName(name);
+                var here = npc?.currentLocation;
+                if (here == null || here != Loc || npc.Schedule == null)
+                    continue;
+                int now = Game1.timeOfDay;
+                var next = npc.Schedule.Where(kv => kv.Key > now && !here.Name.Equals(kv.Value.targetLocationName, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(kv => kv.Key).Select(kv => (time: kv.Key, to: kv.Value.targetLocationName)).FirstOrDefault();
+                if (next.to != null)
+                {
+                    string to = Game1.getLocationFromName(next.to)?.DisplayName ?? next.to;
+                    notes.Add($"{npc.displayName}按今天的日程 {Util.TimeString(next.time)} 出门去{to}（{next.to}），到时候再找（wait 可以写 until={Util.TimeString(next.time)}）");
+                }
+                else
+                    notes.Add($"{npc.displayName}按今天的日程不会再出门了，明天出门时再找");
+            }
+            return notes.Count == 0 ? "" : "。" + string.Join("；", notes);
+        }
+
         /// <summary>走不到时，看看是不是被锁着的房门挡住了。</summary>
         private string WhyUnreachable(ICollection<Point> goals)
         {
             var viaLocked = Pathfinder.FindPath(Loc, Player.TilePoint, goals, throughLockedDoors: true);
             var owners = viaLocked?
-                .Select(p => Pathfinder.ClosedDoor(Loc, p))
+                .Select(p => Pathfinder.InteriorDoor(Loc, p))
                 .Where(d => d != null && !Pathfinder.CanOpenDoor(Loc, d))
                 .SelectMany(d => d.Skip(1))
                 .Distinct()
                 .Select(n => Game1.getCharacterFromName(n)?.displayName ?? n)
                 .ToList();
             if (owners is { Count: > 0 })
-                return $"要穿过{string.Join("/", owners)}的房门，得先和{string.Join("或", owners)}有 2 心好感才能进";
+                return $"要穿过{string.Join("/", owners)}的房门，得先和{string.Join("或", owners)}有 2 心好感才能进" + OwnersOutNote(viaLocked);
             var me = Player.TilePoint;
             var (reachable, closest, dist) = Pathfinder.Explore(Loc, me, goals);
             if (reachable <= 1)
@@ -758,14 +782,31 @@ namespace BlindWhaleFarmer
                     o.Fail($"{targetName} 在夜市里（冬季 15-17 日晚上 17:00 起），今天没有夜市");
                     yield break;
                 }
-                var route = Exits.PlanRoute(Loc, IsBeach(targetName) || viaNightMarket ? "Beach" : targetName, blockedExits);
+                // 节日当天：开始前节日地图在布置（游戏不让进，走到边上会被弹回来），开始后走进去会直接开始节日。
+                // 不是去节日的话绕开那张地图（比如镇上布置复活节时，从农场北边经过山林去山上）
+                var fest = Knowledge.TodaysFestival();
+                bool festSetup = fest != null && Game1.timeOfDay < fest.Start;
+                string avoidFest = fest != null && (festSetup || (fest.EnteringStartsFestival && !travelIntoFestival)) ? fest.Location : null;
+                string routeTarget = IsBeach(targetName) || viaNightMarket ? "Beach" : targetName;
+                if (festSetup && routeTarget.Equals(fest.Location, StringComparison.OrdinalIgnoreCase))
+                {
+                    o.Fail($"今天是{fest}，{fest.Location} 正在布置节日，{Util.TimeString(fest.Start)} 以前进不去。先做别的，到点再去（参加节日用 festival enter）");
+                    yield break;
+                }
+                var route = Exits.PlanRoute(Loc, routeTarget, blockedExits, avoidFest);
+                if ((route == null || route.Count == 0) && avoidFest != null && Exits.PlanRoute(Loc, routeTarget, blockedExits) is { Count: > 0 })
+                {
+                    o.Fail(festSetup
+                        ? $"今天是{fest}，{fest.Location} 正在布置节日，{Util.TimeString(fest.Start)} 以前进不去，去 {targetName} 又只能经过那里。先做不经过 {fest.Location} 的事，{Util.TimeString(fest.Start)} 以后再去"
+                        : $"今天是{fest}，现在进 {fest.Location} 会直接进入节日，去 {targetName} 又只能经过那里。想参加就用 festival enter；不参加就等到 {Util.TimeString(fest.End)} 以后再去，或者先做不经过 {fest.Location} 的事");
+                    yield break;
+                }
                 if (route == null || route.Count == 0)
                 {
                     o.Fail(blockedWhy != null ? $"{blockedWhy}；试过的其他路线也走不通" : $"找不到从 {Loc.NameOrUniqueName} 到 {targetName} 的路线");
                     yield break;
                 }
-                // 节日进行中走进节日地图会直接开始节日：时间停住、普通动作都用不了，所以这里先拦下
-                var fest = Knowledge.TodaysFestival();
+                // 节日进行中走进节日地图会直接开始节日：时间停住、普通动作都用不了，所以这里先拦下（目的地就是节日地图时）
                 if (fest != null && fest.EnteringStartsFestival && !travelIntoFestival
                     && route.Any(e => e.Target.Equals(fest.Location, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -787,7 +828,7 @@ namespace BlindWhaleFarmer
                 // 这个出口是唯一的路（比如森林去秘密森林）：被新长出来的石头、树枝、杂草挡住时没法绕，就边走边清
                 string planTarget = IsBeach(targetName) || viaNightMarket ? "Beach" : targetName;
                 bool onlyRoute = Exits.PlanRoute(Loc, planTarget,
-                    new HashSet<string>(blockedExits) { Exits.ExitKey(exitFrom, route[0]) }) is not { Count: > 0 };
+                    new HashSet<string>(blockedExits) { Exits.ExitKey(exitFrom, route[0]) }, avoidFest) is not { Count: > 0 };
                 foreach (var s in TakeExit(route[0], o, onlyRoute))
                     yield return s;
                 // 火山里被矮人机关门挡住（比如从火山口的捷径下来，第 0 层的门要踩旁边的开关才开）：踩亮走得到的开关，再走一次
@@ -822,7 +863,7 @@ namespace BlindWhaleFarmer
                     blockedWhy = o.Message;
                     if (askBeforeDetour)
                     {
-                        var other = Exits.PlanRoute(Loc, targetName, blockedExits);
+                        var other = Exits.PlanRoute(Loc, targetName, blockedExits, avoidFest);
                         o.Fail(blockedWhy + "。你来选：① 开路：用 clear_area 清掉挡路的东西（砍树砸石要花体力和时间，但这条路以后都能走）"
                             + (other is { Count: > 0 }
                                 ? $"；② 绕路：travel_to 加 detour=true，这次经过 {string.Join("→", other.Select(e => e.Target))}（不花体力但路远，下次还得绕）。看看今天的体力和时间，这条路常走就开路"
@@ -1235,6 +1276,13 @@ namespace BlindWhaleFarmer
 
         public IEnumerable<object> Interact(int? x, int? y, string npcName, string itemSpec)
         {
+            // 冒险家公会的 Gil 不在人物列表里，要点他坐的那几格
+            if (IsGilName(npcName) && string.IsNullOrWhiteSpace(itemSpec))
+            {
+                foreach (var s in TalkToGil())
+                    yield return s;
+                yield break;
+            }
             // 找人说话、背包里正好有要交给他的任务物品：直接交（空手说话游戏不会交任务，AI 常以为说话就能交）
             if (string.IsNullOrWhiteSpace(itemSpec) && x == null && y == null && !string.IsNullOrWhiteSpace(npcName)
                 && FindVillager(npcName) is { } questNpc && !HasQuestReadyToTurnIn(questNpc))
@@ -1943,7 +1991,9 @@ namespace BlindWhaleFarmer
             var bowl = DryPetBowl(loc);
             if (tiles.Count == 0 && bowl == null)
             {
-                yield return ActionResult.Success(CropsElsewhereNote(true) ?? "这里没有需要浇水的作物");
+                int doomed = Observer.DoomedCrops(loc);
+                string why = doomed > 0 ? $"这里有 {doomed} 株今晚换季就会枯死（下个季节种不了），浇了也白浇，没浇" : "这里没有需要浇水的作物";
+                yield return ActionResult.Success(CropsElsewhereNote(true) is { } other ? why + "。" + other : why);
                 yield break;
             }
             string err = null;
@@ -3335,9 +3385,21 @@ namespace BlindWhaleFarmer
             Point cur = Player.TilePoint;
             double tiles = 0;
             int hops = 0;
-            if (Loc != home)
+            var from = Loc;
+            // 矿洞（含骷髅洞穴）每层都没有普通出口：先走到这层的出口梯子，爬上去到矿洞入口（GameLocation 里 ladder 的 warpFarmer），再从那里算
+            if (from is MineShaft ms && ms.tileBeneathLadder is var below)
             {
-                var route = Exits.PlanRoute(Loc, home.NameOrUniqueName);
+                tiles += Util.Manhattan(cur, new Point((int)below.X, (int)below.Y));
+                hops++;
+                bool skull = ms.mineLevel > 120 && ms.mineLevel != 77377;
+                from = Game1.getLocationFromName(skull ? "SkullCave" : "Mine");
+                cur = skull ? new Point(3, 4) : new Point(23, 8);
+                if (from == null)
+                    return null;
+            }
+            if (from != home)
+            {
+                var route = Exits.PlanRoute(from, home.NameOrUniqueName);
                 if (route == null)
                     return null;
                 foreach (var e in route)
@@ -3349,6 +3411,27 @@ namespace BlindWhaleFarmer
             }
             tiles += Util.Manhattan(cur, bed);
             return WalkMinutes(tiles, hops);
+        }
+
+        private static bool HasFarmTotem() => Player.Items.Any(i => i?.QualifiedItemId == "(O)688");
+
+        /// <summary>
+        /// 下矿、火山这类长动作该不该收工回家：走回家上床要赶在 24:00 前（留 20 分钟余量）；背包里有“传送图腾：农场”就能挖到 24:00 再用图腾回去。
+        /// 算不出路程时按 22:00 收工。该停返回说明（含怎么回家），不用停返回 null。
+        /// </summary>
+        internal static string TimeToHeadHome()
+        {
+            int now = Game1.timeOfDay;
+            bool totem = HasFarmTotem();
+            int? walk = EstimateMinutesToBed();
+            if (totem)
+                return now >= 2400 ? $"已经 {Util.TimeString(now)} 了，该回家睡觉：背包里有传送图腾：农场，马上 use_item 传送图腾：农场 回去（凌晨 2:00 前一定要 sleep）" : null;
+            if (walk == null)
+                return now >= 2200 ? $"已经 {Util.TimeString(now)} 了，这里算不出走回家要多久，先收工：马上 travel_to Farm 回家睡觉（凌晨 2:00 前一定要 sleep）" : null;
+            int arrive = FromMinutes(ToMinutes(now) + walk.Value + 20);
+            return arrive >= 2400
+                ? $"已经 {Util.TimeString(now)} 了，从这里走回家上床大约要 {walk} 分钟，再挖就赶不上 24:00 前睡觉。马上 travel_to Farm 回家（凌晨 2:00 还没睡会晕倒、被扣钱）"
+                : null;
         }
 
         /// <summary>走 tiles 格、切 hops 次地图大约要多少游戏分钟（向上取整到 10 分钟）。算法见 EstimateMinutesToBed。</summary>
@@ -3401,21 +3484,64 @@ namespace BlindWhaleFarmer
                     notes.Add($"⚠⚠ 必须马上 sleep：现在 {Util.TimeString(now)}，{trip}。凌晨 2:00 还没睡就会晕倒，被扣钱、第二天体力减半");
                 else if (arrive >= 2400)
                     notes.Add($"⚠ 该回家了：现在 {Util.TimeString(now)}，{trip}，现在出发约 {Util.TimeString(arrive)} 躺下。过了 24:00 才睡第二天体力会少，2:00 前一定要 sleep");
-                else if (!urgentOnly)
-                    notes.Add($"晚上了：{trip}（现在出发约 {Util.TimeString(arrive)} 到床上）。23:00 左右就该 sleep");
+                else if (!urgentOnly || Loc is MineShaft or VolcanoDungeon && arrive >= 2330)
+                    notes.Add($"晚上了：{trip}（现在出发约 {Util.TimeString(arrive)} 到床上）。23:00 左右就该 sleep"
+                        + (Loc is MineShaft or VolcanoDungeon ? "。还在矿洞里，别再往下挖了，留出回家的时间" : ""));
+                // 来不及走回去时正是用图腾的时候
+                if (arrive >= 2400 && HasFarmTotem() && Loc is not Farm && Loc != Utility.getHomeOfFarmer(Player))
+                    notes.Add("背包里有传送图腾：农场：现在用 use_item 传送图腾：农场 直接回农场最快");
             }
             return notes.Count > 0 ? string.Join("\n", notes) : null;
         }
 
-        public IEnumerable<object> Wait(int minutes)
+        public IEnumerable<object> Wait(int? minutesArg, string until)
         {
+            int start = Game1.timeOfDay;
+            int startMin = start / 100 * 60 + start % 100;
+            // AI 心里记的时间常常是旧的（以为 18:00 其实已经 21:00），按“等到几点”算就不会多等；
+            // 目标时间已经过了就不等，直接报现在几点
+            int minutes;
+            if (!string.IsNullOrWhiteSpace(until))
+            {
+                if (!TryParseClock(until, out int untilMin))
+                {
+                    yield return ActionResult.Fail($"until 看不懂：{until}。写成 18:00 这样的时间。现在是 {Util.TimeString(start)}");
+                    yield break;
+                }
+                if (untilMin <= startMin)
+                {
+                    yield return ActionResult.Success($"没有等：现在已经是 {Util.TimeString(start)}，过了 {Util.TimeString(untilMin / 60 * 100 + untilMin % 60)}。"
+                        + FestivalWaitNote(start));
+                    yield break;
+                }
+                minutes = untilMin - startMin;
+            }
+            else
+                minutes = minutesArg ?? 60;
             // 一次最多等两小时：等太久中途发生什么都看不到，剩下的再 wait 一次
             int asked = minutes;
             minutes = Math.Clamp(minutes, 10, MaxWaitMinutes);
             string rest = asked > MaxWaitMinutes ? $"（一次最多等 {MaxWaitMinutes} 分钟；你要等 {asked} 分钟，还差 {asked - MaxWaitMinutes} 分钟，需要的话再 wait 一次）" : "";
-            int start = Game1.timeOfDay;
-            int startMin = start / 100 * 60 + start % 100;
             int targetMin = startMin + minutes;
+            // 节日当天别把入场时间等过去：没开始就等到开始为止；已经开始了最多等到结束前半小时
+            string festStop = "";
+            var fest = Game1.isFestival() ? null : Knowledge.TodaysFestival();
+            if (fest != null)
+            {
+                int fs = fest.Start / 100 * 60 + fest.Start % 100, fe = fest.End / 100 * 60 + fest.End % 100;
+                if (startMin < fs && targetMin > fs)
+                {
+                    targetMin = fs;
+                    rest = "";
+                    festStop = $"。{fest.Name}{Util.TimeString(fest.Start)} 开始，等到开始就停了，现在去 {fest.Location} 能进场";
+                }
+                else if (startMin >= fs && startMin < fe && targetMin > fe - 30)
+                {
+                    targetMin = Math.Max(startMin + 10, fe - 30);
+                    rest = "";
+                    festStop = $"。{fest.Name}正在进行，{Util.TimeString(fest.End)} 结束，没有多等，要参加现在就去 {fest.Location}";
+                }
+            }
             int startDay = Game1.dayOfMonth;
             for (int i = 0; i < 60 * 600; i++)
             {
@@ -3442,7 +3568,44 @@ namespace BlindWhaleFarmer
                         + string.Join("、", new[] { thirsty > 0 ? $"{thirsty} 格要浇水" : null, ripe > 0 ? $"{ripe} 格能收" : null }.Where(x => x != null))
                         + "，等人/等开门的空档可以先去干活，算好时间再回来";
             }
-            yield return ActionResult.Success($"等待结束，现在是 {Util.TimeString(Game1.timeOfDay)}{rest}{idle}");
+            yield return ActionResult.Success($"等待结束：从 {Util.TimeString(start)} 等到 {Util.TimeString(Game1.timeOfDay)}{rest}{festStop}{idle}");
+        }
+
+        /// <summary>18:00、1800、18 这类写法转成当天的分钟数（凌晨 1、2 点写 25:00/26:00 也认）。</summary>
+        private static bool TryParseClock(string s, out int minutes)
+        {
+            minutes = 0;
+            s = s.Trim().Replace("：", ":");
+            int h, m = 0;
+            if (s.Contains(':'))
+            {
+                var parts = s.Split(':');
+                if (parts.Length != 2 || !int.TryParse(parts[0], out h) || !int.TryParse(parts[1], out m))
+                    return false;
+            }
+            else if (int.TryParse(s, out int n))
+            {
+                if (n >= 100) { h = n / 100; m = n % 100; }
+                else h = n;
+            }
+            else
+                return false;
+            if (h < 6 && h >= 0) h += 24;
+            if (h > 26 || m < 0 || m >= 60)
+                return false;
+            minutes = h * 60 + m;
+            return true;
+        }
+
+        /// <summary>节日当天、还能进场时提醒一句，免得以为错过了或者忘了去。</summary>
+        private static string FestivalWaitNote(int time)
+        {
+            var fest = Game1.isFestival() ? null : Knowledge.TodaysFestival();
+            if (fest == null || time >= fest.End)
+                return "";
+            return time < fest.Start
+                ? $"今天{fest.Name}{Util.TimeString(fest.Start)}~{Util.TimeString(fest.End)} 在 {fest.Location}"
+                : $"{fest.Name}正在进行，{Util.TimeString(fest.End)} 结束，要参加现在就去 {fest.Location}";
         }
 
         private const int MaxWaitMinutes = 120;

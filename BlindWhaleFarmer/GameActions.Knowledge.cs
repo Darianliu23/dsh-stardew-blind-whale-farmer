@@ -423,7 +423,11 @@ namespace BlindWhaleFarmer
             }
             if (Knowledge.MuseumDonatable().Count == 0 && museum.getRewardsForPlayer(Player).Count == 0)
             {
-                yield return ActionResult.Fail("背包里没有可以捐给博物馆的东西（矿物、古物，而且博物馆还没有的），也没有待领的奖励");
+                var dup = Player.Items.Where(i => i != null && LibraryMuseum.IsItemSuitableForDonation(i.QualifiedItemId, checkDonatedItems: false))
+                    .Select(i => i.DisplayName).Distinct().ToList();
+                yield return ActionResult.Fail("背包里没有可以捐给博物馆的东西（矿物、古物，而且博物馆还没有的），也没有待领的奖励"
+                    + (dup.Count > 0 ? $"。背包里的 {string.Join("、", dup.Take(10))} 博物馆已经有了（每种只收一件），可以卖掉或留着送人" : "")
+                    + $"。博物馆现在 {museum.museumPieces.Length}/{LibraryMuseum.totalArtifacts} 件");
                 yield break;
             }
 
@@ -534,7 +538,13 @@ namespace BlindWhaleFarmer
                 lines.Add($"【{Knowledge.AreaDisplayName(group.Key)}】{(available ? "" : "（还没解锁）")}");
                 foreach (var b in group)
                 {
-                    var missing = b.Ingredients.Where(i => !i.completed).Select(Knowledge.IngredientName).ToList();
+                    // 鱼带上季节、天气、时间、在哪钓，免得在错的季节、错的水域干钓
+                    var missing = b.Ingredients.Where(i => !i.completed).Select(i =>
+                    {
+                        string n = Knowledge.IngredientName(i);
+                        string q = i.category.HasValue || i.id == null ? null : i.id.StartsWith("(") ? i.id : "(O)" + i.id;
+                        return Knowledge.FishWhereWhen(q) is string fw ? $"{n}（{fw}）" : n;
+                    }).ToList();
                     var have = Knowledge.InventoryMatches(b);
                     lines.Add($"  {b.DisplayName}：已交 {b.SlotsDone}/{b.SlotsNeeded}，可选材料（交够 {b.SlotsNeeded - b.SlotsDone} 种即可）：{string.Join("、", missing)}"
                         + (have.Count > 0 ? $"；背包里能交：{string.Join("、", have)}" : ""));

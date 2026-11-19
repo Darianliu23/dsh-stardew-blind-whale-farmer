@@ -115,7 +115,7 @@ namespace BlindWhaleFarmer
                 P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false),
                 P("force", "boolean", "要交的东西也照样出货（一般不要用）", false));
 
-            Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就自动挑箱子：同样的东西放进已经有它的箱子（叠在一起），没有就放进装着同类东西的箱子，再没有才放最近的。", 120,
+            Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就自动挑箱子：同样的东西放进已经有它的箱子（叠在一起），没有就放进装着同类东西的箱子；箱子按大类分工（矿石资源、作物、鱼和钓具、采集品、宝石矿物古物……），新种类先找装同一大类的箱子，再找空箱子，实在没地方才混放。", 120,
                 j => () => a.StoreItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
                 P("items", "string", "要存的物品名，多个用逗号分隔；不传或 all 表示除工具外全部存", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
@@ -153,8 +153,9 @@ namespace BlindWhaleFarmer
                 P("force", "boolean", "要交的东西也照样吃（一般不要用）", false));
 
             Add("use_item", "拿起背包里的东西使用（和手持右键一样，用掉一个）：读书（技能书加经验，能力书第一次读有永久加成）、读秘密纸条（直接返回纸条内容）、用图腾（传送图腾回农场/山上/海边/沙漠/姜岛、雨图腾让明天下雨、宝藏图腾）、吹马笛。吃东西用 eat；晶球、神秘盒找克林特用 crack_geodes。", 60,
-                j => () => a.UseItem(Str(j, "item")),
-                P("item", "string", "物品名称或背包序号"));
+                j => () => a.UseItem(Str(j, "item"), OptBool(j, "force") ?? false),
+                P("item", "string", "物品名称或背包序号"),
+                P("force", "boolean", "时间还早、走回农场来得及时，传送图腾：农场默认不让用（图腾留到深夜赶不回去时再用）；确实要现在用才传 true", false));
 
             Add("open_shop", "在商店所在地点打开商店界面（店主要在场、在营业时间）。不传 shop_id 就自动判断：SeedShop→杂货店，Blacksmith→铁匠，ScienceHouse→木匠，FishShop→鱼店，Saloon→酒吧，"
                 + "Forest→旅行货车（周五、周日），Sewer→科罗布斯（卖星之果实等），QiNutRoom→齐钻商店，Mine→矮人，SandyHouse→桑迪，Desert→沙漠商人，Club→赌场，IslandNorth→岛上商人，VolcanoDungeon5→火山矮人。", 20,
@@ -338,9 +339,10 @@ namespace BlindWhaleFarmer
             Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。", 420,
                 j => () => a.Sleep());
 
-            Add("wait", "原地等待若干游戏分钟（10~120，一次最多两小时，要等更久就分几次），比如等商店开门。", 300,
-                j => () => a.Wait(OptInt(j, "minutes") ?? 60),
-                P("minutes", "integer", "游戏内分钟数"));
+            Add("wait", "原地等待（一次最多两小时，要等更久就分几次），比如等商店开门、等节日开始。要等到某个钟点就传 until（比如 18:00），按游戏里的真实时间算，已经过了就不等、直接告诉你现在几点；别用记忆里的时间自己算 minutes。节日当天不会把入场时间等过去。", 300,
+                j => () => a.Wait(OptInt(j, "minutes"), OptStr(j, "until")),
+                P("minutes", "integer", "等多少游戏分钟（10~120），和 until 二选一", false),
+                P("until", "string", "等到几点，比如 18:00（凌晨写 25:00）", false));
 
             Add("say", "联机时在游戏聊天里说一句话，其他玩家能看到。只有联机时能用。", 10,
                 j => () => a.Say(Str(j, "text")),

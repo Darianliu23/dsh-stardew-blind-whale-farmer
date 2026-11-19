@@ -880,9 +880,23 @@ namespace BlindWhaleFarmer
         /// <summary>农场上摆机器、箱子的规划问题：别压在田里、别堵建筑门口。洒水器、稻草人本来就该放田里。</summary>
         private static string PlacementProblem(GameLocation loc, Item item, Point tile)
         {
-            if (loc is not Farm farm || item is not SObject o || !o.bigCraftable.Value || o.IsSprinkler() || o.IsScarecrow())
+            if (item is not SObject o || !o.bigCraftable.Value)
                 return null;
-            var v = new Vector2(tile.X, tile.Y);
+            string farmProblem = loc is Farm farm && !o.IsSprinkler() && !o.IsScarecrow() ? FarmPlacementProblem(farm, o, tile) : null;
+            if (farmProblem != null)
+                return farmProblem;
+            // 箱子、机器会挡路：放下后不能把路堵死，也不能把旁边的箱子/机器围得够不着
+            if (BlockageProblem(loc, tile) is string block)
+            {
+                var better = NearbyUnblockingSpot(loc, o, tile);
+                return block + (better is Point b ? $"。换到 ({b.X},{b.Y}) 不会挡路" : "");
+            }
+            return null;
+        }
+
+        /// <summary>农场上额外的规矩：别压田里、别堵建筑门口、箱子放一起。</summary>
+        private static string FarmPlacementProblem(Farm farm, SObject o, Point tile)
+        {
             foreach (var f in Fields(farm).Where(f => f.Tiles.Count >= 4))
                 if (f.Box.Contains(tile))
                     return $"({tile.X},{tile.Y}) 在田 ({f.Box.Left},{f.Box.Top})-({f.Box.Right - 1},{f.Box.Bottom - 1}) 里面，机器箱子放田里会占地、挡路";
@@ -892,8 +906,111 @@ namespace BlindWhaleFarmer
                 if (tile.Y >= by + b.tilesHigh.Value && tile.Y <= by + b.tilesHigh.Value + 1 && tile.X >= bx && tile.X < bx + b.tilesWide.Value)
                     return $"({tile.X},{tile.Y}) 堵在 {b.buildingType.Value} 门口";
             }
+            // 箱子放一起：离已有的箱子太远就拦下，告诉她挨着哪个放
+            if (o is Chest || ChestIds.Contains(o.QualifiedItemId))
+            {
+                var others = PlayerChests(farm).Select(c => c.tile).ToList();
+                if (others.Count > 0)
+                {
+                    var near = others.OrderBy(c => Math.Max(Math.Abs(c.X - tile.X), Math.Abs(c.Y - tile.Y))).First();
+                    if (Math.Max(Math.Abs(near.X - tile.X), Math.Abs(near.Y - tile.Y)) > 3)
+                        return $"箱子要和农场上已有的箱子放在一起，({tile.X},{tile.Y}) 离最近的箱子 ({near.X},{near.Y}) 太远了，挨着它放（旁边留一格走路）";
+                }
+            }
             return null;
         }
+
+        /// <summary>从玩家现在的位置能走到的格子；block 那一格当成已经放了东西。passable 是缓存。</summary>
+        private static HashSet<Point> ReachableTiles(GameLocation loc, Point start, Point? block, Dictionary<Point, bool> passable, int maxNodes = 12000)
+        {
+            bool Can(Point p)
+            {
+                if (block == p)
+                    return false;
+                if (!passable.TryGetValue(p, out bool ok))
+                    passable[p] = ok = Pathfinder.IsPassable(loc, p.X, p.Y);
+                return ok;
+            }
+            var seen = new HashSet<Point> { start };
+            var queue = new Queue<Point>();
+            queue.Enqueue(start);
+            while (queue.Count > 0 && seen.Count < maxNodes)
+            {
+                var cur = queue.Dequeue();
+                foreach (var d in Pathfinder.Dirs)
+                {
+                    var next = new Point(cur.X + d.X, cur.Y + d.Y);
+                    if (!seen.Contains(next) && Can(next))
+                    {
+                        seen.Add(next);
+                        queue.Enqueue(next);
+                    }
+                }
+            }
+            return seen;
+        }
+
+        /// <summary>
+        /// 在 tile 放一个挡路的东西以后：原来走得到的地方有没有被隔开（堵死一条窄路、把一块空地围起来），
+        /// 附近的箱子/机器是不是还有一格能站过去用。有问题返回原因，没问题返回 null。
+        /// </summary>
+        private static string BlockageProblem(GameLocation loc, Point tile, Dictionary<Point, bool> cache = null, HashSet<Point> before = null)
+        {
+            var start = Game1.player.TilePoint;
+            if (start == tile)
+                return null;
+            cache ??= new Dictionary<Point, bool>();
+            before ??= ReachableTiles(loc, start, null, cache);
+            if (!before.Contains(tile))
+                return null; // 放在走不到的地方，本来就不挡谁
+            var after = ReachableTiles(loc, start, tile, cache);
+            if (before.Count < 12000 && after.Count < before.Count - 1)
+            {
+                var lost = before.Where(p => p != tile && !after.Contains(p)).ToList();
+                // 墙角一两格的小凹位被挡住无所谓（旁边的箱子/机器下面单独查）
+                if (lost.Count > 2)
+                {
+                    var near = lost.OrderBy(p => Util.Manhattan(p, tile)).First();
+                    return $"({tile.X},{tile.Y}) 放下以后会把路堵死：({near.X},{near.Y}) 那边 {lost.Count} 格就走不过去了";
+                }
+            }
+            // 附近的箱子、机器：原来能站到它旁边，放下以后还得能
+            foreach (var p in loc.objects.Pairs)
+            {
+                var ot = new Point((int)p.Key.X, (int)p.Key.Y);
+                if (!p.Value.bigCraftable.Value || Math.Max(Math.Abs(ot.X - tile.X), Math.Abs(ot.Y - tile.Y)) > 2)
+                    continue;
+                var stands = Pathfinder.Dirs.Select(d => new Point(ot.X + d.X, ot.Y + d.Y)).ToList();
+                if (stands.Any(before.Contains) && !stands.Any(s => s != tile && after.Contains(s)))
+                    return $"({tile.X},{tile.Y}) 放下以后，({ot.X},{ot.Y}) 的{p.Value.DisplayName}四周就没有能站的格子了，打不开/用不了";
+            }
+            return null;
+        }
+
+        /// <summary>tile 附近（3 格内）放下不挡路、也不违反农场规矩的格子，离 tile 最近的一个。</summary>
+        private static Point? NearbyUnblockingSpot(GameLocation loc, SObject o, Point tile)
+        {
+            var cache = new Dictionary<Point, bool>();
+            var before = ReachableTiles(loc, Game1.player.TilePoint, null, cache);
+            var candidates = new List<Point>();
+            for (int dx = -3; dx <= 3; dx++)
+                for (int dy = -3; dy <= 3; dy++)
+                    if (dx != 0 || dy != 0)
+                        candidates.Add(new Point(tile.X + dx, tile.Y + dy));
+            foreach (var c in candidates.OrderBy(c => Util.Manhattan(c, tile)))
+            {
+                if (!before.Contains(c) || c == Game1.player.TilePoint || loc.objects.ContainsKey(new Vector2(c.X, c.Y))
+                    || loc.terrainFeatures.ContainsKey(new Vector2(c.X, c.Y)) || !loc.CanItemBePlacedHere(new Vector2(c.X, c.Y)))
+                    continue;
+                if (loc is Farm farm && !o.IsSprinkler() && !o.IsScarecrow() && FarmPlacementProblem(farm, o, c) != null)
+                    continue;
+                if (BlockageProblem(loc, c, cache, before) == null)
+                    return c;
+            }
+            return null;
+        }
+
+        private static readonly HashSet<string> ChestIds = new() { "(BC)130", "(BC)232", "(BC)BigChest", "(BC)BigStoneChest" };
 
         /// <summary>已经摆了机器/箱子的地方（同一片放一起好管理），给放置失败的提示用。</summary>
         private static string MachineAreaHint(GameLocation loc)
@@ -935,7 +1052,8 @@ namespace BlindWhaleFarmer
             {
                 var items = chest.GetItemsForPlayer().Where(i => i != null).ToList();
                 bool fridge = loc is StardewValley.Locations.FarmHouse fh && chest == fh.fridge.Value;
-                string head = $"- {loc.NameOrUniqueName} ({tile.X},{tile.Y}){(fridge ? " 冰箱" : "")} {items.Count}/{chest.GetActualCapacity()} 格：";
+                string kind = fridge || items.Count == 0 ? "" : $"【{ChestGroup(items)}】";
+                string head = $"- {loc.NameOrUniqueName} ({tile.X},{tile.Y}){(fridge ? " 冰箱" : "")}{kind} {items.Count}/{chest.GetActualCapacity()} 格：";
                 string body = items.Count == 0 ? "空" : string.Join("、", items.OrderByDescending(i => i.Stack).Take(10).Select(i => $"{i.DisplayName}x{i.Stack}"))
                                                     + (items.Count > 10 ? $" 等 {items.Count} 种" : "");
                 if (sb.Length + head.Length + body.Length > maxChars)
@@ -966,7 +1084,8 @@ namespace BlindWhaleFarmer
                 if (filter != null && items.Count == 0)
                     continue;
                 hits += items.Sum(i => i.Stack);
-                sb.AppendLine($"{loc.NameOrUniqueName} ({tile.X},{tile.Y}) {chest.GetItemsForPlayer().Count(i => i != null)}/{chest.GetActualCapacity()} 格："
+                string kind = ChestGroup(chest.GetItemsForPlayer()) is { } g && !(loc is StardewValley.Locations.FarmHouse fh && chest == fh.fridge.Value) ? $"【{g}】" : "";
+                sb.AppendLine($"{loc.NameOrUniqueName} ({tile.X},{tile.Y}){kind} {chest.GetItemsForPlayer().Count(i => i != null)}/{chest.GetActualCapacity()} 格："
                     + (items.Count == 0 ? "空" : string.Join("、", items.Select(Util.ItemLabel))));
             }
             if (filter != null && hits == 0)

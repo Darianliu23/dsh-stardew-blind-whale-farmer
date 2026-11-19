@@ -64,6 +64,11 @@ namespace BlindWhaleFarmer
                     if (Chebyshev(p, bomb) >= radius + 2 && loc.isTileOnMap(x, y) && Pathfinder.IsPassable(loc, x, y))
                         goals.Add(p);
                 }
+            // 别跑到怪跟前去等：离会打人的怪 2 格以内的落脚点不要（全都挨着怪时才不挑）
+            var threats = LiveMonsters(loc).Where(m => m.DamageToFarmer > 0 && !CannotHurt(m)).Select(m => m.TilePoint).ToList();
+            var safe = goals.Where(g => threats.All(t => Chebyshev(g, t) > 2)).ToList();
+            if (safe.Count > 0)
+                goals = safe;
             return goals.Count == 0 ? null : Pathfinder.FindPath(loc, from, goals, 20000);
         }
 
@@ -118,9 +123,22 @@ namespace BlindWhaleFarmer
                 foreach (var s in WalkPath(run, walk))
                     yield return s;
             }
-            // 等它炸完（引信 + 一点余量）；时间停着（开了界面）时引信也停，所以按“时间在走的帧”数
+            // 等它炸完（引信 + 一点余量）；时间停着（开了界面）时引信也停，所以按“时间在走的帧”数。
+            // 等的时候怪贴上来就挥武器打它（原地挥，不会走回爆炸范围里）
+            int weapon = BestWeapon();
+
             for (int waited = 0, t = 0; waited < BombFuseTicks + 30 && t < 1200; t++)
             {
+                if (weapon >= 0 && Game1.shouldTimePass() && NearestThreat(1) is Monster near)
+                {
+                    int t0 = Game1.ticks;
+                    foreach (var s in SwingAt(weapon, near, DirToward(Player.StandingPixel, near.GetBoundingBox().Center)))
+                        yield return s;
+                    int spent = Math.Max(1, Game1.ticks - t0);
+                    waited += spent;
+                    t += spent;
+                    continue;
+                }
                 if (Game1.shouldTimePass())
                     waited++;
                 yield return null;

@@ -191,7 +191,7 @@ namespace BlindWhaleFarmer
                 PutInto(chest, pending, perChest);
             }
             foreach (var (chest, names) in perChest)
-                stored.Add($"({tiles[chest].X},{tiles[chest].Y}) 的箱子：{string.Join("、", names)}");
+                stored.Add($"{Loc.DisplayName}（{Loc.NameOrUniqueName}）({tiles[chest].X},{tiles[chest].Y}) 的箱子：{string.Join("、", names)}");
         }
 
         /// <summary>把东西放进箱子，放进去多少记在 perChest 里。</summary>
@@ -239,11 +239,23 @@ namespace BlindWhaleFarmer
                     || (plan.TryGetValue(c.chest, out var planned) && planned.Any(p => p.canStackWith(item)));
                 bool SameKind((Point tile, Chest chest) c) => category != 0
                     && c.chest.GetItemsForPlayer().Any(i => i is SObject other && other.Category == category);
+                // 箱子按大类分工：这个箱子主要装的是同一大类 → 空箱子 → 混着有这一类 → 别的类的箱子（实在没地方才混放）
+                string group = StoreGroup(item);
+                int GroupRank((Point tile, Chest chest) c)
+                {
+                    var inside = c.chest.GetItemsForPlayer().Where(i => i != null)
+                        .Concat(plan.TryGetValue(c.chest, out var p) ? p : Enumerable.Empty<Item>()).ToList();
+                    if (inside.Count == 0)
+                        return 3;
+                    if (ChestGroup(inside) == group)
+                        return 2;
+                    return inside.Any(i => StoreGroup(i) == group) ? 4 : 5;
+                }
                 // 能直接叠进去（同样的东西还没叠满）就不占新格子
                 bool Stacks((Point tile, Chest chest) c) => c.chest.GetItemsForPlayer().Any(i => i != null && i.canStackWith(item) && i.Stack + item.Stack <= i.maximumStackSize());
                 var pick = chests
                     .Where(c => Stacks(c) || free[c.chest] > 0)
-                    .OrderBy(c => Same(c) ? 0 : SameKind(c) ? 1 : 2)
+                    .OrderBy(c => Same(c) ? 0 : SameKind(c) ? 1 : GroupRank(c))
                     .ThenBy(c => Util.Manhattan(c.tile, me))
                     .Select(c => c.chest)
                     .FirstOrDefault();
@@ -259,6 +271,37 @@ namespace BlindWhaleFarmer
             }
             return plan;
         }
+
+        /// <summary>收纳用的大类：箱子按这个分工（矿石资源一箱、作物一箱、鱼一箱……）。</summary>
+        internal static string StoreGroup(Item item)
+        {
+            if (item is Tool || item is StardewValley.Objects.Ring || item is StardewValley.Objects.Boots || item is StardewValley.Objects.Hat || item is StardewValley.Objects.Clothing)
+                return "装备";
+            if (item is not SObject o)
+                return "其他";
+            if (o.bigCraftable.Value)
+                return "机器家具";
+            if (o.Type == "Arch")
+                return "宝石矿物古物";
+            return o.Category switch
+            {
+                -15 or -16 => "矿石资源",
+                -2 or -12 => "宝石矿物古物",
+                -75 or -79 or -80 => "作物",
+                -26 or -27 => "加工品",
+                -4 or -21 or -22 or -23 => "鱼和钓具",
+                -81 => "采集品",
+                -7 or -25 => "料理食材",
+                -74 or -19 => "种子肥料",
+                -5 or -6 or -18 => "动物产品",
+                -28 or -20 => "怪物掉落杂物",
+                _ => "其他"
+            };
+        }
+
+        /// <summary>箱子主要装的大类（格子最多的那类）；空箱子返回 null。</summary>
+        internal static string ChestGroup(IEnumerable<Item> items)
+            => items.Where(i => i != null).GroupBy(StoreGroup).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
 
         // ───────────────────────── 主动收纳 ─────────────────────────
 

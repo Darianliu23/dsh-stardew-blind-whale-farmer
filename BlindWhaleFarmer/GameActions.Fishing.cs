@@ -256,7 +256,9 @@ namespace BlindWhaleFarmer
             var loc = Loc;
             if (!loc.canFishHere())
             {
-                yield return ActionResult.Fail("这里不能钓鱼");
+                yield return ActionResult.Fail(loc is StardewValley.Locations.Submarine
+                    ? "潜艇还没下潜到海底（窗外的帘子没完全拉开），现在钓不了：先 interact 潜艇控制台下潜，等一会儿下潜完再 fish"
+                    : "这里不能钓鱼");
                 yield break;
             }
             casts = Math.Clamp(casts, 1, 20);

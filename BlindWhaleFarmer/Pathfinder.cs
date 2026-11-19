@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using StardewValley;
 
@@ -49,6 +50,15 @@ namespace BlindWhaleFarmer
             return ArgUtility.SplitBySpace(action);
         }
 
+        /// <summary>室内门（不管开着还是关着）的 Action 参数（第 0 个是 "Door"），不是室内门返回 null。</summary>
+        public static string[] InteriorDoor(GameLocation loc, Point p)
+        {
+            if (!loc.interiorDoors.ContainsKey(p))
+                return null;
+            string action = loc.doesTileHaveProperty(p.X, p.Y, "Action", "Buildings");
+            return action != null && action.StartsWith("Door") ? ArgUtility.SplitBySpace(action) : null;
+        }
+
         /// <summary>和 GameLocation.performAction 的 "Door" 一样：没写主人随便开；写了主人要有 2 心好感或以前开过。</summary>
         public static bool CanOpenDoor(GameLocation loc, string[] door)
         {
@@ -69,9 +79,15 @@ namespace BlindWhaleFarmer
         {
             if (p.X < 0 || p.Y < 0 || p.X >= MapWidth(loc) || p.Y >= MapHeight(loc))
                 return false;
-            var door = ClosedDoor(loc, p);
-            if (door != null)
-                return throughLockedDoors || CanOpenDoor(loc, door);
+            // 自己开不了的门，开着也当锁着：村民刚推开的卧室门（比如晚上德米特里厄斯进卧室）一会儿就自己关上，
+            // 好感不够的玩家走到跟前就被拦下
+            if (InteriorDoor(loc, p) is { } door)
+            {
+                if (!CanOpenDoor(loc, door))
+                    return throughLockedDoors;
+                if (ClosedDoor(loc, p) != null)
+                    return true;
+            }
             return IsPassable(loc, p.X, p.Y) && (goalSet.Contains(p) || !IsTouchWarp(loc, p.X, p.Y));
         }
 
@@ -112,6 +128,34 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>
+        /// 火山传送带房间里的尖刺机关（Spiker）打不死，人站到它那条直线上它就冲过来撞人。
+        /// 它所在的格子和它来回滑的那条轨道算“危险格”，寻路时多算步数：能绕就绕，非穿不可时横穿过去。没有尖刺返回 null。
+        /// </summary>
+        private static Dictionary<Point, int> SpikerLanes(GameLocation loc)
+        {
+            Dictionary<Point, int> lanes = null;
+            foreach (var spiker in loc.characters.OfType<StardewValley.Monsters.Spiker>())
+            {
+                lanes ??= new Dictionary<Point, int>();
+                var at = spiker.TilePoint;
+                lanes[at] = 30;
+                var axis = spiker.targetDirection % 2 == 0 ? new[] { Dirs[0], Dirs[2] } : new[] { Dirs[1], Dirs[3] };
+                foreach (var d in axis)
+                {
+                    var p = at;
+                    for (int i = 0; i < 40; i++)
+                    {
+                        p = new Point(p.X + d.X, p.Y + d.Y);
+                        if (!loc.isTileOnMap(p.X, p.Y) || !IsPassable(loc, p.X, p.Y))
+                            break;
+                        lanes[p] = Math.Max(lanes.GetValueOrDefault(p), i < 2 ? 12 : 6);
+                    }
+                }
+            }
+            return lanes;
+        }
+
+        /// <summary>
         /// 寻找从 start 到任一 goal 的路径（含起点），找不到返回 null。能开的室内门算可走；
         /// throughLockedDoors 时锁着的门也算，只用来解释为什么走不到。
         /// clearable 给了的话，它认可的格子（杂草、石头这类能清掉的障碍）也算能走，每格多算 clearCost 步，
@@ -144,6 +188,7 @@ namespace BlindWhaleFarmer
                 return best;
             }
 
+            var danger = SpikerLanes(loc);
             var open = new PriorityQueue<Point, int>();
             var cameFrom = new Dictionary<Point, Point>();
             var gScore = new Dictionary<Point, int> { [start] = 0 };
@@ -174,6 +219,8 @@ namespace BlindWhaleFarmer
                     if (pass == 0)
                         continue;
                     int ng = curG + (pass == 2 ? 1 + clearCost : 1);
+                    if (danger != null && danger.TryGetValue(next, out int extra) && !goalSet.Contains(next))
+                        ng += extra;
                     if (gScore.TryGetValue(next, out int old) && old <= ng)
                         continue;
                     gScore[next] = ng;

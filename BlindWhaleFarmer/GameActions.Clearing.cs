@@ -26,7 +26,9 @@ namespace BlindWhaleFarmer
         internal static bool IsGrabbable(StardewValley.Object obj) =>
             obj != null && obj.IsSpawnedObject && !obj.questItem.Value && !obj.bigCraftable.Value && obj is not BreakableContainer
             && !obj.IsBreakableStone() && !obj.IsWeeds()
-            && (obj.isForage() || obj.Category is StardewValley.Object.GemCategory or StardewValley.Object.mineralsCategory);
+            && (obj.isForage() || obj.Category is StardewValley.Object.GemCategory or StardewValley.Object.mineralsCategory
+                // 矿洞地上还会刷珍珠、恐龙蛋、海草（MineShaft.getRandomItemForThisLevel），不算采集物也不是矿物，一样用手拿
+                || obj.QualifiedItemId is "(O)797" or "(O)107" or "(O)152");
 
         /// <summary>
         /// 这格挡路的东西能不能清掉。杂草、木桶（游戏里 isHeavyHitter 的工具都能打：武器、镰刀、镐子、斧头、锄头）、
@@ -93,6 +95,13 @@ namespace BlindWhaleFarmer
             // 树枝只有斧头砍得动（Object.performToolAction）
             if (obj.IsTwig())
                 tool = Util.FindTool<Axe>();
+            // 木箱木桶用伤害最高的武器劈，几下就开；没武器再用镰刀
+            else if (obj is BreakableContainer)
+            {
+                tool = BestWeapon();
+                if (tool < 0)
+                    tool = Util.FindTool<MeleeWeapon>(w => w.isScythe());
+            }
             else if (!obj.IsBreakableStone())
             {
                 tool = Util.FindTool<MeleeWeapon>(w => w.isScythe());

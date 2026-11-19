@@ -85,7 +85,8 @@ namespace BlindWhaleFarmer
             string clutter = TripClutterHint("mine", i => i is WateringCan); // 火山里水壶要用来浇岩浆
             if (Loc is not VolcanoDungeon && Loc is not Caldera)
             {
-                if (!Exits.BoatRepaired)
+                // 人已经在姜岛上就不用管船（联机农场帮手、或者别的办法上的岛，船的标记不一定在这个存档的 mailReceived 里）
+                if (!Exits.BoatRepaired && Loc?.InIslandContext() != true)
                 {
                     yield return ActionResult.Fail("火山在姜岛北边，要先修好威利的船（repair_boat）坐船去姜岛");
                     yield break;
@@ -126,6 +127,8 @@ namespace BlindWhaleFarmer
             var switchTries = new Dictionary<Point, int>();
             int bombBudget = Math.Clamp(maxBombs ?? 5, 0, 50), blastBombs = 0, blastStones = 0, blastOres = 0;
             var skippedBlasts = new HashSet<Point>();
+            var skippedNodes = new HashSet<(VolcanoDungeon, Point)>();
+            int oreNodes = 0;
             var blastNotes = new List<string>();
             string stop = null;
             VolcanoDungeon refilledOn = null;
@@ -168,9 +171,9 @@ namespace BlindWhaleFarmer
                     stop = "体力不够了";
                     break;
                 }
-                if (Game1.timeOfDay >= 2300)
+                if (TimeToHeadHome() is string late)
                 {
-                    stop = "已经 23 点了，该回家睡觉";
+                    stop = late;
                     break;
                 }
                 // 能灌水的那层先把水壶灌满（后面的岩浆要浇）
@@ -254,6 +257,46 @@ namespace BlindWhaleFarmer
                             continue;
                         }
                     }
+                }
+
+                // 4.5) 附近值钱的矿石/宝石节点顺手敲掉（和下矿时楼梯边的矿一样：不远、体力还够、身边没怪才敲）
+                if (Player.Stamina >= Player.MaxStamina * 0.2f && NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
+                    && vd.objects.Pairs
+                        .Where(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId))
+                        .Select(kv => new Point((int)kv.Key.X, (int)kv.Key.Y))
+                        .Where(p => !skippedNodes.Contains((vd, p)) && Util.Manhattan(p, Player.TilePoint) <= MineExtraRange + 2)
+                        .OrderBy(p => Util.Manhattan(p, Player.TilePoint))
+                        .Select(p => (Point?)p).FirstOrDefault() is Point node)
+                {
+                    foreach (var s in GoAdjacent(node, o))
+                        yield return s;
+                    if (!o.Ok)
+                    {
+                        o.Succeed();
+                        if (Loc == vd)
+                            skippedNodes.Add((vd, node));
+                        continue;
+                    }
+                    int hpBefore = Player.health;
+                    for (int k = 0; k < 8 && vd.objects.ContainsKey(new Vector2(node.X, node.Y)); k++)
+                    {
+                        // 被打了或有怪贴上来：先停手，回到开头去打
+                        if (Player.health < hpBefore || NearestThreat(2) != null)
+                            break;
+                        foreach (var s in UseToolOnce(pick, node, o))
+                            yield return s;
+                        if (!o.Ok)
+                            break;
+                    }
+                    if (!vd.objects.ContainsKey(new Vector2(node.X, node.Y)))
+                    {
+                        rocks++;
+                        oreNodes++;
+                    }
+                    else if (Player.health >= hpBefore && NearestThreat(2) == null)
+                        skippedNodes.Add((vd, node)); // 敲了 8 下还在（镐子太差之类），别再来
+                    o.Succeed();
+                    continue;
                 }
 
                 // 5) 去出口：路上的石头、杂物敲掉，岩浆浇冷（GoToAnyClearing 每清一格重新找路）
@@ -340,7 +383,7 @@ namespace BlindWhaleFarmer
                 break;
             }
 
-            string msg = $"从{VolcanoLevelName(startLoc)}到了{VolcanoLevelName(Loc)}（上了 {descended} 层），敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            string msg = $"从{VolcanoLevelName(startLoc)}到了{VolcanoLevelName(Loc)}（上了 {descended} 层），敲了 {rocks} 块石头" + (oreNodes > 0 ? $"（其中顺手挖的矿石/宝石节点 {oreNodes} 个）" : "") + $"，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
             if (lavaCooled > 0)
                 msg += $"；浇冷了 {lavaCooled} 格岩浆";
             if (switchesPressed > 0)
