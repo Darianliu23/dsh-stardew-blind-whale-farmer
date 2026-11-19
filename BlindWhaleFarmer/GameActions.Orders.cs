@@ -79,9 +79,15 @@ namespace BlindWhaleFarmer
                 if (string.IsNullOrEmpty(text))
                     continue;
                 string where = obj is DonateObjective d && !string.IsNullOrEmpty(d.dropBox.Value)
-                    ? $"；放进 {d.GetDropboxLocationName()} 的投递箱，用 special_order_dropbox" : "";
+                    ? $"；放进 {d.GetDropboxLocationName()} 的投递箱，用 special_order_dropbox"
+                    : obj is DeliverObjective dv && !string.IsNullOrEmpty(dv.targetName.Value)
+                        ? $"；拿到后用 give_gift npc={dv.targetName.Value} item=东西名 交给{NpcName(dv.targetName.Value)}（交任务不算送礼，不受次数限制；要一次交够数，同一堆）"
+                        : "";
                 sb.AppendLine(progress ? $"  目标：{text}（{obj.GetCount()}/{obj.GetMaxCount()}{(obj.IsComplete() ? "，已完成" : "")}{where}）" : $"  目标：{text}{(where != "" ? "（" + where.TrimStart('；') + "）" : "")}");
             }
+            // 法师的“灵外质”订单：灵外质只在订单进行中从幽灵身上掉（约 9.5%，捡到一个后就不再掉），幽灵在矿洞 51～69 层（每层最多一只），骷髅洞穴的暗层也有
+            if (order.questKey.Value == "Wizard")
+                sb.AppendLine("  提示：灵外质从幽灵身上掉（只在接了这个订单后掉，约一成概率，捡到一个就不再掉）。幽灵在矿洞 51～69 层，每层最多一只，用 explore_mine 去那几层打幽灵；捡到后 give_gift npc=Wizard item=灵外质 交给法师（在法师塔）");
             int days = order.GetDaysLeft();
             if (days > 0)
                 sb.AppendLine($"  期限：{(progress ? "还剩 " : "")}{days} 天");
@@ -132,7 +138,10 @@ namespace BlindWhaleFarmer
                 : null;
             if (!qi && !SpecialOrder.IsSpecialOrdersBoardUnlocked())
             {
-                yield return ActionResult.Fail("特别订单板还没开放（第一年秋季 2 日起，在刘易斯家门口）");
+                // 订单板还没开但手上已经有订单：照样报进度
+                yield return activeText != null
+                    ? ActionResult.Success("特别订单板还没开放（第一年秋季 2 日起，在刘易斯家门口），还不能接新订单。" + activeText)
+                    : ActionResult.Fail("特别订单板还没开放（第一年秋季 2 日起，在刘易斯家门口）");
                 yield break;
             }
             if (qi && !QiBoardUnlocked(out string qiWhy))

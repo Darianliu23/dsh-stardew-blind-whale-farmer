@@ -104,9 +104,24 @@ namespace BlindWhaleFarmer
             return null;
         }
 
-        /// <summary>把这件东西交给他能不能完成某个任务（按游戏自己的判断，只探测不交）。</summary>
+        /// <summary>把这件东西交给他能不能完成某个任务或特别订单（按游戏自己的判断，只探测不交）。</summary>
         private static bool IsQuestDelivery(NPC npc, Item item) =>
-            Player.questLog.Any(q => !q.completed.Value && Safe(() => q.OnItemOfferedToNpc(npc, item, probe: true)));
+            Player.questLog.Any(q => !q.completed.Value && Safe(() => q.OnItemOfferedToNpc(npc, item, probe: true)))
+            || IsSpecialOrderDelivery(npc, item);
+
+        /// <summary>特别订单里“交给某人”的目标（比如法师要灵外质）：游戏在 NPC.tryToReceiveActiveObject 里按 onItemDelivered 探测。</summary>
+        private static bool IsSpecialOrderDelivery(NPC npc, Item item)
+        {
+            foreach (var order in Player.team.specialOrders)
+            {
+                if (order.questState.Value != StardewValley.SpecialOrders.SpecialOrderStatus.InProgress || order.onItemDelivered == null)
+                    continue;
+                foreach (var d in order.onItemDelivered.GetInvocationList())
+                    if (Safe(() => ((Func<Farmer, NPC, Item, bool, int>)d)(Player, npc, item, true) > 0))
+                        return true;
+            }
+            return false;
+        }
 
         /// <summary>拿着任务要的东西走过去交给他（和送礼走同一条路，但不检查送礼次数和喜好）。</summary>
         private IEnumerable<object> DeliverQuestItem(NPC npc, int idx)
@@ -165,7 +180,8 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"不认识叫“{npcName}”的村民");
                 yield break;
             }
-            int idx = Util.FindItemIndex(itemSpec, Knowledge.IsGiftable);
+            // 任务物品（灵外质之类）不能当礼物送，但能交任务
+            int idx = Util.FindItemIndex(itemSpec, it => Knowledge.IsGiftable(it) || IsQuestDelivery(npc, it));
             if (idx < 0)
             {
                 yield return ActionResult.Fail($"背包里没有可以送人的“{itemSpec}”");
