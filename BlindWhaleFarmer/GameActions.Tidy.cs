@@ -68,6 +68,8 @@ namespace BlindWhaleFarmer
                 keep.RemoveWhere(i => !UsefulFor(purpose, i) && !keepAlso(i) && !(i is SObject q && (q.questItem.Value || reserved(i)?.StartsWith("任务") == true || reserved(i)?.StartsWith("特别订单") == true)));
                 // 下矿多带点回血的：一路打下去两样不够吃
                 if (purpose == "mine")
+                    keep.UnionWith(items.Where(IsEscapeItem));
+                if (purpose == "mine")
                     keep.UnionWith(items.Where(i => Heals(i) && reserved(i) == null)
                         .OrderBy(i => ((SObject)i).sellToStorePrice() / Math.Max(1, ((SObject)i).healthRecoveredOnConsumption()))
                         .Take(Math.Max(0, 5 - keep.Count(Heals))).ToList());

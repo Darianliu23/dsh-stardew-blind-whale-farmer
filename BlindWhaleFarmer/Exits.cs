@@ -77,6 +77,10 @@ namespace BlindWhaleFarmer
                 // 岛北去火山的传送点写的是 VolcanoEntrance，游戏踩上去时换成火山第 0 层（GameLocation.isCollidingWithWarp）
                 string target = w.TargetName == "VolcanoEntrance" ? StardewValley.Locations.VolcanoDungeon.GetLevelName(0) : w.TargetName;
                 // 火山的层是临时生成的：getLocationFromName 会当场生成一整层地图，只看名字对不对就行
+                // 岛北悬崖下蜗牛教授的洞（IslandNorthCave1）洞口被大石头堵着，要先用炸弹炸开（IslandNorth.caveOpened）；
+                // 没炸开时传送点仍然在，但人走不进去，只能当它不存在，免得寻路往石头里钻
+                if (target == "IslandNorthCave1" && loc is StardewValley.Locations.IslandNorth { caveOpened.Value: false })
+                    continue;
                 if (w.npcOnly.Value || (!StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(target) && Game1.getLocationFromName(target) == null))
                     continue;
                 list.Add(new Exit { Kind = ExitKind.Warp, Tile = new Point(w.X, w.Y), Target = target, TargetTile = new Point(w.TargetX, w.TargetY) });

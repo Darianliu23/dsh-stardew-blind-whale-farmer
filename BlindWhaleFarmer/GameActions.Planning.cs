@@ -413,6 +413,10 @@ namespace BlindWhaleFarmer
         };
 
         /// <summary>某个出门目的用得上的东西（purpose 为 null 时什么都不额外排除）。</summary>
+        /// <summary>回家用的：传送图腾（农场 688、山 689、海滩 690、姜岛 886）、回城权杖。</summary>
+        internal static bool IsEscapeItem(Item i) =>
+            i is StardewValley.Tools.Wand || i is SObject o && o.QualifiedItemId is "(O)688" or "(O)689" or "(O)690" or "(O)886";
+
         private static bool UsefulFor(string purpose, Item i)
         {
             // 戒指、鞋子到哪都带；武器除了去镇上都带（农场晚上、钓鱼的地方也会有怪）
@@ -421,7 +425,7 @@ namespace BlindWhaleFarmer
             switch (purpose)
             {
                 case "mine":
-                    return i is Pickaxe || (i is MeleeWeapon w && !w.isScythe()) || i is Slingshot
+                    return i is Pickaxe || IsEscapeItem(i) || (i is MeleeWeapon w && !w.isScythe()) || i is Slingshot
                         || i is SObject o && (o.Name.Contains("Bomb") || o.QualifiedItemId is "(O)71" || o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0
                                               || o.Category == SObject.CookingCategory)
                         || i is Ring or Boots;

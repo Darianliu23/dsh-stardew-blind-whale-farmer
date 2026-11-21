@@ -266,15 +266,31 @@ namespace BlindWhaleFarmer
                         stats.Problems.Add("背包满了，收不了奶/毛");
                     else
                     {
-                        animal.pauseTimer = Math.Max(animal.pauseTimer, 3000);
-                        foreach (var s in UseToolOnce(toolIdx, target, o))
-                            yield return s;
-                        foreach (var s in WaitPlayerFree())
-                            yield return s;
+                        // 没收成功（动物挪了位置、没打中）：重新走到旁边、对准，最多试 3 次
+                        for (int attempt = 0; attempt < 3 && animal.currentProduce.Value != null; attempt++)
+                        {
+                            if (attempt > 0)
+                            {
+                                FreezeAnimals(loc);
+                                target = animal.TilePoint;
+                                var again = new Outcome();
+                                foreach (var s in GoAdjacent(target, again))
+                                    yield return s;
+                                if (!again.Ok)
+                                    break;
+                                target = animal.TilePoint;
+                                Face(target);
+                            }
+                            animal.pauseTimer = Math.Max(animal.pauseTimer, 3000);
+                            foreach (var s in UseToolOnce(toolIdx, target, o))
+                                yield return s;
+                            foreach (var s in WaitPlayerFree())
+                                yield return s;
+                        }
                         if (animal.currentProduce.Value == null)
                             stats.Harvested++;
                         else
-                            stats.Problems.Add($"{animal.displayName}没收成功");
+                            stats.Problems.Add($"{animal.displayName}试了 3 次还是没收成功");
                     }
                 }
 

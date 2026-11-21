@@ -910,12 +910,12 @@ namespace BlindWhaleFarmer
         private const int MineExtraRange = 8;
 
         /// <summary>这一层附近能捡的矿物/采集物和能劈的木箱木桶，近的在前。</summary>
-        private static IEnumerable<(Point p, SObject obj)> MineExtras(GameLocation mine, HashSet<Point> skipped)
+        private static IEnumerable<(Point p, SObject obj)> MineExtras(GameLocation mine, HashSet<Point> skipped, int range = MineExtraRange)
         {
             var me = Player.TilePoint;
             return mine.objects.Pairs
                 .Select(kv => (p: new Point((int)kv.Key.X, (int)kv.Key.Y), obj: kv.Value))
-                .Where(t => !skipped.Contains(t.p) && Util.Manhattan(t.p, me) <= MineExtraRange
+                .Where(t => !skipped.Contains(t.p) && Util.Manhattan(t.p, me) <= range
                     && (t.obj is BreakableContainer || IsGrabbable(t.obj) && Player.couldInventoryAcceptThisItem(t.obj)))
                 .OrderBy(t => Util.Manhattan(t.p, me));
         }
@@ -986,8 +986,25 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(blockedWhy);
                 yield break;
             }
+            // 在农场出发、背包杂或空位少：先自动整理一次（purpose=mine）。人工整理过的话杂物少，这里就不会触发；
+            // 只在农场做（箱子在那儿），进出矿洞来回不重复跑
+            string tidyNote = null;
+            if (Loc is Farm && TripClutterHint("mine") != null)
+            {
+                ActionResult tidied = null;
+                foreach (var s in TidyBackpack("", "mine"))
+                {
+                    if (s is ActionResult r)
+                        tidied = r;
+                    else
+                        yield return s;
+                }
+                tidyNote = tidied == null ? null : "出发前自动整理了背包：" + tidied.Message;
+            }
             // 出门带了下矿用不上的东西，结束时提醒一句（下次出门前整理）
             string clutter = TripClutterHint("mine");
+            if (tidyNote != null)
+                clutter = clutter == null ? tidyNote : tidyNote + "；" + clutter;
             // 刚下矿时背包几乎满了：照样下，结束时说清楚（上面的杂物提醒已经说了空位的话就不重复）
             if (clutter == null && Loc is not MineShaft and not VolcanoDungeon && Player.freeSpotsInInventory() < 3)
                 clutter = $"⚠ 下矿时背包只剩 {Player.freeSpotsInInventory()} 个空位，敲出来的矿石宝石很快就装不下（掉在地上）。下次先 tidy_backpack purpose=mine 再来";
@@ -1138,6 +1155,8 @@ namespace BlindWhaleFarmer
             int bombBudget = Math.Clamp(maxBombs ?? 5, 0, 50), blastBombs = 0, blastStones = 0, blastOres = 0;
             var skippedBlasts = new HashSet<Point>();
             var blastNotes = new List<string>();
+            // 这一层是不是“有空”把东西收拾干净再走：体力、血量够，身边没怪，在这层待得还不到 90 分钟。
+            int levelSeen = -1, levelSince = 0;
             while (descended < levels && guard++ < 400)
             {
                 if (Loc is not MineShaft mine)
@@ -1180,9 +1199,22 @@ namespace BlindWhaleFarmer
                     break;
                 }
 
+                int nowMin = Game1.timeOfDay / 100 * 60 + Game1.timeOfDay % 100;
+                if (mine.mineLevel != levelSeen)
+                {
+                    levelSeen = mine.mineLevel;
+                    levelSince = nowMin;
+                }
+                bool leisure = Player.Stamina >= Player.MaxStamina * 0.35f && Player.health >= Player.maxHealth * 0.5f && NearestThreat(4) == null
+                    && nowMin - levelSince <= 90 && !Player.isInventoryFull();
+                int reach = leisure ? 200 : MineExtraRange;
+                // 整层还有值钱的矿、地上的石英水晶、木箱木桶没收拾：不急着下楼/跳竖井
+                bool valuableLeft = leisure && mine.objects.Pairs.Any(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId)
+                    && !skippedStones.Contains((mine.mineLevel, new Point((int)kv.Key.X, (int)kv.Key.Y))));
+                bool leftovers = leisure && (valuableLeft || MineExtras(mine, skippedExtras, 200).Any());
                 // 0) 有竖井（骷髅洞穴里的洞）就先跳，不跟怪纠缠：一次连降几层，比打完怪再找楼梯快，也安全。每层掉 3 点血，一次最多掉 45 点，所以要求跳完还能剩三成血；这一层有没开的宝箱时先开宝箱
                 var shaft = NearestMineTile(mine, 174);
-                if (shaft.HasValue && !MineChests(mine).Any(c => !skippedChests.Contains(c.tile)) && (!skippedShafts.TryGetValue(shaft.Value, out int rocksThen) || rocks >= rocksThen + 2) && Player.health >= ShaftSafeHealth)
+                if (shaft.HasValue && !MineChests(mine).Any(c => !skippedChests.Contains(c.tile)) && (!skippedShafts.TryGetValue(shaft.Value, out int rocksThen) || rocks >= rocksThen + 2) && Player.health >= ShaftSafeHealth && !leftovers)
                 {
                     int levelBefore = mine.mineLevel;
                     foreach (var s in JumpDownShaft(mine, shaft.Value, o))
@@ -1239,7 +1271,7 @@ namespace BlindWhaleFarmer
 
                 // 2.5) 附近地上的石英、地晶、洞穴萝卜之类捡起来，木箱木桶用武器劈开（不费体力），掉出来的东西捡走。每轮处理一个，处理完回到开头先看有没有怪
                 if (NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
-                    && MineExtras(mine, skippedExtras).FirstOrDefault() is var extra && extra.obj != null)
+                    && MineExtras(mine, skippedExtras, reach).FirstOrDefault() is var extra && extra.obj != null)
                 {
                     bool box = extra.obj is BreakableContainer;
                     string extraName = extra.obj.DisplayName;
@@ -1270,7 +1302,7 @@ namespace BlindWhaleFarmer
                 var ladder = NearestMineTile(mine, 173);
                 bool oresBeforeLadder = ladder.HasValue && Player.Stamina >= Player.MaxStamina * 0.2f && NearestThreat(3) == null
                     && mine.objects.Pairs.Any(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId)
-                        && Util.Manhattan(new Point((int)kv.Key.X, (int)kv.Key.Y), Player.TilePoint) <= MineExtraRange + 2
+                        && Util.Manhattan(new Point((int)kv.Key.X, (int)kv.Key.Y), Player.TilePoint) <= reach + 2
                         && !skippedStones.Contains((mine.mineLevel, new Point((int)kv.Key.X, (int)kv.Key.Y))));
                 if (ladder.HasValue && !oresBeforeLadder)
                 {
@@ -1323,7 +1355,9 @@ namespace BlindWhaleFarmer
                     .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), valuable: ValuableNodeIds.Contains(p.Value.ItemId)))
                     .Where(t => !skippedStones.Contains((mine.mineLevel, t.pt)))
                     // 楼梯已经有了：只敲附近值钱的节点，敲完就下楼
-                    .Where(t => !oresBeforeLadder || t.valuable && Util.Manhattan(t.pt, Player.TilePoint) <= MineExtraRange + 2).ToList();
+                    .Where(t => !oresBeforeLadder || t.valuable && Util.Manhattan(t.pt, Player.TilePoint) <= reach + 2)
+                    // 有竖井、这层还有值钱的矿：只敲值钱的，普通石头不费体力
+                    .Where(t => !(shaft.HasValue && valuableLeft) || t.valuable).ToList();
                 bool hit = false, skippedStone = false;
                 // 有竖井但被石头围着：优先敲通往竖井那个方向的石头，而不是只敲离自己最近的（这时不挑矿）
                 Point? digToward = shaft.HasValue && skippedShafts.ContainsKey(shaft.Value) ? shaft : null;

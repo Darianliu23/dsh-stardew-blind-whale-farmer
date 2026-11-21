@@ -196,11 +196,26 @@ namespace BlindWhaleFarmer
             // 先对齐到当前格，避免半格偏移导致碰撞
             SnapToTile(Player.TilePoint);
             float walkMs = 0;
+            var passedGates = new List<Fence>();
             for (int i = 1; i < path.Count; i++)
             {
                 var target = new Vector2(path[i].X * 64, path[i].Y * 64);
                 int dir = Pathfinder.DirectionTo(path[i - 1], path[i]);
                 Player.faceDirection(dir);
+                CloseGatesBehind(loc, passedGates, path[i - 1], path[i]);
+                if (Pathfinder.GateAt(loc, path[i]) is { } gate)
+                {
+                    // 栅栏门：和手动对着它按交互键一样打开，走过去以后再关上（不关的话牲口会跑出去）
+                    if (gate.gatePosition.Value < 88)
+                    {
+                        Player.Halt();
+                        gate.checkForAction(Player);
+                        foreach (var w in WaitTicks(10))
+                            yield return w;
+                    }
+                    if (!passedGates.Contains(gate))
+                        passedGates.Add(gate);
+                }
                 if (Pathfinder.ClosedDoor(loc, path[i]) != null)
                 {
                     // 和手动对着门按交互键一样，走 performAction 的 "Door"（会检查好感、播放开门声）
@@ -247,7 +262,23 @@ namespace BlindWhaleFarmer
             }
             Player.Halt();
             Player.FarmerSprite.StopAnimation();
+            CloseGatesBehind(loc, passedGates, Player.TilePoint, Player.TilePoint);
             o.Succeed();
+        }
+
+        /// <summary>走过的栅栏门，人已经不在门上、也不是下一步要踩的格子了就关上。</summary>
+        private static void CloseGatesBehind(GameLocation loc, List<Fence> gates, Point standing, Point next)
+        {
+            for (int k = gates.Count - 1; k >= 0; k--)
+            {
+                var g = gates[k];
+                var tile = new Point((int)g.TileLocation.X, (int)g.TileLocation.Y);
+                if (tile == standing || tile == next)
+                    continue;
+                if (g.gatePosition.Value >= 88)
+                    g.toggleGate(false);
+                gates.RemoveAt(k);
+            }
         }
 
         /// <summary>走到 goals 里任意一格。</summary>
@@ -352,6 +383,27 @@ namespace BlindWhaleFarmer
                     result[stand] = counter;
             }
             return result;
+        }
+
+        /// <summary>按村民今天的日程说他接下来要去哪（找不到人时给 AI 一个等他的办法）。</summary>
+        internal static string NpcScheduleHint(NPC n)
+        {
+            try
+            {
+                int now = Game1.timeOfDay;
+                var sched = n.Schedule;
+                if (sched == null || sched.Count == 0)
+                    return $"{n.displayName} 今天没有日程表，一般待在 {n.DefaultMap}";
+                var next = sched.Where(kv => kv.Key > now).OrderBy(kv => kv.Key).Take(4)
+                    .Select(kv => $"{Util.TimeString(kv.Key)} 去 {kv.Value.targetLocationName}").ToList();
+                return next.Count == 0
+                    ? $"{n.displayName} 今天的日程已经走完，会留在 {n.currentLocation?.NameOrUniqueName ?? n.DefaultMap}（晚上通常回家睡觉）"
+                    : $"按 {n.displayName} 今天的日程：{string.Join("，", next)}。可以先去那里等，或到时候再找";
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         /// <summary>被房门挡住时：房间主人按今天的日程什么时候出门（出了门就能在外面找到他）。</summary>
@@ -755,7 +807,8 @@ namespace BlindWhaleFarmer
                     }
                     var t = Player.TilePoint;
                     o.Succeed($"已到达 {targetName}，位置 ({t.X},{t.Y})" + (blockedWhy != null ? "（近路被挡住了，绕路来的）" : "") + doorWaitNote
-                        + (WormNote(Loc) is { } worms ? "。" + worms : "") + packNote);
+                        + (WormNote(Loc) is { } worms ? "。" + worms : "") + packNote
+                        + (Loc.Name == "FarmCave" && FarmCaveHint() == null ? "。注意：现在山洞里没东西可收（水果没掉、蘑菇还没长好），别在这儿耗时间，直接回去干别的；以后状态里出现山洞提示再来" : ""));
                     yield break;
                 }
                 // 夜市（冬 15-17）那几天，游戏把去沙滩的人送到 BeachNightMarket 这张地图，名字不是 Beach 但就是沙滩
@@ -1263,7 +1316,9 @@ namespace BlindWhaleFarmer
             if (before != null && after != before && o.Ok && !Blocked(out _))
             {
                 var pickup = new List<string>();
-                foreach (var s in CollectDebris(new Rectangle(x - 4, y - 4, 9, 9), pickup, before.Contains("树") ? 150 : 45))
+                // 树倒下时木头落在离树根最远 6 格外的地方（往哪边倒随机），所以树要把范围放大
+                int r = before.Contains("树") ? 9 : 4;
+                foreach (var s in CollectDebris(new Rectangle(x - r, y - r, r * 2 + 1, r * 2 + 1), pickup, before.Contains("树") ? 150 : 45))
                     yield return s;
                 if (pickup.Count > 0)
                     msg += "；" + string.Join("；", pickup);
@@ -1313,18 +1368,31 @@ namespace BlindWhaleFarmer
                         yield return ActionResult.Fail($"找不到叫“{npcName}”的人（名字可以用中文或英文）");
                         yield break;
                     }
-                    var go = new Outcome();
-                    foreach (var s in TravelInner(where.NameOrUniqueName, go))
-                        yield return s;
-                    if (!go.Ok)
+                    // 村民会走动：到了发现他已经走了，就再查一次他在哪、再追（最多 3 趟）
+                    for (int attempt = 0; attempt < 3 && npc == null; attempt++)
                     {
-                        yield return ActionResult.Fail($"{villager.displayName} 现在在 {where.NameOrUniqueName}，走过去失败：{go.Message}");
-                        yield break;
+                        where = villager.currentLocation;
+                        if (where == null)
+                            break;
+                        if (Loc != where)
+                        {
+                            var go = new Outcome();
+                            foreach (var s in TravelInner(where.NameOrUniqueName, go))
+                                yield return s;
+                            if (!go.Ok)
+                            {
+                                yield return ActionResult.Fail($"{villager.displayName} 现在在 {where.NameOrUniqueName}，走过去失败：{go.Message}。{NpcScheduleHint(villager)}");
+                                yield break;
+                            }
+                        }
+                        npc = Loc.characters.FirstOrDefault(c => c == villager);
+                        if (npc == null)
+                            foreach (var s in WaitTicks(30))
+                                yield return s;
                     }
-                    npc = Loc.characters.FirstOrDefault(c => c == villager);
                     if (npc == null)
                     {
-                        yield return ActionResult.Fail($"到了 {Loc.NameOrUniqueName}，但 {villager.displayName} 已经走到别处了");
+                        yield return ActionResult.Fail($"追了几趟，到了 {Loc.NameOrUniqueName}，但 {villager.displayName} 又走到别处了（现在在 {villager.currentLocation?.NameOrUniqueName ?? "路上"}）。{NpcScheduleHint(villager)}");
                         yield break;
                     }
                 }
@@ -2021,10 +2089,15 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Success(bowlMsg + "这里没有需要浇水的作物");
                 yield break;
             }
-            foreach (var p in Util.NearestOrder(Player.TilePoint, tiles).Take(Math.Clamp(max, 1, 300)))
+            foreach (var p in Util.ShortRoute(Player.TilePoint, tiles).Take(Math.Clamp(max, 1, 300)))
             {
                 if (!Thirsty(p))
                     continue; // 前面蓄力的一壶水已经顺带浇到了
+                if (Player.Stamina < 4f)
+                {
+                    err = "体力快见底了（不到 4 点），先停手：吃东西或睡觉再浇";
+                    break;
+                }
                 if (Player.Items[canIdx] is WateringCan can && can.WaterLeft <= 0)
                 {
                     foreach (var s in RefillWateringCan(canIdx, o))
@@ -2405,7 +2478,7 @@ namespace BlindWhaleFarmer
             {
                 var pickup = new List<string>();
                 int bx1 = order.Min(q => q.X), by1 = order.Min(q => q.Y), bx2 = order.Max(q => q.X), by2 = order.Max(q => q.Y);
-                foreach (var s in CollectDebris(new Rectangle(bx1 - 2, by1 - 2, bx2 - bx1 + 5, by2 - by1 + 5), pickup))
+                foreach (var s in CollectDebris(new Rectangle(bx1 - 8, by1 - 8, bx2 - bx1 + 17, by2 - by1 + 17), pickup, 120))
                     yield return s;
                 if (pickup.Count > 0)
                     msg += "；" + string.Join("；", pickup);
@@ -3243,9 +3316,15 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 时间 ─────────────────────────
 
-        public IEnumerable<object> Sleep()
+        public IEnumerable<object> Sleep(bool force = false)
         {
             var o = new Outcome();
+            if (!force && Game1.timeOfDay < 1800 && Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" })
+            {
+                int tod = Game1.timeOfDay;
+                yield return ActionResult.Fail($"现在才 {tod / 100}:{tod % 100:00}，一天还长，别浇完水就睡。先想想还有什么没做：矿洞/火山打怪挖矿（explore_mine）、钓鱼、采集野菜、给机器放料收货（果酱、奶酪、蛋黄酱、啤酒）、照顾动物、和村民聊天送礼、清理农场、存钱买东西。天黑（18:00 以后）再睡；确实今天没事可做，sleep force=true");
+                yield break;
+            }
             // 联机时已经躺下在等别人的话，接着等就行
             if (Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" })
             {

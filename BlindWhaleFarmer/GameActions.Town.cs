@@ -480,7 +480,7 @@ namespace BlindWhaleFarmer
                 todo.Add($"地上有 {fruit} 个果蝠带来的水果，进洞后用 forage 捡");
             if (boxes.Count > 0)
                 todo.Add($"{boxes.Count} 个蘑菇箱长好了，进洞后对每个 interact：{string.Join(" ", boxes)}");
-            return "农场山洞（FarmCave，农舍北边的洞口）有东西可收：" + string.Join("；", todo) + "。隔几天就去收一次";
+            return "农场山洞（FarmCave，农舍北边的洞口）有东西可收：" + string.Join("；", todo) + "。只在看到这条提示时才去收，没这条提示就说明还没长好，别白跑";
         }
 
         public IEnumerable<object> QuestBoard(bool accept)

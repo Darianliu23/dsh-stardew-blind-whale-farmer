@@ -722,6 +722,8 @@ namespace BlindWhaleFarmer
                     return ('X', o.DisplayName, "箱子");
                 if (o.heldObject.Value != null && o.MinutesUntilReady > 0)
                     return ('X', $"{o.DisplayName}（加工中：{o.heldObject.Value.DisplayName}，还需 {o.MinutesUntilReady} 分钟）", "");
+                if (o.heldObject.Value == null && o.bigCraftable.Value && o.GetMachineData() != null)
+                    return ('X', $"{o.DisplayName}（空着，可以放料：interact 传 item=原料名把原料放进去，收成品直接 interact）", "机器/设备");
                 return ('X', o.DisplayName, o.bigCraftable.Value ? "机器/设备" : "");
             }
 

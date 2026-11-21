@@ -216,6 +216,33 @@ namespace BlindWhaleFarmer
         public static int Manhattan(Point a, Point b) => Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
 
         /// <summary>按“最近邻”顺序排列要访问的格子，减少来回跑。</summary>
+        /// <summary>最近邻排好以后再做 2-opt（把路线里交叉、来回折返的一段翻过来），一块田从头走到尾不绕。起点固定。</summary>
+        public static List<Point> ShortRoute(Point start, IEnumerable<Point> points)
+        {
+            var r = NearestOrder(start, points);
+            int n = r.Count;
+            if (n < 4 || n > 400)
+                return r;
+            Point At(int i) => i < 0 ? start : r[i];
+            bool improved = true;
+            for (int pass = 0; improved && pass < 30; pass++)
+            {
+                improved = false;
+                for (int i = 0; i < n - 1; i++)
+                    for (int j = i + 1; j < n; j++)
+                    {
+                        int before = Manhattan(At(i - 1), r[i]) + (j + 1 < n ? Manhattan(r[j], r[j + 1]) : 0);
+                        int after = Manhattan(At(i - 1), r[j]) + (j + 1 < n ? Manhattan(r[i], r[j + 1]) : 0);
+                        if (after < before)
+                        {
+                            r.Reverse(i, j - i + 1);
+                            improved = true;
+                        }
+                    }
+            }
+            return r;
+        }
+
         public static List<Point> NearestOrder(Point start, IEnumerable<Point> points)
         {
             var remaining = points.ToList();

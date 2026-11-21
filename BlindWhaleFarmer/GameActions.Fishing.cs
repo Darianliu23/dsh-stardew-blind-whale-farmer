@@ -20,6 +20,9 @@ namespace BlindWhaleFarmer
         /// <summary>小游戏里出现宝箱时，进度够高就去拿（config 的 FishTreasure）。</summary>
         public static bool ChaseTreasure = true;
 
+        /// <summary>最近一次小游戏里那条鱼的难度（越高越难，海星这类岛上的鱼有 70-90）。</summary>
+        public static float LastDifficulty;
+
         /// <summary>这一竿正在追宝箱（进度不够了才放弃回去追鱼）。</summary>
         private static bool chasing;
 
@@ -36,7 +39,7 @@ namespace BlindWhaleFarmer
         {
             // 绿条覆盖 [barPos-32, barPos-32+h]，鱼/宝箱占 [pos-16, pos+12]，让两者中心对齐
             float fish = bar.bobberPosition + 30f - h / 2f;
-            if (!ChaseTreasure || !bar.treasure || bar.treasureCaught || bar.treasureAppearTimer > 0f || bar.bossFish)
+            if (!ChaseTreasure || bar.difficulty >= 60f || !bar.treasure || bar.treasureCaught || bar.treasureAppearTimer > 0f || bar.bossFish)
             {
                 chasing = false;
                 return fish;
@@ -69,6 +72,7 @@ namespace BlindWhaleFarmer
                 chasing = false;
                 return;
             }
+            LastDifficulty = bar.difficulty;
             float h = bar.bobberBarHeight;
             float target = PickTarget(bar, h);
             // 预测几帧后的位置，提前松键/按键，避免来回过冲
@@ -597,7 +601,7 @@ namespace BlindWhaleFarmer
             else if (treasure && loot.Count > 0)
                 o.Succeed("宝箱[" + string.Join("、", loot) + "]" + drop); // 鱼跑了但宝箱拿到了
             else
-                o.Fail(sawBar ? $"{fishName} 跑掉了" : "提竿失败");
+                o.Fail(sawBar ? $"{fishName} 跑掉了" + (FishingAssist.LastDifficulty >= 60f ? $"（这条鱼难度 {FishingAssist.LastDifficulty:0}，很难钓；多试几次，或换带软木浮标/陷阱浮标等钓具，等钓鱼等级高了再来）" : "") : "提竿失败");
         }
 
         /// <summary>

@@ -239,6 +239,17 @@ namespace BlindWhaleFarmer
                         break;
                     }
                 }
+                // 地上已经躺着的金核桃（解谜奖励、以前摇灌木没捡走的）：先走过去捡，不管离灌木远近
+                var lying = Loc.debris.Where(d => IsPickupDebris(d) && (d.item?.QualifiedItemId == "(O)73" || d.itemId.Value == "(O)73")
+                    && !skip.Contains(DebrisTile(d))).Select(DebrisTile).Distinct().ToList();
+                if (lying.Count > 0)
+                {
+                    var spot = lying.OrderBy(p => Util.Manhattan(p, Player.TilePoint)).First();
+                    foreach (var s in CollectDebris(new Rectangle(spot.X - 1, spot.Y - 1, 3, 3), notes, 5))
+                        yield return s;
+                    skip.Add(spot);
+                    continue;
+                }
                 var me = Player.TilePoint;
                 var bush = WalnutBushes(Loc).Where(p => !skip.Contains(p)).OrderBy(p => Util.Manhattan(p, me)).Cast<Point?>().FirstOrDefault();
                 var buried = BuriedWalnuts(Loc).Where(p => !skip.Contains(p)).OrderBy(p => Util.Manhattan(p, me)).Cast<Point?>().FirstOrDefault();

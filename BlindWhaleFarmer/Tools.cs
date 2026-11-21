@@ -280,6 +280,10 @@ namespace BlindWhaleFarmer
                 j => () => a.PrizeMachine(OptInt(j, "count"), OptBool(j, "look") ?? false),
                 P("count", "integer", "换几张，默认全部", false), P("look", "boolean", "只看接下来的奖品", false));
 
+            Add("emote", "发表情：在大肥鱼头顶冒出气泡（happy 开心、heart 爱心、sad 难过、angry 生气、exclamation 感叹号、question 疑问、note 音符、sleep 睡觉、laugh 大笑、yes 点头、no 摇头、hi 打招呼……）。联机时别的玩家也看得到。不传 emote 列出全部。", 10,
+                j => () => a.Emote(OptStr(j, "emote")),
+                P("emote", "string", "表情名（英文或中文），可省略=列出全部", false));
+
             Add("perfection", "查完美度（通关目标）：总百分比和每一项（出货、方尖碑、黄金时钟、怪物讨伐、好感、技能、星之果实、烹饪、制作、钓鱼、金色核桃）还缺什么。不花游戏时间。", 10,
                 j => () => a.Perfection(OptStr(j, "detail")),
                 P("detail", "string", "想看某一项的完整清单：ship / friends / cooking / crafting / fish", false));
@@ -295,7 +299,8 @@ namespace BlindWhaleFarmer
                 P("skill", "string", "farming/mining/fishing/foraging/combat（或 耕种/采矿/钓鱼/采集/战斗），可省略=只看", false));
 
             Add("mermaid_show", "夜市（冬季 15-17 日 17:00-24:30）：自己走进沙滩上的美人鱼船看表演（免费，一分多钟），演完按顺序敲贝壳拿珍珠（每个存档一次，拿过就只看表演）。", 600,
-                j => () => a.MermaidShow());
+                j => () => a.MermaidShow(OptBool(j, "again") ?? false),
+                P("again", "boolean", "珍珠已经拿过时还想再看一遍才传 true", false));
 
             Add("feed_parrot", "姜岛：给鹦鹉交金核桃解锁东西（第一只鹦鹉 1、乌龟让路 10、农舍 20、信箱 5、方尖碑 20、鹦鹉快递 10、挖掘场的桥 10、岛上商人 10、度假村 20、火山桥/捷径各 5）。不传 which 列出现在能交的；传名字就走过去交。", 300,
                 j => () => a.FeedParrot(OptStr(j, "which")),
@@ -336,8 +341,9 @@ namespace BlindWhaleFarmer
             Add("upgrade_house", "找 Robin 升级农舍：第一次 10000g+450木材，升级后有厨房（可以 cook）和冰箱。", 240,
                 j => () => a.UpgradeHouse());
 
-            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。", 420,
-                j => () => a.Sleep());
+            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。18:00 前睡会被拦一下，提醒你一天还长（浇完水就睡等于白白浪费一天）；确实要睡传 force=true。", 420,
+                j => () => a.Sleep(OptBool(j, "force") ?? false),
+                P("force", "boolean", "18:00 前想睡也要传 true（确认今天真的没别的事可做、或者想跳过今天）", false));
 
             Add("wait", "原地等待（一次最多两小时，要等更久就分几次），比如等商店开门、等节日开始。要等到某个钟点就传 until（比如 18:00），按游戏里的真实时间算，已经过了就不等、直接告诉你现在几点；别用记忆里的时间自己算 minutes。节日当天不会把入场时间等过去。", 300,
                 j => () => a.Wait(OptInt(j, "minutes"), OptStr(j, "until")),

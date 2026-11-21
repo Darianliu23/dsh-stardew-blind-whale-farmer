@@ -32,8 +32,13 @@ namespace BlindWhaleFarmer
                   + "别钓鱼钓到太晚忘了去（船 24:30 关门，夜市只开冬季 15-17 日三晚）";
         }
 
-        public IEnumerable<object> MermaidShow()
+        public IEnumerable<object> MermaidShow(bool again = false)
         {
+            if (HasMermaidPearl && !again)
+            {
+                yield return ActionResult.Fail("美人鱼表演已经看过、珍珠也拿过了（每个存档只有一次），不用再去。真想再看一遍传 again=true");
+                yield break;
+            }
             if (!IsNightMarketDay())
             {
                 yield return ActionResult.Fail("美人鱼表演在夜市（冬季 15-17 日晚上），今天没有夜市");

@@ -513,6 +513,9 @@ namespace BlindWhaleFarmer
                 return $"成功：已经在存档里了（{Game1.player.Name} 的{Game1.player.farmName.Value}农场），不用读档";
             if (Game1.activeClickableMenu is not TitleMenu || Game1.gameMode != Game1.titleScreenGameMode)
                 return "失败：现在不在标题画面（游戏正在启动或正在读档），等 10 秒再用 get_state 看看";
+            // 标题菜单在 ticksUntilLanguageLoad 从 0 变为 -1 时才应用启动语言。
+            if (TitleMenu.ticksUntilLanguageLoad >= 0)
+                return "失败：游戏还在启动（正在加载语言设置），等 2 秒再读档，不然进去会是英文界面";
             var saves = new List<(string Slot, DateTime Played)>();
             if (Directory.Exists(Constants.SavesPath))
                 foreach (string dir in Directory.GetDirectories(Constants.SavesPath))

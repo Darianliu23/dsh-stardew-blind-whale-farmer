@@ -74,6 +74,10 @@ namespace BlindWhaleFarmer
             return false;
         }
 
+        /// <summary>这一格上的栅栏门（开着关着都算）；没有返回 null。关着的门走到跟前可以点开，所以寻路当它能走。</summary>
+        public static Fence GateAt(GameLocation loc, Point p) =>
+            loc.objects.TryGetValue(new Vector2(p.X, p.Y), out var o) && o is Fence f && f.isGate.Value && f.health.Value > 1f ? f : null;
+
         /// <summary>寻路时这一格能不能踩：能开的门算能走；传送格只在它就是目的地时才踩。</summary>
         private static bool StepPassable(GameLocation loc, Point p, HashSet<Point> goalSet, bool throughLockedDoors)
         {
@@ -88,6 +92,8 @@ namespace BlindWhaleFarmer
                 if (ClosedDoor(loc, p) != null)
                     return true;
             }
+            if (GateAt(loc, p) != null)
+                return true;
             return IsPassable(loc, p.X, p.Y) && (goalSet.Contains(p) || !IsTouchWarp(loc, p.X, p.Y));
         }
 
