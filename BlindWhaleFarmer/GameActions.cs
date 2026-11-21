@@ -231,6 +231,13 @@ namespace BlindWhaleFarmer
                 }
                 while (true)
                 {
+                    // 换地图的淡入淡出还没结束（联机时农场工人进新地图要等主机发地图，可能很久）：等它结束，不算被打断。
+                    // 真机：travel_to Custom_SophiaHouse、Forest 都因为这个报“移动被打断：正在切换场景”，其实只是还在传送
+                    if ((Game1.isWarping || Game1.fadeToBlack || Game1.locationRequest != null) && Game1.currentLocation == loc)
+                    {
+                        foreach (var w in WaitSceneSettled(30 * 60))
+                            yield return w;
+                    }
                     if (Blocked(out string why))
                     {
                         Player.Halt();
@@ -284,6 +291,11 @@ namespace BlindWhaleFarmer
         /// <summary>走到 goals 里任意一格。</summary>
         private IEnumerable<object> GoToAny(ICollection<Point> goals, Outcome o, string what)
         {
+            // 上一段传送还没淡入完就先等它（最多 30 秒）：联机时农场工人进主机没加载过的地图（比如 SVE 的新地点），
+            // 要等主机把地图发过来，比 TakeExit 等的 10 秒长。以前这里直接报“正在切换场景”，人其实已经到了
+            if (Game1.isWarping || Game1.fadeToBlack || Game1.locationRequest != null)
+                foreach (var s in WaitSceneSettled(30 * 60))
+                    yield return s;
             if (Blocked(out string why))
             {
                 o.Fail(why);
@@ -457,6 +469,73 @@ namespace BlindWhaleFarmer
             string blockers = BlockersNear(closest, 2);
             return $"被挡住了。从 ({me.X},{me.Y}) 能走到 {reachable} 格，其中离目标最近的是 ({closest.X},{closest.Y})，还差 {dist} 格"
                 + (blockers != null ? $"；那附近挡着的有：{blockers}。能清的用 clear_area 或 use_tool 清掉，清不掉就换条路" : "；那附近是墙或水，换个方向或换条路");
+        }
+
+        /// <summary>
+        /// move_to 走不到时的诊断（只读）：挡路的是哪一类（作物/树/石头/建筑/围栏/水/其它，认不出就说“说不清是什么挡着”），
+        /// 再按能不能清掉给一套建议：
+        /// 能清掉的（杂草、树枝、小石头、树……）说怎么清，也给绕行点；
+        /// 清不掉的（建筑、墙、水、围栏，还有认不出的）只说绕：有绕行点给绕行点，没有就直说“绕不过去，先做别的”，不再提清掉。
+        /// 只给一个能走到的绕行点，不再给“从某边以外的方向接近”这种没法照着做的方向。
+        /// </summary>
+        /// <param name="passable">哪些格子能走；不给就用游戏的碰撞检测（Pathfinder.IsPassable）。离线测试传自己构造的。</param>
+        internal static string BlockDiagnosis(GameLocation loc, Point me, Point closest, Point goal, Func<Point, bool> passable = null)
+        {
+            passable ??= p => Pathfinder.IsPassable(loc, p.X, p.Y);
+            var (summary, kind) = MapInfo.DescribeBlockers(loc, closest, 2, passable);
+            bool clearable = kind != null && MapInfo.IsClearable(kind);
+            string what = summary != null
+                ? $"挡路的是：{summary}"
+                : "说不清是什么挡着（附近没有认得出的东西，多半是地图边上的墙、悬崖或者看不见的碰撞）";
+            // 绕行点要真能走到：从玩家出发能走到的格子里挑
+            var reachable = ReachableFrom(me, 4000, passable);
+            Point? detour = MapInfo.DetourPoint(closest, goal, reachable.Contains);
+            string go = detour is Point d
+                ? $"往 ({d.X},{d.Y}) 绕一下（能走到），再试 move_to ({goal.X},{goal.Y})"
+                : null;
+            if (clearable)
+                return $"{what}。{MapInfo.BlockerAdvice(kind)}" + (go != null ? $"；不想清的话，{go}" : "");
+            // 清不掉：只说绕，绕不过去就直说
+            string advice = kind != null ? MapInfo.BlockerAdvice(kind) : "清不掉，只能绕";
+            return $"{what}。{advice}；" + (go ?? $"附近绕不过去，({goal.X},{goal.Y}) 现在走不到，先做别的（要去别的地点用 travel_to）");
+        }
+
+        /// <summary>
+        /// 目标格和它周围 2 格都站不上去时的文案：这时绕到哪都没用，不给绕行点和方向。
+        /// 能清掉的挡路东西说怎么清；清不掉的（建筑、墙、水、围栏……）直说走不到、先做别的。
+        /// </summary>
+        internal static string UnstandableTarget(GameLocation loc, Point target, Func<Point, bool> passable = null)
+        {
+            passable ??= p => Pathfinder.IsPassable(loc, p.X, p.Y);
+            var (summary, kind) = MapInfo.DescribeBlockers(loc, target, 2, passable);
+            string head = $"({target.X},{target.Y}) 和它周围 2 格都站不上去";
+            if (kind != null && MapInfo.IsClearable(kind))
+                return $"{head}，挡着的是：{summary}。{MapInfo.BlockerAdvice(kind)}，清出一格能站的再 move_to";
+            // 这里不说“只能绕”：目标四周都站不上去，绕到哪都没用
+            string what = summary != null ? $"，挡着的是：{summary}，清不掉" : "（说不清是什么挡着，多半是墙、悬崖或者地图边上）";
+            return $"{head}{what}。这一格走不到，先做别的；要去别的地点用 travel_to，看出口用 map_info";
+        }
+
+        /// <summary>从 start 能走到的格子（最多 maxNodes 格）。只做碰撞检测，不动玩家。</summary>
+        private static HashSet<Point> ReachableFrom(Point start, int maxNodes, Func<Point, bool> passable)
+        {
+            var seen = new HashSet<Point> { start };
+            var queue = new Queue<Point>();
+            queue.Enqueue(start);
+            while (queue.Count > 0 && seen.Count < maxNodes)
+            {
+                var cur = queue.Dequeue();
+                foreach (var d in Pathfinder.Dirs)
+                {
+                    var next = new Point(cur.X + d.X, cur.Y + d.Y);
+                    if (!seen.Contains(next) && passable(next))
+                    {
+                        seen.Add(next);
+                        queue.Enqueue(next);
+                    }
+                }
+            }
+            return seen;
         }
 
         /// <summary>手里拿着物品时换成一个工具或空格：避免进门、碰到村民时误送礼、误放置。</summary>
@@ -673,23 +752,56 @@ namespace BlindWhaleFarmer
         {
             var o = new Outcome();
             var target = new Point(x, y);
+            string locName = Loc.NameOrUniqueName;
             if (!Loc.isTileOnMap(x, y))
             {
-                yield return ActionResult.Fail($"({x},{y}) 不在当前地图内");
+                // 地图大小一起报，免得 AI 拿别的地图的坐标再试
+                string msg = $"({x},{y}) 不在当前地图内（{locName} 的地图大小是 {Pathfinder.MapWidth(Loc)}x{Pathfinder.MapHeight(Loc)}，x 是 0~{Pathfinder.MapWidth(Loc) - 1}，y 是 0~{Pathfinder.MapHeight(Loc) - 1}）";
+                yield return ActionResult.Fail(msg + RepeatedFailureNote(locName, target));
                 yield break;
             }
             var goals = Pathfinder.IsPassable(Loc, x, y)
                 ? new List<Point> { target }
                 : Pathfinder.NearestStandTiles(Loc, target, 2);
+            if (goals.Count == 0)
+            {
+                // 目标和它周围 2 格都站不了：绕到哪都站不上去，只说挡着的是什么；能清的说怎么清，清不掉的直说先做别的
+                yield return ActionResult.Fail(UnstandableTarget(Loc, target) + RepeatedFailureNote(locName, target));
+                yield break;
+            }
             foreach (var s in GoToAny(goals, o, $"({x},{y})"))
                 yield return s;
             if (!o.Ok)
             {
-                yield return ActionResult.Fail(o.Message);
+                string msg = o.Message;
+                // 真是被挡住了（不是被剧情、界面、门打断）才诊断：挡的是什么、往哪绕
+                if (msg.Contains("被挡住了") || msg.Contains("被困住了"))
+                {
+                    var me0 = Player.TilePoint;
+                    var (_, closest, _) = Pathfinder.Explore(Loc, me0, goals);
+                    var goal = goals.OrderBy(g => Util.Manhattan(g, closest)).First();
+                    msg += "。" + BlockDiagnosis(Loc, me0, closest, goal);
+                }
+                yield return ActionResult.Fail(msg + RepeatedFailureNote(locName, target));
                 yield break;
             }
+            MapInfo.ResetMoveFailures();
             var me = Player.TilePoint;
             yield return ActionResult.Success(me == target ? $"已到达 ({x},{y})" : $"目标格不可站立，已走到最近的 ({me.X},{me.Y})");
+        }
+
+        /// <summary>
+        /// move_to 失败时记一笔：同一地点同一格连续第 2 次失败起，附上这张地图的出口摘要（最多 5 条，离玩家近的先），
+        /// 让 AI 想想是不是该换地图走。只读。
+        /// </summary>
+        private static string RepeatedFailureNote(string locName, Point target)
+        {
+            int times = MapInfo.RecordMoveFailure(locName, target);
+            if (times < 2 || Game1.currentLocation == null)
+                return "";
+            string exits = MapInfo.ExitSummary(Game1.currentLocation, Player.TilePoint, 5);
+            return $"\n⚠ 这已经是第 {times} 次走不到 ({target.X},{target.Y}) 了，别再原样重试。"
+                + (exits != null ? $"这张地图的出口（离你近的 {MapInfo.MaxEntriesPerSection} 条以内）：{exits}。要去别的地点用 travel_to；看全部用 map_info" : "这张地图上没有出口，用 map_info 看看地图");
         }
 
         public static GameLocation ResolveLocation(string name)
@@ -724,6 +836,63 @@ namespace BlindWhaleFarmer
 
         private static bool IsBeach(string name) =>
             name != null && (name.Equals("Beach", StringComparison.OrdinalIgnoreCase) || name.Equals("BeachNightMarket", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// travel_to 带坐标：先 TravelTo 到地点，再用 MoveTo 走到 (x,y)（不另写寻路）。location 不给就是当前地点，只走 MoveTo。
+        /// 坐标是到达地点的格子坐标，和 get_state 里“你站在 (x,y)”同一套。
+        /// </summary>
+        public IEnumerable<object> TravelTo(string name, int? x, int? y, bool detour = false)
+        {
+            bool hasPoint = x.HasValue && y.HasValue;
+            bool here = string.IsNullOrWhiteSpace(name);
+            if (!hasPoint)
+            {
+                foreach (var s in TravelTo(name, detour))
+                    yield return s;
+                yield break;
+            }
+            string arrived = null;
+            if (!here)
+            {
+                ActionResult travel = null;
+                foreach (var s in TravelTo(name, detour))
+                {
+                    if (s is ActionResult r)
+                    {
+                        travel = r;
+                        break;
+                    }
+                    yield return s;
+                }
+                if (travel is not { Ok: true })
+                {
+                    // 没到地点就不往下走了，原因原样交回去
+                    yield return travel ?? ActionResult.Fail($"没能走到 {name}");
+                    yield break;
+                }
+                arrived = StripResultPrefix(travel.Message);
+            }
+            ActionResult move = null;
+            foreach (var s in MoveTo(x.Value, y.Value))
+            {
+                if (s is ActionResult r)
+                {
+                    move = r;
+                    break;
+                }
+                yield return s;
+            }
+            string where = $"{Loc.NameOrUniqueName} ({x},{y})";
+            if (move is not { Ok: true })
+            {
+                string why = StripResultPrefix(move?.Message ?? "没走到");
+                yield return ActionResult.Fail(arrived != null
+                    ? $"到了 {Loc.NameOrUniqueName}（{arrived}），但走不到 ({x},{y})：{why}"
+                    : $"走不到 {where}：{why}");
+                yield break;
+            }
+            yield return ActionResult.Success(arrived != null ? $"{arrived}；再走到 ({x},{y})：{StripResultPrefix(move.Message)}" : $"在 {Loc.NameOrUniqueName} 里{StripResultPrefix(move.Message)}");
+        }
 
         public IEnumerable<object> TravelTo(string name, bool detour = false)
         {
@@ -1169,7 +1338,9 @@ namespace BlindWhaleFarmer
                 }
             }
 
-            // 等待场景切换完成
+            // 等待场景切换完成。联机时农场工人进新地图要等主机发地图过来，已经开始传送（isWarping / locationRequest）就多等，最多 30 秒
+            if (Context.IsMultiplayer && !Game1.IsMasterGame)
+                waitTicks = Math.Max(waitTicks, 30 * 60);
             for (int i = 0; i < waitTicks; i++)
             {
                 yield return null;
@@ -1385,10 +1556,15 @@ namespace BlindWhaleFarmer
                                 yield break;
                             }
                         }
-                        npc = Loc.characters.FirstOrDefault(c => c == villager);
-                        if (npc == null)
-                            foreach (var s in WaitTicks(30))
-                                yield return s;
+                        // 刚进新地图时村民列表还没刷新（联机时尤其慢）：先等几秒再找，找不到才算他走了再去追。
+                        // 同时按名字找，不只比对象：联机时农场工人手里的那个 NPC 对象和地图里的可能不是同一个
+                        for (int wait = 0; wait < 5 * 60; wait++)
+                        {
+                            npc = Loc.characters.FirstOrDefault(c => c == villager || c.Name == villager.Name);
+                            if (npc != null)
+                                break;
+                            yield return null;
+                        }
                     }
                     if (npc == null)
                     {
@@ -1409,7 +1585,7 @@ namespace BlindWhaleFarmer
                 itemIdx = Util.FindItemIndex(itemSpec);
                 if (itemIdx < 0)
                 {
-                    yield return ActionResult.Fail($"背包里没有“{itemSpec}”");
+                    yield return ActionResult.Fail($"背包里没有“{itemSpec}”" + Util.NotFoundHint(itemSpec));
                     yield break;
                 }
             }
@@ -1641,28 +1817,154 @@ namespace BlindWhaleFarmer
             return found.Count == 0 ? null : string.Join("、", found.OrderBy(f => f.Dist).Take(6).Select(f => f.Text));
         }
 
+        /// <summary>place_item 不给坐标：在玩家身边 8 格（3x3 去掉脚下）里找一格放。</summary>
+        public IEnumerable<object> PlaceItem(string itemSpec, int? x, int? y, bool force = false)
+        {
+            if (x.HasValue && y.HasValue)
+            {
+                foreach (var s in PlaceItem(itemSpec, x.Value, y.Value, force))
+                    yield return s;
+                yield break;
+            }
+            int idx = Util.FindItemIndex(itemSpec, i => i is SObject);
+            if (idx < 0)
+            {
+                yield return ActionResult.Fail($"背包里没有可放置的“{itemSpec}”" + Util.NotFoundHint(itemSpec, i => i is SObject));
+                yield break;
+            }
+            var me = Player.TilePoint;
+            var spot = AutoPlaceSpot(Loc, Player.Items[idx], me, force, out string why);
+            if (spot is not Point p)
+            {
+                yield return ActionResult.Fail($"你站在 ({me.X},{me.Y})，身边 8 格里没有能放 {Player.Items[idx].DisplayName} 的空位（{why}）。"
+                    + "换个空旷的地方再放，或者给 x,y 指定位置");
+                yield break;
+            }
+            string auto = $"没给坐标，在你身边 ({me.X},{me.Y}) 自动挑了 ({p.X},{p.Y})（你的{DirLabel(me, p)}边）";
+            foreach (var s in PlaceItem(itemSpec, p.X, p.Y, force))
+                yield return s is ActionResult { Ok: true } r ? ActionResult.Success(auto + "。" + StripResultPrefix(r.Message))
+                    : s is ActionResult { Ok: false } f ? ActionResult.Fail(auto + "，但没放成：" + StripResultPrefix(f.Message))
+                    : s;
+        }
+
+        /// <summary>去掉结果开头的“成功：”“失败：”，好拼进别的句子里；不是这两个开头的原样返回，别把正文砍掉。</summary>
+        internal static string StripResultPrefix(string msg) =>
+            msg != null && (msg.StartsWith("成功：") || msg.StartsWith("失败：")) ? msg.Substring(3) : msg ?? "";
+
+        /// <summary>
+        /// 身边 8 格里离玩家最近、能放、不违反摆放规矩（force 时不管规矩）的格子；没有就返回 null，why 说一句原因。
+        /// 判断和给了坐标时一样：先 PlaceableProblem（放不放得下），再 PlacementRuleProblem（合不合规矩）。
+        /// </summary>
+        private static Point? AutoPlaceSpot(GameLocation loc, Item item, Point me, bool force, out string why)
+        {
+            int occupied = 0, rejected = 0;
+            string firstOccupied = null, firstProblem = null;
+            // 先试上下左右（走一步就到、放完不用绕），再试四个斜角
+            var order = Pathfinder.Dirs.Concat(new[] { new Point(1, -1), new Point(1, 1), new Point(-1, 1), new Point(-1, -1) });
+            foreach (var d in order)
+            {
+                var t = new Point(me.X + d.X, me.Y + d.Y);
+                // 放不下的先跳过：规矩那一步要算可达范围，比较慢
+                if (PlaceableProblem(loc, item, t) is string full)
+                {
+                    occupied++;
+                    firstOccupied ??= full;
+                    continue;
+                }
+                if (PlacementRuleProblem(loc, item, t, force, out _) is string problem)
+                {
+                    rejected++;
+                    firstProblem ??= problem;
+                    continue;
+                }
+                why = null;
+                return t;
+            }
+            why = rejected > 0 ? $"{occupied} 格放不下，{rejected} 格不合摆放规矩，比如：{firstProblem}"
+                : $"8 格都放不下，比如：{firstOccupied}";
+            return null;
+        }
+
+        /// <summary>种子、肥料：要放在耕地上。</summary>
+        private static bool IsSeedLike(Item item) => item is SObject { Category: SObject.SeedsCategory or SObject.fertilizerCategory };
+
+        /// <summary>
+        /// 这一格物理上放不放得下（不管规矩）。种子、肥料要没种东西、也没放东西的耕地；其他东西用游戏自己的
+        /// Object.canBePlacedHere 判断（Utility.tryToPlaceItem 真正放的时候也用它），所以洒水器、稻草人放在空耕地上是可以的，
+        /// 蟹笼要水面、采脂器要树。路过的村民、玩家不算挡着（放的时候他们多半已经走开了）。放得下返回 null。
+        /// </summary>
+        internal static string PlaceableProblem(GameLocation loc, Item item, Point t)
+        {
+            var v = new Vector2(t.X, t.Y);
+            string name = item.DisplayName;
+            if (!loc.isTileOnMap(t.X, t.Y))
+                return $"({t.X},{t.Y}) 不在地图内";
+            if (loc.Objects.TryGetValue(v, out var there))
+                return $"({t.X},{t.Y}) 上已经有{there.DisplayName}";
+            if (IsSeedLike(item))
+            {
+                if (!loc.terrainFeatures.TryGetValue(v, out var tf) || tf is not HoeDirt dirt)
+                    return $"{name}要放在耕地上，({t.X},{t.Y}) 不是耕地（先用锄头锄地）";
+                if (dirt.crop != null)
+                    return $"({t.X},{t.Y}) 的耕地上已经种着东西，{name}要放在没种东西的耕地上";
+                return null;
+            }
+            if (!item.isPlaceable())
+                return $"{name}不能放在地上";
+            // 家具的摆放规则游戏另有一套（占好几格、能贴墙），交给游戏自己放的时候判断
+            if (item is StardewValley.Objects.Furniture)
+                return loc.CanItemBePlacedHere(v) ? null : $"({t.X},{t.Y}) 被挡着，放不了{name}";
+            const CollisionMask notPeople = CollisionMask.All & ~CollisionMask.Characters & ~CollisionMask.Farmers;
+            if (!item.canBePlacedHere(loc, v, notPeople))
+                return $"({t.X},{t.Y}) 放不了{name}（{Observer.ClassifyFeature(loc, v).name ?? (loc.isWaterTile(t.X, t.Y) ? "是水面" : "被挡着或者不是能放东西的地面")}）";
+            return null;
+        }
+
+        /// <summary>
+        /// 摆放规矩：机器箱子别压田、别堵门、别把路堵死；洒水器放在浇得到耕地的好位置。force 时只算洒水器能浇几格、不拦。
+        /// 不合规矩返回给 AI 看的完整原因（带 force 提示），合规矩返回 null。
+        /// </summary>
+        private static string PlacementRuleProblem(GameLocation loc, Item item, Point t, bool force, out int sprinklerGain)
+        {
+            // 洒水器 force 时也算一遍，成功消息里的“能浇到 N 格”要准
+            string badSpot = SprinklerProblem(loc, item, t, out sprinklerGain);
+            if (force)
+                return null;
+            // 机器、箱子随手一放就会压在田里、堵在门口；集中放在一片
+            if (PlacementProblem(loc, item, t) is string problem)
+                return $"{problem}。{MachineAreaHint(loc, item)}。{ForceHint}";
+            // 洒水器放歪了等于白放：浇不到耕地，或者田里有明显更好的位置时先拦下来，告诉她放哪
+            if (badSpot != null)
+            {
+                // 种着作物的格子 force 也放不上去，不提 force
+                bool onCrop = loc.terrainFeatures.TryGetValue(new Vector2(t.X, t.Y), out var under) && under is HoeDirt { crop: not null };
+                return onCrop ? badSpot : $"{badSpot}。{ForceHint}";
+            }
+            return null;
+        }
+
+        /// <summary>相邻格在哪个方向：上/下/左/右，斜角写成“右上”这样。</summary>
+        private static string DirLabel(Point from, Point to) =>
+            (to.X > from.X ? "右" : to.X < from.X ? "左" : "") + (to.Y > from.Y ? "下" : to.Y < from.Y ? "上" : "");
+
         public IEnumerable<object> PlaceItem(string itemSpec, int x, int y, bool force = false)
         {
             int idx = Util.FindItemIndex(itemSpec, i => i is SObject);
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有可放置的“{itemSpec}”");
+                yield return ActionResult.Fail($"背包里没有可放置的“{itemSpec}”" + Util.NotFoundHint(itemSpec, i => i is SObject));
                 yield break;
             }
-            // 机器、箱子随手一放就会压在田里、堵在门口；集中放在一片
-            if (!force && PlacementProblem(Loc, Player.Items[idx], new Point(x, y)) is string problem)
+            // 和不给坐标时自动找位用同一套判断：先看放不放得下（走过去之前就拦下，省得白跑），再看合不合规矩。
+            // 种子、肥料放不放得下交给游戏判断：肥料能施在已经种了作物的耕地上，自动找位只挑空耕地是保守的做法
+            if (!IsSeedLike(Player.Items[idx]) && PlaceableProblem(Loc, Player.Items[idx], new Point(x, y)) is string full)
             {
-                yield return ActionResult.Fail($"{problem}。{MachineAreaHint(Loc)}。{ForceHint}");
+                yield return ActionResult.Fail(full);
                 yield break;
             }
-            // 洒水器放歪了等于白放：浇不到耕地，或者田里有明显更好的位置时先拦下来，告诉她放哪
-            // force 时也算一遍，成功消息里的“能浇到 N 格”要准
-            string badSpot = SprinklerProblem(Loc, Player.Items[idx], new Point(x, y), out int sprinklerGain);
-            if (!force && badSpot != null)
+            if (PlacementRuleProblem(Loc, Player.Items[idx], new Point(x, y), force, out int sprinklerGain) is string problem)
             {
-                // 种着作物的格子 force 也放不上去，不提 force
-                bool onCrop = Loc.terrainFeatures.TryGetValue(new Vector2(x, y), out var under) && under is HoeDirt { crop: not null };
-                yield return ActionResult.Fail(onCrop ? badSpot : $"{badSpot}。{ForceHint}");
+                yield return ActionResult.Fail(problem);
                 yield break;
             }
             var o = new Outcome();
@@ -1692,7 +1994,90 @@ namespace BlindWhaleFarmer
         /// till_area 入口：给了矩形就开矩形；只给 count（或什么都不给）就挨着最大的田往空地最多的一边扩 count 格。
         /// 农场、温室这些种得了庄稼的地方以外不开（锄了也种不了，force 才开）。
         /// </summary>
-        public IEnumerable<object> TillArea(int? x1, int? y1, int? x2, int? y2, int? count, bool force)
+        /// <summary>农场工人“自己的田”：离自己小屋门口多少格以内（M9）。</summary>
+        internal const int OwnFieldRadius = 10;
+
+        /// <summary>联机时农场工人自己小屋的门口（在农场上的那一格）；主机、单机、没有小屋返回 null。</summary>
+        internal static Point? MyCabinDoor()
+        {
+            if (!Context.IsMultiplayer || Game1.IsMasterGame)
+                return null;
+            var home = Utility.getHomeOfFarmer(Player);
+            var b = home?.ParentBuilding;
+            if (b == null)
+                return null;
+            var d = b.humanDoor.Value;
+            return new Point(b.tileX.Value + d.X, b.tileY.Value + d.Y + 1);
+        }
+
+        /// <summary>田离某格多远（田的框和这一格的切比雪夫距离，在框里是 0）。</summary>
+        internal static int FieldDistance(Field f, Point p)
+        {
+            var r = f.Box;
+            int dx = Math.Max(0, Math.Max(r.Left - p.X, p.X - (r.Right - 1)));
+            int dy = Math.Max(0, Math.Max(r.Top - p.Y, p.Y - (r.Bottom - 1)));
+            return Math.Max(dx, dy);
+        }
+
+        /// <summary>第一块田至少要有几格才值得开：小于这个数宁可往更远的地方找（升级水壶一次浇一片，成块的田才浇得快）。</summary>
+        internal const int MinGoodFirstField = 16;
+
+        /// <summary>
+        /// 门口附近开第一块田：一整块方正的大田比几小块好浇、好种、好收。
+        /// 先按 want（要开的格数）找边长约 sqrt(want) 的方块，至少找 6x6；放不下就逐步缩小边长，
+        /// 每个边长都在门口下方、左右两边、再远一点的位置试，挑能开格数最多、离门口近的。
+        /// 门口正下方两格留给进出，不开。能开格数还不到 MinGoodFirstField 就接着缩小，缩到 2x2 才罢休。找不到返回 null。
+        /// </summary>
+        private static Rectangle? FirstFieldNearDoor(GameLocation loc, Point door, int want)
+        {
+            int biggest = Math.Clamp((int)Math.Ceiling(Math.Sqrt(want)), 6, 8);
+            Rectangle? fallback = null;
+            int fallbackN = 0;
+            for (int side = biggest; side >= 2; side--)
+            {
+                var options = FieldCandidates(door, side);
+                var scored = options
+                    .Select(r => (r, n: RectTiles(r.Left, r.Top, r.Right - 1, r.Bottom - 1, 80).Count(p => Tillable(loc, p) || FieldClutter(loc, p))))
+                    .Where(t => t.n >= 4)
+                    .OrderByDescending(t => t.n).ThenBy(t => Math.Abs(t.r.Center.X - door.X) + Math.Abs(t.r.Center.Y - door.Y))
+                    .ToList();
+                if (scored.Count == 0)
+                    continue;
+                var top = scored[0];
+                // 这个边长下已经是一整块好田：直接用（空地占 7 成以上算整块）
+                if (top.n >= MinGoodFirstField && top.n * 10 >= side * side * 7)
+                    return top.r;
+                if (top.n > fallbackN)
+                {
+                    fallback = top.r;
+                    fallbackN = top.n;
+                }
+            }
+            return fallback;
+        }
+
+        /// <summary>门口附近边长为 side 的候选方块：门口下方、右边、左边，各隔 2、4、6…格；整块都落在门口 OwnFieldRadius 格内。</summary>
+        internal static List<Rectangle> FieldCandidates(Point door, int side)
+        {
+            var options = new List<Rectangle>();
+            for (int off = 2; off <= OwnFieldRadius; off += 2)
+            {
+                options.Add(new Rectangle(door.X - side / 2, door.Y + off, side, side));            // 门口下方
+                options.Add(new Rectangle(door.X + off, door.Y - side / 2, side, side));            // 右边
+                options.Add(new Rectangle(door.X - off - side + 1, door.Y - side / 2, side, side)); // 左边
+                options.Add(new Rectangle(door.X + off, door.Y + 2, side, side));                    // 右下
+                options.Add(new Rectangle(door.X - off - side + 1, door.Y + 2, side, side));        // 左下
+            }
+            // 整块都要在“门口 OwnFieldRadius 格内”（和 FieldDistance 一样看框到门口的切比雪夫距离）
+            return options.Where(r =>
+            {
+                int dx = Math.Max(0, Math.Max(r.Left - door.X, door.X - (r.Right - 1)));
+                int dy = Math.Max(0, Math.Max(r.Top - door.Y, door.Y - (r.Bottom - 1)));
+                return Math.Max(dx, dy) <= OwnFieldRadius;
+            }).ToList();
+        }
+
+        public IEnumerable<object> TillArea(int? x1, int? y1, int? x2, int? y2, int? count, bool force, bool shared = false)
         {
             var loc = Loc;
             bool canPlant = loc.IsFarm || loc.IsGreenhouse || (loc.GetData()?.CanPlantHere ?? false);
@@ -1712,21 +2097,58 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("坐标要给全 x1,y1,x2,y2；或者都不给、只给 count，挨着现有的田自动扩");
                 yield break;
             }
-            var main = Fields(loc).FirstOrDefault(f => f.Tiles.Count >= 4);
+            int want = Math.Clamp(count ?? 20, 1, 80);
+            // 联机时的农场工人：默认挨着自己小屋门口的田扩，别扩到主机的田里；shared=true 才用全农场最大的田
+            var fields = Fields(loc).Where(f => f.Tiles.Count >= 4).ToList();
+            Point? cabinDoor = !shared && loc is Farm ? MyCabinDoor() : null;
+            Field main;
+            string anchorName;
+            if (cabinDoor is Point door)
+            {
+                main = fields.Where(f => FieldDistance(f, door) <= OwnFieldRadius).OrderBy(f => FieldDistance(f, door)).FirstOrDefault();
+                anchorName = $"你小屋门口 ({door.X},{door.Y}) {OwnFieldRadius} 格内的田";
+                if (main == null)
+                {
+                    // 门口还没有田：在门口附近开第一块
+                    var first = FirstFieldNearDoor(loc, door, want);
+                    if (first is not Rectangle r)
+                    {
+                        yield return ActionResult.Fail($"你小屋门口 ({door.X},{door.Y}) {OwnFieldRadius} 格内找不到能开的空地（都是树、石头、建筑或者路）：给坐标 x1,y1,x2,y2 另挑地方，或者先 clear_area 清一片。要扩全农场最大的那块田就传 shared=true");
+                        yield break;
+                    }
+                    string plan0 = $"没给坐标，你是农场工人，门口 ({door.X},{door.Y}) 附近还没有田，在门口旁边开第一块整田（{r.Width}x{r.Height}）：({r.Left},{r.Top})-({r.Right - 1},{r.Bottom - 1})。门口 {OwnFieldRadius} 格只是判断哪块算你的田、不限制田有多大，田不够再 till_area 往外扩（要扩全农场最大的田传 shared=true）";
+                    foreach (var s in TillArea(r.Left, r.Top, r.Right - 1, r.Bottom - 1))
+                        yield return s is ActionResult { Ok: true } ok ? ActionResult.Success(plan0 + "。" + StripResultPrefix(ok.Message))
+                            : s is ActionResult { Ok: false } bad ? ActionResult.Fail(plan0 + "。" + StripResultPrefix(bad.Message))
+                            : s;
+                    yield break;
+                }
+            }
+            else
+            {
+                main = fields.FirstOrDefault();
+                anchorName = "最大的田";
+            }
             if (main == null)
             {
                 yield return ActionResult.Fail("这里还没有成片的田，没法“挨着扩”：第一块田要给坐标 x1,y1,x2,y2（挑离家、出货箱近，方方正正的空地）");
                 yield break;
             }
-            int want = Math.Clamp(count ?? 20, 1, 80);
             var best = BestExpansion(loc, main, want);
             if (best.n == 0)
             {
                 yield return ActionResult.Fail($"最大的田 {main.Describe()}，四周都是树、大树桩大石头或者不能开垦的地面，没法挨着扩：给坐标另挑地方开一块");
                 yield break;
             }
+            // 没给坐标：说清楚以哪块田为准、往哪边扩、扩的是哪一片，免得 AI 猜
+            var mb = main.Box;
+            string plan = $"没给坐标，以{anchorName} ({mb.Left},{mb.Top})-({mb.Right - 1},{mb.Bottom - 1})（{main.Tiles.Count} 格耕地）为锚点，"
+                + $"往{best.side}扩 {(best.side is "上" or "下" ? best.r.Height + " 行" : best.r.Width + " 列")}，"
+                + $"区域 ({best.r.Left},{best.r.Top})-({best.r.Right - 1},{best.r.Bottom - 1})，能开约 {best.n} 格（要的是 {want} 格）";
             foreach (var s in TillArea(best.r.Left, best.r.Top, best.r.Right - 1, best.r.Bottom - 1))
-                yield return s is ActionResult { Ok: true } r ? ActionResult.Success($"挨着田往{best.side}扩。" + r.Message.Substring(3)) : s;
+                yield return s is ActionResult { Ok: true } r ? ActionResult.Success(plan + "。" + StripResultPrefix(r.Message))
+                    : s is ActionResult { Ok: false } f ? ActionResult.Fail(plan + "。" + StripResultPrefix(f.Message))
+                    : s;
         }
 
         public IEnumerable<object> TillArea(int x1, int y1, int x2, int y2)
@@ -1751,7 +2173,7 @@ namespace BlindWhaleFarmer
                         yield return s;
                 }
                 if (cleared != null)
-                    clearNote = "先清理了区域里的杂物：" + cleared.Message.Substring(3) + "。";
+                    clearNote = "先清理了区域里的杂物：" + StripResultPrefix(cleared.Message) + "。";
                 if (Blocked(out _))
                 {
                     yield return ActionResult.Fail(clearNote + "清理时被打断了");
@@ -1829,12 +2251,30 @@ namespace BlindWhaleFarmer
             yield return done > 0 ? ActionResult.Success(msg + (err != null ? "；部分失败：" + err : "") + emptyFieldNote) : ActionResult.Fail(msg + "；" + err);
         }
 
-        public IEnumerable<object> PlantSeeds(string seedSpec, int? x1, int? y1, int? x2, int? y2, int max)
+        /// <summary>
+        /// 这颗种子种在 loc 里，季末前长不熟、换季又不能留到下个季节：种下去也是白种。
+        /// 温室、姜岛农场这类不看季节的地方不算。grow 是要长几天，daysLeft 是这个季节还剩几天。
+        /// </summary>
+        internal static bool SeedWontRipen(Item seed, GameLocation loc, out int grow, out int daysLeft)
+        {
+            grow = 0;
+            daysLeft = 28 - Game1.dayOfMonth;
+            if (seed is not SObject o || o.Category != SObject.SeedsCategory || loc == null || loc.SeedsIgnoreSeasonsHere())
+                return false;
+            if (!Crop.TryGetData(Crop.ResolveSeedId(seed.ItemId, loc), out var cropData) || cropData.DaysInPhase is not { Count: > 0 } phases)
+                return false;
+            grow = phases.Sum();
+            var next = (Season)(((int)Game1.season + 1) % 4);
+            bool nextOk = cropData.Seasons?.Contains(next) ?? false;
+            return grow > daysLeft && !nextOk;
+        }
+
+        public IEnumerable<object> PlantSeeds(string seedSpec, int? x1, int? y1, int? x2, int? y2, int max, bool shared = false)
         {
             int idx = Util.FindItemIndex(seedSpec, i => i is SObject);
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有“{seedSpec}”");
+                yield return ActionResult.Fail($"背包里没有“{seedSpec}”" + Util.NotFoundHint(seedSpec, i => i is SObject));
                 yield break;
             }
             var seed = Player.Items[idx];
@@ -1858,19 +2298,11 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             // 季末前长不熟的种子种下去，换季那天就枯死了：先拦下来说清楚
-            if (seed.Category == SObject.SeedsCategory && !loc.SeedsIgnoreSeasonsHere()
-                && Crop.TryGetData(Crop.ResolveSeedId(seed.ItemId, loc), out var cropData) && cropData.DaysInPhase is { Count: > 0 } phases)
+            if (SeedWontRipen(seed, loc, out int grow, out int daysLeft))
             {
-                int grow = phases.Sum();
-                int daysLeft = 28 - Game1.dayOfMonth;
-                var next = (Season)(((int)Game1.season + 1) % 4);
-                bool nextOk = cropData.Seasons?.Contains(next) ?? false;
-                if (grow > daysLeft && !nextOk)
-                {
-                    yield return ActionResult.Fail($"{seedName} 要长 {grow} 天才熟，这个季节只剩 {daysLeft} 天，换季那天会枯死，种了白种。"
-                        + "挑熟得快的种子，或者留到下次当季再种（温室、姜岛农场不受季节限制）");
-                    yield break;
-                }
+                yield return ActionResult.Fail($"{seedName} 要长 {grow} 天才熟，这个季节只剩 {daysLeft} 天，换季那天会枯死，种了白种。"
+                    + "挑熟得快的种子，或者留到下次当季再种（温室、姜岛农场不受季节限制）");
+                yield break;
             }
 
             // 没给区域时按田来种：先把已经有作物的田补满、再种大块的田，一块种完再换下一块；零散的一两格耕地不种。
@@ -1881,6 +2313,17 @@ namespace BlindWhaleFarmer
             {
                 var set = new HashSet<Point>(tiles);
                 var fields = Fields(loc);
+                // 联机时的农场工人：默认只种自己小屋门口附近的田，别种进主机的田；shared=true 才全农场挑
+                if (!shared && loc is Farm && MyCabinDoor() is Point myDoor)
+                {
+                    var mine = fields.Where(f => FieldDistance(f, myDoor) <= OwnFieldRadius).ToList();
+                    if (mine.Count == 0)
+                    {
+                        yield return ActionResult.Fail($"你小屋门口 ({myDoor.X},{myDoor.Y}) {OwnFieldRadius} 格内还没有田（别的田多半是主机或其他人的）。先 till_area 在门口开一块（不给坐标就会开在门口），或者给 x1,y1,x2,y2 指定区域；确实要种到全农场的田里就传 shared=true");
+                        yield break;
+                    }
+                    fields = mine;
+                }
                 // 同样的作物种在一块：先种已经种着这种作物的田，再种空着的田（新作物自己占一块），最后才往种着别的作物的田里补
                 string seedId = seed.ItemId;
                 var ranked = fields.Where(f => f.Tiles.Any(set.Contains))
@@ -1971,33 +2414,52 @@ namespace BlindWhaleFarmer
         {
             var loc = Loc;
             var me = Player.TilePoint;
+            // 搜整张地图，不再只看身边 50 格：SVE / IF2R 的农场有 163x156，水槽、水井可能离门口很远（真机：水槽在 (89,41)，门口在 (76,23)）
             var water = new List<Point>();
-            for (int x = me.X - 50; x <= me.X + 50; x++)
-                for (int y = me.Y - 50; y <= me.Y + 50; y++)
-                    if (loc.isTileOnMap(x, y) && loc.CanRefillWateringCanOnTile(x, y))
+            int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
+            for (int x = 0; x < w; x++)
+                for (int y = 0; y < h; y++)
+                    if (loc.CanRefillWateringCanOnTile(x, y))
                         water.Add(new Point(x, y));
             if (water.Count == 0)
             {
-                o.Fail("附近找不到可以灌水的水源");
+                o.Fail("这张地图上没有能给水壶灌水的地方（水面、水槽、水井、厨房水槽）：去别的地图（比如 Forest 的河、海边）灌了水再回来浇");
                 yield break;
             }
-            foreach (var w in water.OrderBy(p => Util.Manhattan(p, me)).Take(12))
+            var reasons = new List<string>();
+            int tried = 0;
+            foreach (var wt in water.OrderBy(p => Util.Manhattan(p, me)))
             {
-                if (Pathfinder.AdjacentStandTiles(loc, w).Count == 0)
+                // 挨着水的格子都站不了（被水、石头、围起来）就跳过；最多试 12 处，别在大池塘边一格一格试
+                if (Pathfinder.AdjacentStandTiles(loc, wt).Count == 0)
                     continue;
-                foreach (var s in GoAdjacent(w, o))
+                if (++tried > 12)
+                    break;
+                var go = new Outcome();
+                foreach (var s in GoAdjacent(wt, go))
                     yield return s;
-                if (!o.Ok)
+                if (!go.Ok)
+                {
+                    if (reasons.Count < 3)
+                        reasons.Add($"({wt.X},{wt.Y}) 走不过去：{go.Message}");
                     continue;
-                foreach (var s in UseToolOnce(canIdx, w, o))
+                }
+                var use = new Outcome();
+                foreach (var s in UseToolOnce(canIdx, wt, use))
                     yield return s;
                 if (Player.Items[canIdx] is WateringCan can && can.WaterLeft > 0)
                 {
-                    o.Succeed($"在 ({w.X},{w.Y}) 灌满了水壶");
+                    o.Succeed($"在 ({wt.X},{wt.Y}) 灌满了水壶");
                     yield break;
                 }
+                if (reasons.Count < 3)
+                    reasons.Add($"({wt.X},{wt.Y}) 站到了旁边、对着它用了水壶，水还是没进去{(use.Ok ? "" : "：" + use.Message)}");
             }
-            o.Fail("没能给水壶灌水");
+            // 说清楚是哪里卡住了，别只说“没能给水壶灌水”
+            string nearest = water.OrderBy(p => Util.Manhattan(p, me)).First() is var n ? $"最近的水源在 ({n.X},{n.Y})" : "";
+            o.Fail($"没能给水壶灌水：这张地图上有 {water.Count} 格能灌水的地方，{nearest}。"
+                + (reasons.Count > 0 ? string.Join("；", reasons) : "每一处旁边都站不了人")
+                + "。可以自己走到水边 use_tool watering_can 对着水面格灌，或者去别的地图灌了再回来");
         }
 
         /// <summary>种地的地方（农场、温室、岛上农场）里缺水 / 成熟的格数，不含当前地图。</summary>
@@ -2496,13 +2958,20 @@ namespace BlindWhaleFarmer
             int idx = Util.FindItemIndex(itemSpec);
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有“{itemSpec}”");
+                yield return ActionResult.Fail($"背包里没有“{itemSpec}”" + Util.NotFoundHint(itemSpec));
                 yield break;
             }
             if (ReservedChecker()(Player.Items[idx]) is string reservedWhy && (!force || reservedWhy == PlayerReserved))
             {
-                yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，{(reservedWhy == PlayerReserved ? "不能出货" : "卖了就交不了，先留着（交完再卖多的）。" + ForceHint)}");
-                yield break;
+                // 点名的那格标了【留着】，但同名的格里有没标的（比如铱星沙丁鱼留给收集包，金星沙丁鱼是多的）：改出没标的那格，和 sell 一样
+                var spare = reservedWhy == PlayerReserved ? null
+                    : Player.Items.FirstOrDefault(i => i != null && i.QualifiedItemId == Player.Items[idx].QualifiedItemId && ReservedChecker()(i) == null && i.canBeShipped());
+                if (spare == null)
+                {
+                    yield return ActionResult.Fail($"{Player.Items[idx].DisplayName} 是{reservedWhy}的，{(reservedWhy == PlayerReserved ? "不能出货" : "卖了就交不了，先留着（交完再卖多的）。" + ForceHint)}");
+                    yield break;
+                }
+                idx = Player.Items.IndexOf(spare);
             }
             if (!Player.Items[idx].canBeShipped())
             {
@@ -2545,31 +3014,92 @@ namespace BlindWhaleFarmer
             idx = Util.FindItemIndex(itemSpec);
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有“{itemSpec}”了");
+                yield return ActionResult.Fail($"背包里没有“{itemSpec}”了" + Util.NotFoundHint(itemSpec));
                 yield break;
             }
             var item = Player.Items[idx];
-            int n = Math.Clamp(count ?? item.Stack, 1, item.Stack);
-            string name = item.DisplayName;
-            int price = Utility.getSellToStorePriceOfItem(item, false) * n;
-            if (n >= item.Stack)
-                farm.shipItem(item, Player);
-            else
+            // 同名的东西常按品质分在几格：和 sell 一样一起算（写了品质或背包序号就只出那一档/那一格；标了【留着】的格子不跟着出）
+            bool byIndex = int.TryParse(itemSpec.Trim(), out _);
+            int wantQuality = Util.QualityFromSpec(itemSpec);
+            var stacks = new List<(int slot, int quality, int stack)>();
+            for (int i = 0; i < Player.Items.Count; i++)
             {
-                var part = item.getOne();
-                part.Stack = n;
-                item.Stack -= n;
-                farm.getShippingBin(Player).Add(part);
-                farm.lastItemShipped = part;
-                bin.showShipment(part);
+                var it = Player.Items[i];
+                if (it == null || it.QualifiedItemId != item.QualifiedItemId || !it.canBeShipped())
+                    continue;
+                if ((byIndex && i != idx) || (wantQuality >= 0 && it.Quality != wantQuality))
+                    continue;
+                if (i != idx && ReservedChecker()(it) is string)
+                    continue;
+                stacks.Add((i, it.Quality, it.Stack));
+            }
+            string name = item.DisplayName;
+            int shipped = 0, price = 0;
+            foreach (var (slot, take) in PlanSell(stacks, count))
+            {
+                var it = Player.Items[slot];
+                price += Utility.getSellToStorePriceOfItem(it, false) * take;
+                shipped += take;
+                if (take >= it.Stack)
+                    farm.shipItem(it, Player);
+                else
+                {
+                    var part = it.getOne();
+                    part.Stack = take;
+                    it.Stack -= take;
+                    farm.getShippingBin(Player).Add(part);
+                    farm.lastItemShipped = part;
+                    bin.showShipment(part);
+                }
             }
             foreach (var s in WaitTicks(10))
                 yield return s;
-            yield return ActionResult.Success($"已把 {n} 个 {name} 放进出货箱（预计今晚结算约 {price}g）");
+            yield return ActionResult.Success($"已把 {shipped} 个 {name} 放进出货箱（预计今晚结算约 {price}g）");
         }
 
         /// <summary>扔进垃圾桶（和背包界面里拖到垃圾桶一样，升级过垃圾桶会退一点钱）：背包满了又不在箱子旁边时腾位置用。</summary>
         /// <summary>这样东西扔了可惜的原因；不值钱的（石头、泥土、纤维、垃圾……）返回 null。</summary>
+        /// <summary>
+        /// 背包里值得直接吃掉的东西：能吃、不是标了【留着】的、也不是值钱的料理（那个留着当救命的）。
+        /// 体力快满的时候吃是浪费，只在体力低于 80% 时才算“值得吃”（lowStaminaOnly），否则返回空。
+        /// 海草、藻类、野菜这种卖不了几个钱、却占一格的东西，吃了比扔掉、比卖掉更划算（真机：海草被 trash_item 扔了两次）。
+        /// </summary>
+        internal static List<(int slot, string name, int stamina)> WorthEating(bool lowStaminaOnly = true)
+        {
+            var result = new List<(int, string, int)>();
+            if (lowStaminaOnly && !StaminaLowEnoughToEat(Player.Stamina, Player.MaxStamina))
+                return result;
+            var reserved = ReservedChecker();
+            for (int i = 0; i < Player.Items.Count; i++)
+            {
+                if (Player.Items[i] is not SObject o)
+                    continue;
+                if (!IsWorthEating(o.Edibility, o.Category == SObject.CookingCategory, reserved(o) != null, o.sellToStorePrice()))
+                    continue;
+                result.Add((i, o.DisplayName, o.staminaRecoveredOnConsumption()));
+            }
+            return result;
+        }
+
+        /// <summary>体力低于 80% 才算“吃了不浪费”。</summary>
+        internal static bool StaminaLowEnoughToEat(float stamina, float maxStamina) => stamina < maxStamina * 0.8f;
+
+        /// <summary>
+        /// 这样东西值得当零食吃掉：能吃（Edibility 大于 0）、不是料理（留着当救命的）、没标【留着】、
+        /// 一个卖不到 50g（值钱的鱼不当零食吃，trash_item 本来就拦着）。
+        /// </summary>
+        internal static bool IsWorthEating(int edibility, bool isCooking, bool reserved, int sellPrice) =>
+            edibility > 0 && !isCooking && !reserved && sellPrice < 50;
+
+        /// <summary>“海草、红皮藻可以直接 eat（+13、+38 体力）”；没有值得吃的返回 null。</summary>
+        internal static string EatInsteadHint()
+        {
+            var food = WorthEating();
+            if (food.Count == 0)
+                return null;
+            return $"{string.Join("、", food.Take(4).Select(f => $"{f.name}（+{f.stamina} 体力）"))}可以直接 eat：回体力、又腾出格子，比扔掉、卖掉划算";
+        }
+
         private static string TrashValueWhy(Item item)
         {
             if (item is StardewValley.Objects.Ring)
@@ -2596,7 +3126,7 @@ namespace BlindWhaleFarmer
             int idx = Util.FindItemIndex(itemSpec, i => i is not Tool && i.canBeTrashed());
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有能扔的“{itemSpec}”（工具、武器、任务物品不能扔）");
+                yield return ActionResult.Fail($"背包里没有能扔的“{itemSpec}”（工具、武器、任务物品不能扔）" + Util.NotFoundHint(itemSpec, i => i is not Tool && i.canBeTrashed()));
                 yield break;
             }
             if (ReservedChecker()(Player.Items[idx]) is string reservedWhy && (!force || reservedWhy == PlayerReserved))
@@ -2605,6 +3135,13 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var item = Player.Items[idx];
+            // 能吃、体力又不满：吃了比扔划算（海草被扔了两次）。体力满了才让扔；force 照旧能扔
+            if (!force && WorthEating().FirstOrDefault(f => f.slot == idx) is { name: not null } eat)
+            {
+                yield return ActionResult.Fail($"{eat.name} 能吃（+{eat.stamina} 体力，你现在 {(int)Player.Stamina}/{Player.MaxStamina}）：用 eat 吃掉，既回体力又腾格子，比扔掉划算。"
+                    + $"体力够满、就是想扔，再调用一次并传 force=true");
+                yield break;
+            }
             // 值钱的（宝石、矿石、锭、古物、料理、工匠品、戒指，或者一个就卖 50g 以上的）不扔：
             // 背包满了扔东西时很容易按旧的格号扔错，扔掉了就回不来了
             if (!force && TrashValueWhy(item) is string valuable)
@@ -2634,7 +3171,10 @@ namespace BlindWhaleFarmer
             int money = Player.Money;
             Utility.trashItem(gone);
             string refund = Player.Money > money ? $"，垃圾桶退了 {Player.Money - money}g" : "";
-            yield return ActionResult.Success($"扔掉了 {name} x{n}{refund}。背包空位 {Player.Items.Count(i => i == null)} 个");
+            int sameLeft = Player.Items.Where(i => i != null && i.QualifiedItemId == gone.QualifiedItemId).Sum(i => i.Stack);
+            string more = sameLeft > 0 ? $"；背包里还有 {sameLeft} 个同名的（别的品质或别的格，trash_item 一次只扔一格，要扔就再调一次）" : "";
+            string eatHint = EatInsteadHint() is string eh ? $"。下次可以先吃：{eh}" : "";
+            yield return ActionResult.Success($"扔掉了 {name} x{n}{refund}。背包空位 {Player.Items.Count(i => i == null)} 个{more}{eatHint}");
         }
 
         public IEnumerable<object> Eat(string itemSpec, bool force = false)
@@ -2733,6 +3273,47 @@ namespace BlindWhaleFarmer
             };
         }
 
+        /// <summary>
+        /// 不在原版柜台表里的店：玩家实际按动作键的那一格。坐标来自游戏代码（各地点的 checkAction）：
+        /// 货车是车头右下那格；姜岛商人 Buildings 层 2074 号图块；火山矮人看 VolcanoShop 那格；
+        /// 沙漠商人在 (41~42,24)；矿洞矮人、科罗布斯是村民，按他站的格子；其余的按柜台 Action 找。
+        /// </summary>
+        private Point? SpecialShopCounter(string id)
+        {
+            switch (id)
+            {
+                case "Traveler" when Loc is Forest forest:
+                {
+                    var cart = forest.GetTravelingMerchantCartTile();
+                    return new Point(cart.X + 4, cart.Y + 1);
+                }
+                case "Traveler":
+                    return FindCounter(Loc, new[] { "TravelingMerchant", "Traveler" });
+                case "DesertTrade":
+                    return new Point(41, 24);
+                case "IslandTrade":
+                    return FindTileIndex(Loc, "Buildings", 2074);
+                case "Dwarf":
+                    return Loc.characters.FirstOrDefault(c => c.Name == "Dwarf")?.TilePoint;
+                case "ShadowShop":
+                    return Loc.characters.FirstOrDefault(c => c.Name == "Krobus")?.TilePoint;
+                case "VolcanoShop":
+                    return Loc.characters.FirstOrDefault(c => c.Name.Contains("Dwarf"))?.TilePoint ?? FindCounter(Loc, new[] { "VolcanoShop" });
+            }
+            return CounterActions.TryGetValue(id, out var acts) ? FindCounter(Loc, acts) : null;
+        }
+
+        /// <summary>某一层上图块号是 index 的第一格（找不到返回 null）。</summary>
+        private static Point? FindTileIndex(GameLocation loc, string layer, int index)
+        {
+            int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
+            for (int x = 0; x < w; x++)
+                for (int y = 0; y < h; y++)
+                    if (loc.getTileIndexAt(x, y, layer) == index)
+                        return new Point(x, y);
+            return null;
+        }
+
         /// <summary>这些店在哪开（不在那里时告诉 AI 先 travel_to 过去）。</summary>
         private static readonly Dictionary<string, string> SpecialShopWhere = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -2767,24 +3348,17 @@ namespace BlindWhaleFarmer
                     yield return ActionResult.Fail($"{shopId} 不在这里，这里的店是 {specialId}");
                     yield break;
                 }
-                var so = new Outcome();
-                if (specialId == "Traveler" && Loc is Forest cartForest)
+                // 和玩家一样对着柜台、货车、店主按动作键开（以前直接调 Utility.TryOpenShopMenu，等于隔空用指令开店）
+                Point? special = SpecialShopCounter(specialId);
+                if (special is not Point sc)
                 {
-                    // 走到货车跟前（和游戏一样对着货车开）
-                    var cart = cartForest.GetTravelingMerchantCartTile();
-                    foreach (var s in GoAdjacent(new Point(cart.X + 4, cart.Y + 1), so))
-                        yield return s;
+                    yield return ActionResult.Fail($"{specialId} 在这里找不到柜台或者店主，没法像玩家一样走过去开");
+                    yield break;
                 }
-                // 店主站在柜台后的（矮人、桑迪）要用带地点的重载找店主；其余是对着柜台/货车/机器开的，没有店主
-                bool specialOpened = specialId is "Dwarf" or "Sandy" or "DesertTrade"
-                    ? Utility.TryOpenShopMenu(specialId, Loc)
-                    : Utility.TryOpenShopMenu(specialId, null, playOpenSound: true);
-                foreach (var s in WaitTicks(15))
+                var so = new Outcome();
+                foreach (var s in OpenAtCounter(sc, specialId, so))
                     yield return s;
-                if (specialOpened && Game1.activeClickableMenu is ShopMenu)
-                    yield return ActionResult.Success("已打开商店：\n" + observer.DescribeMenu());
-                else
-                    yield return ActionResult.Fail("商店没开（店主不在或者不在营业时间）");
+                yield return so.Ok ? ActionResult.Success("已打开商店：\n" + observer.DescribeMenu()) : ActionResult.Fail(so.Message);
                 yield break;
             }
             if (!string.IsNullOrWhiteSpace(shopId) && SpecialShopWhere.TryGetValue(shopId.Trim(), out string shopWhere))
@@ -2792,25 +3366,268 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"{shopId} 在{shopWhere}，先 travel_to 过去再 open_shop");
                 yield break;
             }
-            if (string.IsNullOrWhiteSpace(shopId) && !ShopByLocation.TryGetValue(Loc.Name, out shopId))
+            // 这张地图上的店：原版表里的 + 地图上 Action OpenShop 的柜台（SVE 这类模组的店都是这么挂的）
+            var here = ShopsHere(Loc);
+            if (string.IsNullOrWhiteSpace(shopId))
             {
-                yield return ActionResult.Fail("这里没有商店（皮埃尔的店在 SeedShop，铁匠在 Blacksmith，木匠在 ScienceHouse，威利在 FishShop）");
+                if (here.Count == 0)
+                {
+                    yield return ActionResult.Fail("这里没有商店（皮埃尔的店在 SeedShop，铁匠在 Blacksmith，木匠在 ScienceHouse，威利在 FishShop）。"
+                        + "装了模组的店也在各自的地点，先 travel_to 过去再 open_shop");
+                    yield break;
+                }
+                if (here.Count > 1)
+                {
+                    yield return ActionResult.Fail($"这里有 {here.Count} 家店，用 shop_id 选一家：{string.Join("；", here.Select(s => s.Describe()))}");
+                    yield break;
+                }
+                shopId = here[0].Id;
+            }
+            shopId = shopId.Trim();
+            var spot = here.FirstOrDefault(s => s.Id.Equals(shopId, StringComparison.OrdinalIgnoreCase));
+            if (spot == null)
+            {
+                // 不是这里的店：别隔空打开（Utility.TryOpenShopMenu 不管人在哪，店主是 AnyOrNone 的模组店在哪都能开）
+                var shops = DataLoader.Shops(Game1.content);
+                string exact = shops.Keys.FirstOrDefault(k => k.Equals(shopId, StringComparison.OrdinalIgnoreCase));
+                if (exact == null)
+                {
+                    var near = ShopCandidates(shopId, shops.Keys, here);
+                    yield return ActionResult.Fail($"没有叫“{shopId}”的店。" + (near.Count > 0 ? $"名字相近的：{string.Join("、", near)}。" : "")
+                        + (here.Count > 0 ? $"这里的店：{string.Join("；", here.Select(s => s.Describe()))}" : "这里没有店，先 travel_to 到店所在的地点"));
+                    yield break;
+                }
+                yield return ActionResult.Fail($"{exact} 不在 {Loc.NameOrUniqueName}，要走到那家店的柜台前才能开。"
+                    + (here.Count > 0 ? $"这里的店：{string.Join("；", here.Select(s => s.Describe()))}" : "这里没有店"));
                 yield break;
             }
+            shopId = spot.Id;
+            // 柜台在哪：模组店记在 spot.Tile（地图上的 Action OpenShop），原版店按 CounterActions 找
+            Point? counter = spot.Tile ?? (CounterActions.TryGetValue(shopId, out var acts) ? FindCounter(Loc, acts) : null);
+            if (counter is not Point c)
+            {
+                yield return ActionResult.Fail($"{shopId} 在这张地图上找不到柜台，没法像玩家一样走过去开");
+                yield break;
+            }
+            // 同一家店有好几处柜台时（SVE 的 JojaMart 左右各一处，只有一处有人看店）：离玩家近的先试，没开再试下一处
+            var tries = new List<Point> { c };
+            if (spot.Counters.Count > 1)
+            {
+                var me = Player.TilePoint;
+                tries = GroupCounters(spot.Counters).OrderBy(g => Util.Manhattan(g, me)).ToList();
+            }
+            string lastWhy = null;
+            foreach (var counterTry in tries)
+            {
+                var go = new Outcome();
+                foreach (var s in OpenAtCounter(counterTry, shopId, go))
+                    yield return s;
+                if (go.Ok)
+                {
+                    yield return ActionResult.Success("已打开商店：\n" + observer.DescribeMenu());
+                    yield break;
+                }
+                lastWhy = go.Message;
+                foreach (var s in CloseDialogues())
+                    yield return s;
+            }
+            yield return ActionResult.Fail(tries.Count > 1 ? $"{shopId} 的 {tries.Count} 处柜台都试了，没开：{lastWhy}" : lastWhy);
+        }
+
+        /// <summary>
+        /// 把挨在一起的柜台格并成一处（SVE 的柜台是竖着的三格），每处留最中间那格做代表；隔得超过 2 格的算另一处。
+        /// </summary>
+        internal static List<Point> GroupCounters(IEnumerable<Point> tiles)
+        {
+            var groups = new List<List<Point>>();
+            foreach (var t in tiles.OrderBy(t => t.X).ThenBy(t => t.Y))
+            {
+                var g = groups.FirstOrDefault(g => g.Any(o => Math.Max(Math.Abs(o.X - t.X), Math.Abs(o.Y - t.Y)) <= 2));
+                if (g == null)
+                    groups.Add(new List<Point> { t });
+                else
+                    g.Add(t);
+            }
+            return groups.Select(g => g.OrderBy(t => t.Y).ElementAt(g.Count / 2)).ToList();
+        }
+
+        /// <summary>
+        /// 原版每家店柜台上的 Action（地图 Buildings 层）：和手动一样走到柜台前按动作键开店，不再直接调 Utility.TryOpenShopMenu。
+        /// 直接调那个函数等于“隔空用指令开店”：在服务器上不是正常玩家能做的事，店主不在、不在营业时间、甚至人不在店里都能开。
+        /// </summary>
+        private static readonly Dictionary<string, string[]> CounterActions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SeedShop"] = new[] { "Buy General", "Buy" },
+            ["Blacksmith"] = new[] { "Blacksmith" },
+            ["Carpenter"] = new[] { "Carpenter" },
+            ["FishShop"] = new[] { "Buy Fish", "Buy" },
+            ["Saloon"] = new[] { "Saloon" },
+            ["Joja"] = new[] { "JojaShop" },
+            ["AnimalShop"] = new[] { "AnimalShop" },
+            ["AdventureShop"] = new[] { "AdventureShop" },
+            ["Hospital"] = new[] { "HospitalShop" },
+            ["Sandy"] = new[] { "Buy Sandy", "Buy" },
+            ["QiGemShop"] = new[] { "QiGemShop" },
+            ["Casino"] = new[] { "ClubShop" },
+        };
+
+        /// <summary>柜台格子：Buildings 层的 Action 以这些开头（完整匹配“Buy Fish”，或者只看第一个词）。找不到返回 null。</summary>
+        private static Point? FindCounter(GameLocation loc, string[] actions)
+        {
+            int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
+            foreach (string want in actions)
+                for (int x = 0; x < w; x++)
+                    for (int y = 0; y < h; y++)
+                    {
+                        string a = loc.doesTileHaveProperty(x, y, "Action", "Buildings");
+                        if (a == null)
+                            continue;
+                        if (want.Contains(' ') ? a.StartsWith(want, StringComparison.OrdinalIgnoreCase)
+                                               : a.Split(' ')[0].Equals(want, StringComparison.OrdinalIgnoreCase))
+                            return new Point(x, y);
+                    }
+            return null;
+        }
+
+        /// <summary>
+        /// 像玩家一样开店：走到柜台旁边、面朝柜台、按动作键（GameLocation.checkAction 走的就是游戏自己的开店逻辑，会看店主在不在、营业时间）。
+        /// 弹出“买东西 / 升级 / 离开”这类选择时选买东西那项。开出来是商店就成功；弹的是普通对话（店主不在、关门）就把原话交回去。
+        /// </summary>
+        private IEnumerable<object> OpenAtCounter(Point counter, string what, Outcome o)
+        {
+            // 柜台多半是墙里的一格：上下左右常常没地方站（铁匠铺的柜台 (2,14) 只能从斜下方 (3,15) 点）。
+            // 游戏允许点身边一圈（含斜角）的格子，所以斜角也算能站的位置，和 NpcStandTiles 一样先上下左右、再斜角
+            var stands = NpcStandTiles(counter);
+            if (stands.Count == 0)
+            {
+                o.Fail($"走不到{what}的柜台 ({counter.X},{counter.Y})：柜台四周（含斜角）都没有能站的格子");
+                yield break;
+            }
+            if (!NextTo(counter))
+            {
+                foreach (var s in GoToAny(stands, o, $"{what}的柜台 ({counter.X},{counter.Y})"))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    o.Fail($"走不到{what}的柜台 ({counter.X},{counter.Y})：{o.Message}");
+                    yield break;
+                }
+            }
+            Face(counter);
             if (Blocked(out string why))
             {
-                yield return ActionResult.Fail(why);
+                o.Fail(why);
                 yield break;
             }
-            bool opened = Utility.TryOpenShopMenu(shopId, Loc);
-            foreach (var s in WaitTicks(15))
+            Loc.checkAction(new xLocation(counter.X, counter.Y), Game1.viewport, Player);
+            for (int t = 0; t < 60 && Game1.activeClickableMenu == null; t++)
+                yield return null;
+            // 罗宾、克林特、玛妮这类柜台会先问“买东西 / 升级 / 离开”：选买东西那一项
+            if (Game1.activeClickableMenu is DialogueBox { isQuestion: true } ask && ask.responses != null)
+            {
+                int shop = Array.FindIndex(ask.responses, r => r.responseKey is "Shop" or "Supplies" or "Buy" or "Purchase");
+                if (shop >= 0)
+                {
+                    for (int t = 0; t < 60 && (ask.transitioning || ask.safetyTimer > 0); t++)
+                        yield return null;
+                    ask.selectedResponse = shop;
+                    ask.receiveLeftClick(0, 0);
+                    for (int t = 0; t < 60 && Game1.activeClickableMenu is not ShopMenu; t++)
+                        yield return null;
+                }
+            }
+            foreach (var s in WaitTicks(10))
                 yield return s;
-            if (opened && Game1.activeClickableMenu is ShopMenu)
-                yield return ActionResult.Success("已打开商店：\n" + observer.DescribeMenu());
+            if (Game1.activeClickableMenu is ShopMenu)
+                o.Succeed();
             else if (Game1.activeClickableMenu is DialogueBox db)
-                yield return ActionResult.Fail("商店没开：" + db.getCurrentString());
+            {
+                string text = db.getCurrentString();
+                o.Fail($"{what}没开：{text}");
+            }
             else
-                yield return ActionResult.Fail("商店没开（店主不在或者不在营业时间）");
+                o.Fail($"{what}没开：对着柜台 ({counter.X},{counter.Y}) 按了动作键，没弹出商店（店主不在柜台或者不在营业时间）");
+        }
+
+        /// <summary>这张地图上的一家店：Data/Shops 里的 id，柜台格子（原版按地点开的店没有柜台格子），显示名。</summary>
+        internal sealed record ShopSpot(string Id, Point? Tile, string Name)
+        {
+            /// <summary>这家店在这张地图上所有的柜台格（可能是几处）；开店时离玩家近的先试。</summary>
+            public List<Point> Counters { get; init; } = new();
+
+            public string Describe() => (Name != null && Name != Id ? $"{Name}（{Id}）" : Id) + (Tile is Point t ? $" 柜台 ({t.X},{t.Y})" : "");
+        }
+
+        /// <summary>
+        /// 当前地图上能开的店：原版按地点开的（ShopByLocation）+ 地图 Buildings 层上 Action OpenShop 的柜台（SVE 等模组都是这么挂店的）。
+        /// 只认 Data/Shops 里真有的 id。只读，结果按地点缓存。
+        /// </summary>
+        internal static List<ShopSpot> ShopsHere(GameLocation loc)
+        {
+            var list = new List<ShopSpot>();
+            if (loc?.Map == null)
+                return list;
+            var shops = DataLoader.Shops(Game1.content);
+            // 地图上挂了 Action OpenShop 的柜台先算：模组改过的原版店（SVE 的 JojaMart 柜台是 “OpenShop Joja …”，没有原版的 JojaShop）也能找到柜台
+            foreach (var grp in ShopTiles(loc).GroupBy(t => t.id, StringComparer.OrdinalIgnoreCase))
+                if (shops.ContainsKey(grp.Key) && !list.Any(s => s.Id.Equals(grp.Key, StringComparison.OrdinalIgnoreCase)))
+                    list.Add(new ShopSpot(grp.Key, grp.First().tile, ShopDisplayName(grp.Key)) { Counters = grp.Select(g => g.tile).ToList() });
+            if (ShopByLocation.TryGetValue(loc.Name, out string vanilla) && shops.ContainsKey(vanilla)
+                && !list.Any(s => s.Id.Equals(vanilla, StringComparison.OrdinalIgnoreCase)))
+                list.Add(new ShopSpot(vanilla, null, null));
+            return list;
+        }
+
+        private static readonly Dictionary<string, List<(string id, Point tile)>> shopTileCache = new();
+
+        /// <summary>地图上“Action OpenShop 店id …”的格子（一家店多格柜台只记第一格）。</summary>
+        private static List<(string id, Point tile)> ShopTiles(GameLocation loc)
+        {
+            string key = loc.NameOrUniqueName + "#" + Pathfinder.MapWidth(loc) + "x" + Pathfinder.MapHeight(loc);
+            if (shopTileCache.TryGetValue(key, out var cached))
+                return cached;
+            var found = new List<(string, Point)>();
+            var layer = loc.Map.GetLayer("Buildings");
+            if (layer != null)
+                for (int x = 0; x < layer.LayerWidth; x++)
+                    for (int y = 0; y < layer.LayerHeight; y++)
+                    {
+                        string action = loc.doesTileHaveProperty(x, y, "Action", "Buildings");
+                        if (action == null || !action.StartsWith("OpenShop "))
+                            continue;
+                        string id = action.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1);
+                        // 同一家店常有好几个柜台格（SVE 的 JojaMart 左右两处各三格，只有一处有人看店）：全记下来，开店时挨个试
+                        if (id != null)
+                            found.Add((id, new Point(x, y)));
+                    }
+            shopTileCache[key] = found;
+            return found;
+        }
+
+        /// <summary>店主的名字（比如 SVE 的“HighlandsDwarf”换成村民显示名），拿不到就返回 null。</summary>
+        private static string ShopDisplayName(string id)
+        {
+            try
+            {
+                var owner = DataLoader.Shops(Game1.content)[id].Owners?.FirstOrDefault(o => o.Name is not ("AnyOrNone" or "Any" or "None"));
+                return owner == null ? null : Game1.getCharacterFromName(owner.Name)?.displayName ?? owner.Name;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>店 id 写错时的候选：这里的店优先，再从全部店里挑名字相近的，最多 5 个。</summary>
+        internal static List<string> ShopCandidates(string want, IEnumerable<string> all, List<ShopSpot> here)
+        {
+            string w = want.Trim();
+            var pool = here.Select(s => s.Id).Concat(all).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return pool
+                .Select(id => (id, score: Util.NameScore(w, id)))
+                .Where(t => t.score > 0)
+                .OrderByDescending(t => t.score).ThenBy(t => t.id.Length)
+                .Take(5).Select(t => t.id).ToList();
         }
 
         private static ISalable FindSalable(ShopMenu shop, string spec)
@@ -2852,7 +3669,12 @@ namespace BlindWhaleFarmer
             var salable = FindSalable(shop, spec);
             if (salable == null || !shop.itemPriceAndStock.TryGetValue(salable, out var info))
             {
-                yield return ActionResult.Fail($"商店里没有“{spec}”");
+                // 名字写错（真机：“防风种子”，店里是“防风草种子”）：给店里名字相近的几样
+                var near = shop.forSale.Where(s => shop.itemPriceAndStock.ContainsKey(s))
+                    .Select(s => (name: s.DisplayName, score: Math.Max(Util.NameScore(spec, s.DisplayName), Util.NameScore(spec, s.Name))))
+                    .Where(t => t.score > 0).OrderByDescending(t => t.score)
+                    .Select(t => t.name).Distinct().Take(3).ToList();
+                yield return ActionResult.Fail($"商店里没有“{spec}”" + (near.Count > 0 ? $"。名字相近的：{string.Join("、", near)}（照着写全名，或者写商品序号）" : "。商品列表看 get_state 的当前界面"));
                 yield break;
             }
             count = Math.Clamp(count, 1, 999);
@@ -2861,6 +3683,14 @@ namespace BlindWhaleFarmer
             if (count <= 0)
             {
                 yield return ActionResult.Fail("已经卖完了");
+                yield break;
+            }
+            // 种子：这个季节种不熟的先别买（真机春 19 日买了 36 个花椰菜种子，要长 12 天、只剩 9 天，2880g 白花）。
+            // 买来留着下个季节、或者种温室的，传 force=true
+            if (!force && salable is SObject seedItem && SeedWontRipen(seedItem, Game1.getFarm(), out int seedGrow, out int seedDaysLeft))
+            {
+                yield return ActionResult.Fail($"{salable.DisplayName} 要长 {seedGrow} 天才熟，这个季节只剩 {seedDaysLeft} 天，种在农场上换季那天会枯死，买了也白买。"
+                    + "挑熟得快的种子（防风草 4 天、青豆 10 天、土豆 6 天、郁金香 6 天），或者等下个季节再买；买来种温室、姜岛农场，或者留着下个季节种，就再调用一次并传 force=true");
                 yield break;
             }
             // 自动采集器每个鸡舍/畜棚放一台就够（玛妮那里 2.5 万一台）：先数一数哪些还没有，别重复买
@@ -2924,7 +3754,7 @@ namespace BlindWhaleFarmer
                 : ActionResult.Fail($"没买成 {name}（钱或交换物不够，或者不能购买）");
         }
 
-        public IEnumerable<object> Sell(string itemSpec, int? count)
+        public IEnumerable<object> Sell(string itemSpec, int? count, bool force = false)
         {
             if (Game1.activeClickableMenu is not ShopMenu shop)
             {
@@ -2934,7 +3764,7 @@ namespace BlindWhaleFarmer
             int idx = Util.FindItemIndex(itemSpec);
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有“{itemSpec}”");
+                yield return ActionResult.Fail($"背包里没有“{itemSpec}”" + Util.NotFoundHint(itemSpec));
                 yield break;
             }
             var item = Player.Items[idx];
@@ -2943,23 +3773,98 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"{item.DisplayName} 是玩家要求保留的，不能卖");
                 yield break;
             }
+            // 先看这家店收不收：JojaMart 不收鱼，以前先报“标了【留着】”，看上去像是留着的标记在拦，其实是店不收（真机）
             if (!shop.highlightItemToSell(item) || shop.currency != 0)
             {
                 yield return ActionResult.Fail($"这家店不收 {item.DisplayName}（大部分作物可以放进农场出货箱）");
                 yield break;
             }
-            int n = Math.Clamp(count ?? item.Stack, 1, item.Stack);
-            int price = Utility.getSellToStorePriceOfItem(item, false) * n;
+            // 收集包、任务要交的东西（背包里标了【留着】）也不卖：真机 sell 海星把标着【留着：社区中心“海鱼”要交】的一格卖了。
+            // 点名的那一格也一样拦；要卖就传 force=true。同名的格子里有没标的，会跳过标了的、卖没标的
+            if (!force && ReservedChecker()(item) is string reservedWhy)
+            {
+                var free = Player.Items.Where(i => i != null && i.QualifiedItemId == item.QualifiedItemId && ReservedChecker()(i) == null && shop.highlightItemToSell(i)).ToList();
+                if (free.Count == 0)
+                {
+                    yield return ActionResult.Fail($"{item.DisplayName} 是{reservedWhy}的，卖了就交不了，先留着（交完再卖多的）。{ForceHint}");
+                    yield break;
+                }
+                // 点名的是标了的那格，但同名的格里有没标的：改卖没标的那格
+                idx = Player.Items.IndexOf(free[0]);
+                item = free[0];
+            }
+            if (!shop.highlightItemToSell(item))
+            {
+                yield return ActionResult.Fail($"这家店不收 {item.DisplayName}（大部分作物可以放进农场出货箱）");
+                yield break;
+            }
+            // 同一种东西常常按品质分在好几格（比如 1 个普通沙丁鱼 + 1 个银星沙丁鱼），以前一次只卖第一格，
+            // 所以写 count:99 也只卖掉 1 个（真机 WorkBuddy 的反馈）。现在把背包里所有同名的格子一起算：
+            // 写了品质（“沙丁鱼 金星”）或者写的是背包序号，只卖那一档/那一格；其余按 count 卖（不写 count 就是全部），便宜的品质先卖
+            bool byIndex = int.TryParse(itemSpec.Trim(), out _);
+            int wantQuality = Util.QualityFromSpec(itemSpec);
+            var stacks = new List<(int slot, int quality, int stack)>();
+            int reservedLeft = 0;
+            for (int i = 0; i < Player.Items.Count; i++)
+            {
+                var it = Player.Items[i];
+                if (it == null || it.QualifiedItemId != item.QualifiedItemId || !shop.highlightItemToSell(it))
+                    continue;
+                if (byIndex && i != idx)
+                    continue;
+                if (wantQuality >= 0 && it.Quality != wantQuality)
+                    continue;
+                // 玩家要求保留的、社区中心和任务要交的不跟着一起卖掉（force 才卖）
+                if (!force && ReservedChecker()(it) is string)
+                {
+                    reservedLeft += it.Stack;
+                    continue;
+                }
+                stacks.Add((i, it.Quality, it.Stack));
+            }
+            var plan = PlanSell(stacks, count);
             string name = item.DisplayName;
+            int total = 0, price = 0;
+            var parts = new List<string>();
+            foreach (var (slot, take) in plan)
+            {
+                var it = Player.Items[slot];
+                price += Utility.getSellToStorePriceOfItem(it, false) * take;
+                total += take;
+                parts.Add($"{QualityName(it.Quality)} {take}");
+                if (take >= it.Stack)
+                    Player.removeItemFromInventory(it);
+                else
+                    it.Stack -= take;
+            }
             Player.Money += price;
-            if (n >= item.Stack)
-                Player.removeItemFromInventory(item);
-            else
-                item.Stack -= n;
             Game1.playSound("sell");
             yield return null;
-            yield return ActionResult.Success($"卖出 {n} 个 {name}，得到 {price}g，现在有 {Player.Money}g");
+            string detail = parts.Count > 1 ? $"（{string.Join("、", parts)}）" : "";
+            string left = reservedLeft > 0 ? $"；还有 {reservedLeft} 个标了【留着】的没卖" : "";
+            yield return ActionResult.Success($"卖出 {total} 个 {name}{detail}，得到 {price}g，现在有 {Player.Money}g{left}");
         }
+
+        /// <summary>
+        /// 卖东西的方案：stacks 是同名东西的各格（格号、品质、数量），count 是要卖几个（null = 全部）。
+        /// 便宜的品质先卖，同品质按格号；返回 (格号, 这格卖几个)。最多卖到 count，卖光所有格为止。
+        /// </summary>
+        internal static List<(int slot, int take)> PlanSell(IEnumerable<(int slot, int quality, int stack)> stacks, int? count)
+        {
+            int left = count.HasValue ? Math.Max(1, count.Value) : int.MaxValue;
+            var plan = new List<(int, int)>();
+            foreach (var (slot, _, stack) in stacks.OrderBy(t => t.quality).ThenBy(t => t.slot))
+            {
+                if (left <= 0)
+                    break;
+                int take = Math.Min(stack, left);
+                plan.Add((slot, take));
+                left -= take;
+            }
+            return plan;
+        }
+
+        private static string QualityName(int quality) => quality switch { 1 => "银星", 2 or 3 => "金星", 4 => "铱星", _ => "普通" };
 
         public IEnumerable<object> Craft(string recipeSpec, int count)
         {
@@ -2991,12 +3896,26 @@ namespace BlindWhaleFarmer
                 made++;
             }
             yield return null;
+            // 用掉的材料里有标了【留着】的（收集包、任务要交的）：做成了也提醒一句，交的时候要另外补
+            var reservedCheck = ReservedChecker();
+            var reservedUsed = recipe.recipeList.Keys
+                .Select(id => Player.Items.FirstOrDefault(i => i != null && i.QualifiedItemId == ItemRegistry.QualifyItemId(id)))
+                .Where(i => i != null && reservedCheck(i) is string)
+                .Select(i => $"{i.DisplayName}（{reservedCheck(i)}）").Distinct().ToList();
             if (made > 0)
-                yield return ActionResult.Success($"制作了 {made} 个 {recipe.DisplayName}");
+                yield return ActionResult.Success($"制作了 {made} 个 {recipe.DisplayName}"
+                    + (reservedUsed.Count > 0 ? $"。注意用掉了标着【留着】的材料：{string.Join("、", reservedUsed)}，交的时候要另外补" : ""));
             else
             {
+                // 说清楚缺什么、缺多少（以前只说“材料不够或背包满了”，看着像是【留着】的标记在拦）
+                var lacks = recipe.recipeList
+                    .Select(kv => (name: Util.ObjectName(kv.Key), need: kv.Value, have: Player.Items.CountId(ItemRegistry.QualifyItemId(kv.Key)) ))
+                    .Where(t => t.have < t.need)
+                    .Select(t => $"{t.name} 还差 {t.need - t.have}（要 {t.need}，有 {t.have}）").ToList();
                 string need = string.Join("、", recipe.recipeList.Select(kv => $"{Util.ObjectName(kv.Key)} x{kv.Value}"));
-                yield return ActionResult.Fail($"材料不够或背包满了。{recipe.DisplayName} 需要：{need}");
+                yield return ActionResult.Fail(lacks.Count > 0
+                    ? $"材料不够，{recipe.DisplayName} 需要：{need}；{string.Join("、", lacks)}。标了【留着】的材料制作时照样能用，不是它拦的"
+                    : $"背包满了，{recipe.DisplayName} 做出来放不下（材料够）：先空出一格");
             }
         }
 
@@ -3209,6 +4128,17 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success($"选择了职业：{LevelUpMenu.getProfessionTitleFromNumber(pick)}");
         }
 
+        /// <summary>
+        /// skip_event 时没有剧情：多半是普通的对话框、信件或者别的界面，告诉 AI 该用哪个工具，而不是只说“没有剧情”。
+        /// </summary>
+        internal static string NoEventHint(IClickableMenu menu) => menu switch
+        {
+            DialogueBox => "现在没有剧情事件，开着的是普通对话框（村民说话、提示），跳不了：用 dialogue 推进或关掉它（是选择题就传 choice）",
+            LetterViewerMenu => "现在没有剧情事件，开着的是信件：用 close_menu 关掉",
+            null => "现在没有剧情事件，也没有开着的界面，可以直接做别的",
+            _ => $"现在没有剧情事件，开着的是界面（{menu.GetType().Name}）：用 close_menu 关掉，或者 menu_click 点里面的按钮"
+        };
+
         public IEnumerable<object> SkipEvent()
         {
             var ev = Game1.CurrentEvent;
@@ -3247,7 +4177,7 @@ namespace BlindWhaleFarmer
                         : ActionResult.Fail("剧情已经结束了，但人还在地图外面，没能送回来：试试 travel_to Farm");
                     yield break;
                 }
-                yield return ActionResult.Fail("现在没有剧情事件");
+                yield return ActionResult.Fail(NoEventHint(Game1.activeClickableMenu));
                 yield break;
             }
             if (!ev.skippable)

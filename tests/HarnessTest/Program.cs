@@ -8,7 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 // 通过反射调用模组里的 internal 类型，在不启动游戏的情况下测试：工具 schema、参数解析、DeepSeek 客户端收发。
-class Program
+partial class Program
 {
     static int failures = 0;
     static string Shorten(string s) => s.Length <= 60 ? s : s.Substring(0, 60) + "…";
@@ -56,6 +56,112 @@ class Program
         tMain.GetMethod("Tick").Invoke(main, new object[] { false });
         string r4 = await pending;
         Check(r4.StartsWith("失败") || r4.StartsWith("错误"), "世界未就绪时动作安全失败：" + r4);
+
+        // ── 参数别名、必填检查（M1）：参数没问题的会排进动作队列，世界未就绪时报“游戏世界未就绪”；参数有问题的在排队前就被拦下 ──
+        async Task<string> Run(string name, string json)
+        {
+            var t = (Task<string>)exec.Invoke(tools, new object[] { name, json });
+            for (int i = 0; i < 3 && !t.IsCompleted; i++)
+                tMain.GetMethod("Tick").Invoke(main, new object[] { false });
+            return await t;
+        }
+        bool ArgsAccepted(string r) => !r.Contains("不认识参数") && !r.Contains("缺少必填参数") && !r.Contains("缺少参数");
+        foreach (var (name, json) in new[]
+        {
+            ("craft", "{\"item\":\"Chest\"}"),
+            ("craft", "{\"name\":\"箱子\",\"count\":2}"),
+            ("plant_seeds", "{\"item\":\"防风草种子\"}"),
+            ("plant_seeds", "{\"seed_name\":\"防风草种子\"}"),
+            ("place_item", "{\"name\":\"Chest\",\"x\":60,\"y\":15}"),
+            ("craft", "{\"recipe\":\"Chest\",\"item\":\"Scarecrow\"}"),
+            ("till_area", "{\"width\":4,\"height\":3}"),
+            ("till_area", "{\"near\":\"60,15\",\"width\":5}"),
+            ("till_area", "{\"x1\":60,\"y1\":15,\"Width\":4}"),
+        })
+        {
+            string r = await Run(name, json);
+            Check(ArgsAccepted(r), $"别名参数被接受 {name}{json}：{Shorten(r)}");
+        }
+        string rMissing = await Run("craft", "{}");
+        Check(rMissing.StartsWith("失败：craft 缺少必填参数 recipe") && rMissing.Contains("这个工具的参数有"), "不传必填参数时报清楚缺哪个：" + Shorten(rMissing));
+        string rNull = await Run("place_item", "{\"name\":\"Chest\",\"x\":60}");
+        Check(rNull.StartsWith("失败：place_item 的 x、y 要一起给，你只给了 x"), "place_item 只给 x 时报要成对给：" + Shorten(rNull));
+        string rNoItem = await Run("place_item", "{\"x\":60,\"y\":15}");
+        Check(rNoItem.StartsWith("失败：place_item 缺少必填参数 item"), "place_item 不给 item 照样报缺必填：" + Shorten(rNoItem));
+        string rAutoPlace = await Run("place_item", "{\"item\":\"Chest\"}");
+        Check(ArgsAccepted(rAutoPlace) && !rAutoPlace.Contains("要一起给"), "place_item 不给 x,y 时参数被接受（进游戏后自动找位置）：" + Shorten(rAutoPlace));
+        string rUnknown = await Run("craft", "{\"recipe\":\"Chest\",\"colour\":\"red\"}");
+        Check(rUnknown.Contains("不认识参数 colour"), "真不认识的参数照样拒绝：" + Shorten(rUnknown));
+        string rOtherTool = await Run("move_to", "{\"x\":1,\"y\":2,\"width\":3}");
+        Check(rOtherTool.Contains("不认识参数 width"), "width 只对 till_area 有效：" + Shorten(rOtherTool));
+
+        // till_area 的 width/height/near 在 schema 里，模型才看得到
+        var tillProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "till_area")?["function"]["parameters"]["properties"] as JsonObject;
+        Check(tillProps != null && tillProps["width"]?["type"]?.GetValue<string>() == "integer" && tillProps["height"]?["type"]?.GetValue<string>() == "integer"
+              && tillProps["near"]?["type"]?.GetValue<string>() == "string", "till_area 的 schema 里有 width/height(integer)、near(string)");
+
+        // 类型错误：传了但不是整数，报“要整数，你给的是 …”，不报“缺少参数”
+        string rBadX = await Run("move_to", "{\"x\":\"abc\",\"y\":6}");
+        Check(rBadX.StartsWith("失败：move_to 的参数 x 要整数，你给的是 abc") && !rBadX.Contains("缺少"), "x:\"abc\" 报类型错误：" + Shorten(rBadX));
+        string rBadBool = await Run("use_tool", "{\"tool\":\"axe\",\"x\":true,\"y\":[1]}");
+        Check(rBadBool.Contains("x 要整数，你给的是 true") && rBadBool.Contains("y 要整数，你给的是 [1]"), "两个类型错误一起报：" + Shorten(rBadBool));
+        string rBadOpt = await Run("till_area", "{\"width\":\"宽一点\"}");
+        Check(rBadOpt.Contains("width 要整数，你给的是 宽一点"), "可选参数类型错误也报：" + Shorten(rBadOpt));
+        string rStrNum = await Run("move_to", "{\"x\":\"5\",\"y\":6.4}");
+        Check(ArgsAccepted(rStrNum) && !rStrNum.Contains("要整数"), "\"5\" 和 6.4 照样当整数用：" + Shorten(rStrNum));
+
+        // 开关参数：认不出的值报“要 true/false”，不静默当 false
+        string rMaybe = await Run("travel_to", "{\"location\":\"Town\",\"detour\":\"maybe\"}");
+        Check(rMaybe.StartsWith("失败：travel_to 的参数 detour 要 true/false，你给的是 maybe"), "detour:\"maybe\" 报开关类型错误：" + Shorten(rMaybe));
+        string rTwo = await Run("travel_to", "{\"location\":\"Town\",\"detour\":2}");
+        Check(rTwo.Contains("detour 要 true/false，你给的是 2"), "detour:2 报开关类型错误：" + Shorten(rTwo));
+        string rMixed2 = await Run("place_item", "{\"item\":\"Chest\",\"x\":\"左边\",\"y\":1,\"force\":\"也许\"}");
+        Check(rMixed2.Contains("x 要整数，你给的是 左边") && rMixed2.Contains("force 要 true/false，你给的是 也许"), "整数和开关类型错误一起报：" + Shorten(rMixed2));
+        foreach (var ok in new[] { "true", "false", "\"true\"", "\"no\"", "\"是\"", "\"否\"", "1", "0", "\"on\"" })
+        {
+            string rb = await Run("travel_to", "{\"location\":\"Town\",\"detour\":" + ok + "}");
+            Check(ArgsAccepted(rb) && !rb.Contains("true/false"), $"detour:{ok} 照样认：" + Shorten(rb));
+        }
+        // travel_to 带坐标（M3）：x、y 成对；location 和坐标至少一样；只给坐标按当前地点算
+        string rTravelX = await Run("travel_to", "{\"location\":\"Town\",\"x\":10}");
+        Check(rTravelX.StartsWith("失败：travel_to 的 x、y 要一起给，你只给了 x"), "travel_to 只给 x 报要一起给：" + Shorten(rTravelX));
+        string rTravelY = await Run("travel_to", "{\"y\":10}");
+        Check(rTravelY.StartsWith("失败：travel_to 的 x、y 要一起给，你只给了 y"), "travel_to 只给 y 报要一起给：" + Shorten(rTravelY));
+        string rTravelNone = await Run("travel_to", "{}");
+        Check(rTravelNone.StartsWith("失败：travel_to 要给 location") && !rTravelNone.Contains("缺少参数"), "travel_to 什么都不给报清楚：" + Shorten(rTravelNone));
+        foreach (var json in new[] { "{\"location\":\"Town\",\"x\":10,\"y\":20}", "{\"x\":10,\"y\":20}", "{\"location\":\"Town\"}", "{\"location\":\"Town\",\"x\":\"10\",\"y\":20,\"detour\":true}" })
+        {
+            string rt = await Run("travel_to", json);
+            Check(ArgsAccepted(rt) && !rt.Contains("要一起给") && !rt.Contains("要给 location"), $"travel_to{json} 参数被接受：" + Shorten(rt));
+        }
+        var travelProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "travel_to")?["function"]["parameters"];
+        Check(travelProps?["properties"]?["x"]?["type"]?.GetValue<string>() == "integer" && travelProps?["properties"]?["y"] != null
+              && !((JsonArray)travelProps["required"]).Any(r => r.GetValue<string>() == "location"), "travel_to 的 schema 有 x/y，location 不再必填");
+
+        // 结果拼接只砍真正的“成功：”“失败：”前缀（M3 修 Substring(3)）
+        var strip = tActions.GetMethod("StripResultPrefix", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        string Strip(string s) => (string)strip.Invoke(null, new object[] { s });
+        Check(Strip("成功：已放下") == "已放下" && Strip("失败：放不了") == "放不了", "StripResultPrefix 砍掉成功/失败前缀");
+        Check(Strip("对话已推进") == "对话已推进" && Strip("错误：崩了") == "错误：崩了" && Strip("") == "" && Strip(null) == "", "StripResultPrefix 不是成功/失败开头的原样返回");
+
+        // 版本号（M3）：装进游戏要能和上游 v1.1.25 的包区分
+        // 从测试程序所在目录往上找仓库根（有 BlindWhaleFarmer/manifest.json 的那一层）
+        var repo = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (repo != null && !System.IO.File.Exists(System.IO.Path.Combine(repo.FullName, "BlindWhaleFarmer", "manifest.json")))
+            repo = repo.Parent;
+        string ReadVersion(string rel, string key) => repo == null ? null
+            : JsonNode.Parse(System.IO.File.ReadAllText(System.IO.Path.Combine(repo.FullName, rel)).TrimStart('﻿'))?[key]?.GetValue<string>();
+        string manifestVersion = ReadVersion(System.IO.Path.Combine("BlindWhaleFarmer", "manifest.json"), "Version");
+        Check(manifestVersion != null && manifestVersion.Length > 0, "manifest.json 有版本号：" + manifestVersion);
+        Check(ReadVersion(System.IO.Path.Combine("release", "BlindWhaleFarmer", "manifest.json"), "Version") == manifestVersion, "release/BlindWhaleFarmer/manifest.json 和 manifest.json 版本一致");
+        Check(ReadVersion("package.json", "version") == manifestVersion, "package.json 和 manifest.json 版本一致（DSH 插件按版本号决定要不要更新模组）");
+
+        // ── M11：地图认知与卡住诊断（离线拼地图，不进游戏） ──
+        await TestMapInfo(asm, schema, Run);
+
+        var parseBool = tTools.GetMethod("ParseBool", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        Check((bool?)parseBool.Invoke(null, new object[] { JsonNode.Parse("\"no\"") }) == false && (bool?)parseBool.Invoke(null, new object[] { JsonNode.Parse("\"maybe\"") }) == null,
+            "ParseBool：\"no\" 是 false，\"maybe\" 认不出");
 
         // ── DeepSeek 客户端：本地假服务器 ──
         var listener = new HttpListener();
@@ -168,6 +274,19 @@ class Program
 
         const int port = 18799;
         var tServer = asm.GetType("BlindWhaleFarmer.McpServer");
+
+        // get_state 的 section：中英文都认，写错的名字明说
+        var filter = tServer.GetMethod("FilterSections", BindingFlags.Static | BindingFlags.NonPublic);
+        string fake = "笔记\n## 基本状态\n时间\n## 当前界面\n无\n## 位置\n农场\n## 背包（序号: 物品）\n0: 锄头\n## 穿戴（背包里有更好的鞋子…）\n鞋\n## 箱子（所有地点）\n箱A\n## 本地出口（…）\n门\n## 任务\n任务A\n";
+        string F(string s) => (string)filter.Invoke(null, new object[] { fake, s });
+        foreach (var s in new[] { "背包", "inventory", "Inventory", "BAG", "物品栏" })
+            Check(F(s).Contains("0: 锄头") && !F(s).Contains("箱A") && !F(s).Contains("鞋"), $"section={s} 只给背包（不带穿戴）");
+        Check(F("箱子,quests").Contains("箱A") && F("箱子,quests").Contains("任务A") && !F("箱子,quests").Contains("锄头"), "section 中英文混写：箱子,quests");
+        Check(F("背包、任务").Contains("0: 锄头") && F("背包、任务").Contains("任务A"), "section 用顿号分隔");
+        Check(F("出口").Contains("门") && F("exits").Contains("门"), "section 出口/exits 都对上“本地出口”");
+        string fBad = F("背包,钱包");
+        Check(fBad.Contains("0: 锄头") && fBad.Contains("钱包 没有对应的段落"), "section 写错的名字明说：" + Shorten(fBad.Substring(fBad.LastIndexOf('（'))));
+        Check(!F("背包").Contains("没有对应的段落"), "section 都对上时不报写错");
         var server = Activator.CreateInstance(tServer, all, null, new object[] { mod, port }, null);
         tServer.GetMethod("Start").Invoke(server, null);
 

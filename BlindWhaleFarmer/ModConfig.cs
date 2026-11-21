@@ -25,6 +25,12 @@ namespace BlindWhaleFarmer
         /// <summary>联机时弹出中文输入框的键（游戏聊天框里看不到输入法的候选词）。</summary>
         public SButton ChatInputKey { get; set; } = SButton.F6;
 
+        /// <summary>
+        /// 允许 AI 往游戏聊天里发话（say 工具、切换模式的自动播报、节日里“我准备好了”）。默认开；设成 false 就关：AI 不跟别的玩家聊天。
+        /// 只管 AI 发出去的话，别人对它说的话它照样收得到；玩家自己按 ChatInputKey 弹出的输入框不受影响。
+        /// </summary>
+        public bool AllowChat { get; set; } = true;
+
         /// <summary>联机时 AI 怎么安排自己：solo 自己玩、command 主要听指令、hybrid 指令做完接着自己玩。</summary>
         public string CompanionMode { get; set; } = GameActions.ModeHybrid;
 

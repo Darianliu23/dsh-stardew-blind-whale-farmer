@@ -600,13 +600,21 @@ namespace BlindWhaleFarmer
         /// </summary>
         internal static string SuggestFieldExpansion(GameLocation loc, int want = 20)
         {
-            var main = Fields(loc).FirstOrDefault(f => f.Tiles.Count >= 4);
+            // 联机时的农场工人：只建议扩自己小屋门口的田（和 till_area 不给坐标时一样），说法也换成“你门口的田”
+            var big = Fields(loc).Where(f => f.Tiles.Count >= 4).ToList();
+            string which = "最大的田";
+            if (loc is Farm && MyCabinDoor() is Point door)
+            {
+                big = big.Where(f => FieldDistance(f, door) <= OwnFieldRadius).OrderBy(f => FieldDistance(f, door)).ToList();
+                which = "你门口的田";
+            }
+            var main = big.FirstOrDefault();
             if (main == null)
                 return null;
             var best = BestExpansion(loc, main, want);
             if (best.n == 0)
-                return $"最大的田 {main.Describe()}，四周都是树、大树桩大石头或者不能开垦的地面，没法挨着扩，另挑地方开一块";
-            return $"挨着最大的田往{best.side}扩：till_area {best.r.Left},{best.r.Top},{best.r.Right - 1},{best.r.Bottom - 1}（能开 {best.n} 格"
+                return $"{which} {main.Describe()}，四周都是树、大树桩大石头或者不能开垦的地面，没法挨着扩，另挑地方开一块";
+            return $"挨着{which}往{best.side}扩：till_area {best.r.Left},{best.r.Top},{best.r.Right - 1},{best.r.Bottom - 1}（能开 {best.n} 格"
                 + (best.clutter > 0 ? $"，其中 {best.clutter} 格有杂草石头，till_area 会先清掉" : "") + "；也可以只传 count 让它自己挨着扩）";
         }
 
@@ -630,7 +638,18 @@ namespace BlindWhaleFarmer
                     int free = pts.Count(p => Tillable(loc, p)), clutter = pts.Count(p => FieldClutter(loc, p));
                     return (o.r, o.side, n: free + clutter, clutter, score: free + 0.7 * clutter);
                 })
-                .OrderByDescending(o => o.score).Select(o => (o.r, o.side, o.n, o.clutter)).First();
+                // 分数差不多时挑让田更方正的一边：扩完以后外框的长宽比越接近 1 越好浇（升级水壶一次浇一片）。
+                // 以前只看能开几格，同样多时总是往“下”扩，扩几次就成一条长带
+                .OrderByDescending(o => Math.Round(o.score))
+                .ThenBy(o => Squareness(b, o.r))
+                .Select(o => (o.r, o.side, o.n, o.clutter)).First();
+        }
+
+        /// <summary>田 main 加上扩出的 add 以后，外框的长边比短边（1 = 正方形，越大越像长条）。</summary>
+        internal static double Squareness(Rectangle main, Rectangle add)
+        {
+            var u = Rectangle.Union(main, add);
+            return Math.Max(u.Width, u.Height) / (double)Math.Max(1, Math.Min(u.Width, u.Height));
         }
 
         /// <summary>矩形离某块田隔着几格（0 = 挨着或重叠）。Rectangle 的 Right/Bottom 是开区间。</summary>
@@ -682,7 +701,7 @@ namespace BlindWhaleFarmer
             {
                 var door = new Rectangle(b.tileX.Value, b.tileY.Value + b.tilesHigh.Value, b.tilesWide.Value, 2);
                 if (door.Intersects(footprint))
-                    return $"堵在 ({b.tileX.Value},{b.tileY.Value}) 的 {b.buildingType.Value} 门口";
+                    return $"堵在 {b.buildingType.Value}（左上角 ({b.tileX.Value},{b.tileY.Value})）门口，门口要空着的是 ({door.Left},{door.Top})-({door.Right - 1},{door.Bottom - 1})";
             }
             for (int x = tile.X - 1; x <= tile.X + size.X; x++)
                 for (int y = tile.Y - 1; y <= tile.Y + size.Y + 2; y++)
@@ -693,7 +712,7 @@ namespace BlindWhaleFarmer
                     var v = new Vector2(x, y);
                     var other = farm.buildings.FirstOrDefault(b => b.occupiesTile(v));
                     if (other != null)
-                        return $"和 ({other.tileX.Value},{other.tileY.Value}) 的 {other.buildingType.Value} 挨得太近（四周要留一格路，门口下方要空两格）";
+                        return $"和 {other.buildingType.Value}（占 ({other.tileX.Value},{other.tileY.Value})-({other.tileX.Value + other.tilesWide.Value - 1},{other.tileY.Value + other.tilesHigh.Value - 1})）挨得太近（四周要留一格路，门口下方要空两格）";
                     if (y > tile.Y + size.Y - 1 && x >= tile.X && x < tile.X + size.X && farm.isWaterTile(x, y))
                         return "门口下方是水，进不去";
                 }
@@ -908,7 +927,7 @@ namespace BlindWhaleFarmer
             {
                 int bx = b.tileX.Value, by = b.tileY.Value;
                 if (tile.Y >= by + b.tilesHigh.Value && tile.Y <= by + b.tilesHigh.Value + 1 && tile.X >= bx && tile.X < bx + b.tilesWide.Value)
-                    return $"({tile.X},{tile.Y}) 堵在 {b.buildingType.Value} 门口";
+                    return $"({tile.X},{tile.Y}) 堵在 {b.buildingType.Value}（左上角 ({bx},{by})）门口，门口 ({bx},{by + b.tilesHigh.Value})-({bx + b.tilesWide.Value - 1},{by + b.tilesHigh.Value + 1}) 要空着";
             }
             // 箱子放一起：离已有的箱子太远就拦下，告诉她挨着哪个放
             if (o is Chest || ChestIds.Contains(o.QualifiedItemId))
@@ -1003,8 +1022,8 @@ namespace BlindWhaleFarmer
                         candidates.Add(new Point(tile.X + dx, tile.Y + dy));
             foreach (var c in candidates.OrderBy(c => Util.Manhattan(c, tile)))
             {
-                if (!before.Contains(c) || c == Game1.player.TilePoint || loc.objects.ContainsKey(new Vector2(c.X, c.Y))
-                    || loc.terrainFeatures.ContainsKey(new Vector2(c.X, c.Y)) || !loc.CanItemBePlacedHere(new Vector2(c.X, c.Y)))
+                // 放不放得下和 place_item 用同一套判断（PlaceableProblem）
+                if (!before.Contains(c) || c == Game1.player.TilePoint || PlaceableProblem(loc, o, c) != null)
                     continue;
                 if (loc is Farm farm && !o.IsSprinkler() && !o.IsScarecrow() && FarmPlacementProblem(farm, o, c) != null)
                     continue;
@@ -1016,15 +1035,75 @@ namespace BlindWhaleFarmer
 
         private static readonly HashSet<string> ChestIds = new() { "(BC)130", "(BC)232", "(BC)BigChest", "(BC)BigStoneChest" };
 
-        /// <summary>已经摆了机器/箱子的地方（同一片放一起好管理），给放置失败的提示用。</summary>
-        private static string MachineAreaHint(GameLocation loc)
+        /// <summary>
+        /// 已经摆了机器/箱子的地方（同一片放一起好管理），给放置失败的提示用。坐标都是格子坐标，和 get_state 里“你站在 (x,y)”同一套。
+        /// 报最大那一片的范围 (a,b)-(c,d)；给了 item 就再挑一格挨着这片、真能放下也合规矩的空位（以前只报一台机器自己的格子，照着走过去会撞上它）。
+        /// </summary>
+        private static string MachineAreaHint(GameLocation loc, Item item = null)
         {
             var spots = loc.objects.Pairs.Where(p => p.Value.bigCraftable.Value && !p.Value.IsSprinkler() && !p.Value.IsScarecrow())
                 .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)).ToList();
             if (spots.Count == 0)
                 return "在出货箱或农舍旁边找块不碍路的空地，以后机器、箱子都放这一片";
-            var center = spots.OrderBy(s => spots.Sum(t => Util.Manhattan(s, t))).First();
-            return $"已经摆的机器/箱子集中在 ({center.X},{center.Y}) 一带，挨着它们放";
+            var groups = MachineGroups(spots);
+            var main = groups[0];
+            var box = BoundingBox(main);
+            string range = box.Width == 1 && box.Height == 1 ? $"({box.Left},{box.Top})" : $"({box.Left},{box.Top})-({box.Right - 1},{box.Bottom - 1})";
+            string msg = $"已经摆的机器/箱子最多的一片在 {range}（{main.Count} 台）";
+            if (groups.Count > 1)
+                msg += $"，另外还有 {groups.Count - 1} 片零散的";
+            if (item != null && FreeSpotBeside(loc, item, box) is Point free)
+                msg += $"，挨着这片能放的空位比如 ({free.X},{free.Y})";
+            else
+                msg += "，挨着这片的边上放（留一格走路）";
+            return msg;
+        }
+
+        /// <summary>机器格子按“隔 2 格以内算一片”分组，大的在前。</summary>
+        private static List<List<Point>> MachineGroups(List<Point> spots)
+        {
+            var left = new HashSet<Point>(spots);
+            var groups = new List<List<Point>>();
+            while (left.Count > 0)
+            {
+                var seed = left.First();
+                left.Remove(seed);
+                var group = new List<Point> { seed };
+                var queue = new Queue<Point>(group);
+                while (queue.Count > 0)
+                {
+                    var cur = queue.Dequeue();
+                    foreach (var n in left.Where(p => Math.Max(Math.Abs(p.X - cur.X), Math.Abs(p.Y - cur.Y)) <= 2).ToList())
+                    {
+                        left.Remove(n);
+                        group.Add(n);
+                        queue.Enqueue(n);
+                    }
+                }
+                groups.Add(group);
+            }
+            return groups.OrderByDescending(g => g.Count).ToList();
+        }
+
+        private static Rectangle BoundingBox(List<Point> pts)
+        {
+            int l = pts.Min(p => p.X), t = pts.Min(p => p.Y);
+            return new Rectangle(l, t, pts.Max(p => p.X) - l + 1, pts.Max(p => p.Y) - t + 1);
+        }
+
+        /// <summary>机器那片外面一圈（隔 1~2 格）里，放得下、也合规矩的格子，离玩家最近的一个。最多试 40 格（每格要算一遍会不会挡路）。</summary>
+        private static Point? FreeSpotBeside(GameLocation loc, Item item, Rectangle box)
+        {
+            var me = Game1.player.TilePoint;
+            var ring = new List<Point>();
+            for (int x = box.Left - 2; x <= box.Right + 1; x++)
+                for (int y = box.Top - 2; y <= box.Bottom + 1; y++)
+                    if (!box.Contains(x, y))
+                        ring.Add(new Point(x, y));
+            foreach (var c in ring.Where(c => c != me && PlaceableProblem(loc, item, c) == null).OrderBy(c => Util.Manhattan(c, me)).Take(40))
+                if (PlacementProblem(loc, item, c) == null)
+                    return c;
+            return null;
         }
 
         // ───────────────────────── 箱子总览 ─────────────────────────

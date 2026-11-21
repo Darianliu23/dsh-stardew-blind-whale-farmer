@@ -140,11 +140,22 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var counter = counterAction != null ? FindTileAction(Loc, counterAction) : null;
-            if (counter.HasValue)
+            if (counter.HasValue && !NextTo(counter.Value))
             {
-                foreach (var s in GoAdjacent(counter.Value, o))
+                // 柜台是墙里的一格，上下左右常常站不了（铁匠铺柜台只能从斜下方点）：斜角也算
+                var stands = NpcStandTiles(counter.Value);
+                if (stands.Count == 0)
+                {
+                    o.Fail($"走不到柜台 ({counter.Value.X},{counter.Value.Y})：四周（含斜角）都没有能站的格子");
+                    yield break;
+                }
+                foreach (var s in GoToAny(stands, o, $"柜台 ({counter.Value.X},{counter.Value.Y})"))
                     yield return s;
+                if (!o.Ok)
+                    yield break;
             }
+            if (counter.HasValue)
+                Face(counter.Value);
             o.Succeed();
         }
 
@@ -188,7 +199,34 @@ namespace BlindWhaleFarmer
                     yield return ActionResult.Fail(o.Message);
                     yield break;
                 }
-                Game1.activeClickableMenu = new GeodeMenu();
+                // 和玩家一样对着柜台按动作键，在“买东西 / 升级 / 砸晶球 / 离开”里选砸晶球（以前直接 new GeodeMenu()，隔空打开）
+                var geodeCounter = FindTileAction(Loc, "Blacksmith");
+                if (geodeCounter.HasValue)
+                {
+                    Loc.checkAction(new xLocation(geodeCounter.Value.X, geodeCounter.Value.Y), Game1.viewport, Player);
+                    for (int t = 0; t < 60 && Game1.activeClickableMenu == null; t++)
+                        yield return null;
+                    if (Game1.activeClickableMenu is DialogueBox { isQuestion: true } ask && ask.responses != null)
+                    {
+                        int process = Array.FindIndex(ask.responses, r => r.responseKey == "Process");
+                        if (process >= 0)
+                        {
+                            for (int t = 0; t < 60 && (ask.transitioning || ask.safetyTimer > 0); t++)
+                                yield return null;
+                            ask.selectedResponse = process;
+                            ask.receiveLeftClick(0, 0);
+                            for (int t = 0; t < 60 && Game1.activeClickableMenu is not GeodeMenu; t++)
+                                yield return null;
+                        }
+                    }
+                }
+                if (Game1.activeClickableMenu is not GeodeMenu)
+                {
+                    string said = Game1.activeClickableMenu is DialogueBox d ? "：" + d.getCurrentString() : "";
+                    Game1.activeClickableMenu?.exitThisMenu(false);
+                    yield return ActionResult.Fail("Clint 没给砸晶球" + said);
+                    yield break;
+                }
             }
             var menu = (GeodeMenu)Game1.activeClickableMenu;
 
@@ -323,9 +361,32 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"背包里没有“{toolSpec}”（可升级：axe、pickaxe、hoe、watering_can）");
                 yield break;
             }
-            if (!Utility.TryOpenShopMenu("ClintUpgrade", Loc) || Game1.activeClickableMenu is not ShopMenu shop)
+            // 和玩家一样对着柜台按动作键，再在“买东西 / 升级 / 离开”里选升级（以前直接调 TryOpenShopMenu，隔空开升级界面）
+            var upgradeCounter = FindTileAction(Loc, "Blacksmith");
+            if (upgradeCounter.HasValue)
             {
-                yield return ActionResult.Fail("Clint 的升级服务没开");
+                Loc.checkAction(new xLocation(upgradeCounter.Value.X, upgradeCounter.Value.Y), Game1.viewport, Player);
+                for (int t = 0; t < 60 && Game1.activeClickableMenu == null; t++)
+                    yield return null;
+                if (Game1.activeClickableMenu is DialogueBox { isQuestion: true } ask && ask.responses != null)
+                {
+                    int up = Array.FindIndex(ask.responses, r => r.responseKey == "Upgrade");
+                    if (up >= 0)
+                    {
+                        for (int t = 0; t < 60 && (ask.transitioning || ask.safetyTimer > 0); t++)
+                            yield return null;
+                        ask.selectedResponse = up;
+                        ask.receiveLeftClick(0, 0);
+                        for (int t = 0; t < 60 && Game1.activeClickableMenu is not ShopMenu; t++)
+                            yield return null;
+                    }
+                }
+            }
+            if (Game1.activeClickableMenu is not ShopMenu shop)
+            {
+                string said = Game1.activeClickableMenu is DialogueBox said0 ? "：" + said0.getCurrentString() : "";
+                Game1.activeClickableMenu?.exitThisMenu(false);
+                yield return ActionResult.Fail("Clint 的升级服务没开" + said);
                 yield break;
             }
             yield return null;

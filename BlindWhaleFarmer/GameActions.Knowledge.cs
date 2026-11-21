@@ -30,6 +30,44 @@ namespace BlindWhaleFarmer
             return found;
         }
 
+        /// <summary>
+        /// 村民名没找到时的提示：把名字最像的几个村民（内部名和显示名一起）列出来。
+        /// 真机上“Sophia”“索菲亚”都能查到，这里只在真写错时出现，别再说“用英文名”误导。
+        /// </summary>
+        internal static string VillagerHint(string wanted)
+        {
+            // 角色数据里有、但这会儿不在任何一张地图的角色列表里：多半正在走路换地图（联机时常见）。
+            // 真机：11:20 查“索菲亚”“Sophia”都报不认识，12:10 同样的名字就查到了）。别说“不认识”，说等一会儿再试
+            try
+            {
+                string w = wanted?.Trim() ?? "";
+                var data = DataLoader.Characters(Game1.content);
+                foreach (var (id, c) in data)
+                {
+                    string display = StardewValley.TokenizableStrings.TokenParser.ParseText(c.DisplayName) ?? id;
+                    if (id.Equals(w, StringComparison.OrdinalIgnoreCase) || display.Equals(w, StringComparison.OrdinalIgnoreCase))
+                        return $"。{display}（{id}）名字没错，但这会儿不在任何一张地图上（多半正在换地图，联机时常见）：等十几秒再试，或者先去他常在的地方";
+                }
+            }
+            catch
+            {
+                // 角色数据读不出来就走下面的相近名字
+            }
+            var names = new List<(string internalName, string display)>();
+            Utility.ForEachVillager(n =>
+            {
+                names.Add((n.Name, n.displayName));
+                return true;
+            });
+            var near = names
+                .Select(n => (n, score: Math.Max(Util.NameScore(wanted, n.internalName), Util.NameScore(wanted, n.display))))
+                .Where(t => t.score > 0).OrderByDescending(t => t.score).Take(4)
+                .Select(t => t.n.display == t.n.internalName ? t.n.display : $"{t.n.display}（{t.n.internalName}）").ToList();
+            return near.Count > 0
+                ? $"。名字相近的：{string.Join("、", near)}（中文显示名、英文内部名都行）"
+                : "。中文显示名、英文内部名都行；get_state 的“人物”里列了所有村民";
+        }
+
         // ───────────────────────── 送礼 ─────────────────────────
 
         /// <summary>查询某个村民的喜好、生日、好感，以及背包里哪些东西适合送他。不移动、不花时间。</summary>
@@ -38,12 +76,12 @@ namespace BlindWhaleFarmer
             var npc = FindVillager(npcName);
             if (npc == null)
             {
-                yield return ActionResult.Fail($"不认识叫“{npcName}”的村民（用英文名，如 Abigail、Penny、Linus）");
+                yield return ActionResult.Fail($"不认识叫“{npcName}”的村民" + VillagerHint(npcName));
                 yield break;
             }
             var lines = new List<string>();
             string birthday = npc.Birthday_Season != null ? $"{Util.SeasonName(npc.Birthday_Season)}{npc.Birthday_Day}日" : "未知";
-            lines.Add($"{npc.displayName}（{npc.Name}）生日：{birthday}{(npc.isBirthday() ? "，就是今天！生日礼物好感 x8" : "")}，现在在 {npc.currentLocation?.NameOrUniqueName ?? "?"}");
+            lines.Add($"{npc.displayName}（{npc.Name}）生日：{birthday}{(npc.isBirthday() ? "，就是今天！生日礼物好感 x8" : "")}，现在在 {npc.currentLocation?.NameOrUniqueName ?? "?"}{(StardewModdingAPI.Context.IsMultiplayer && !Game1.IsMasterGame ? "（联机时你看到的村民位置可能是旧的，到了那里没人就去别处找，get_state 的“人物”只列同一张地图上的）" : "")}");
             if (Game1.player.friendshipData.TryGetValue(npc.Name, out var f))
                 lines.Add($"好感 {f.Points / 250} 心（{f.Points} 点），本周已送 {f.GiftsThisWeek}/2，今天{(f.GiftsToday > 0 ? "已经送过" : "还没送")}");
             else
@@ -177,14 +215,14 @@ namespace BlindWhaleFarmer
             var npc = FindVillager(npcName);
             if (npc == null)
             {
-                yield return ActionResult.Fail($"不认识叫“{npcName}”的村民");
+                yield return ActionResult.Fail($"不认识叫“{npcName}”的村民" + VillagerHint(npcName));
                 yield break;
             }
             // 任务物品（灵外质之类）不能当礼物送，但能交任务
             int idx = Util.FindItemIndex(itemSpec, it => Knowledge.IsGiftable(it) || IsQuestDelivery(npc, it));
             if (idx < 0)
             {
-                yield return ActionResult.Fail($"背包里没有可以送人的“{itemSpec}”");
+                yield return ActionResult.Fail($"背包里没有可以送人的“{itemSpec}”" + Util.NotFoundHint(itemSpec, it => Knowledge.IsGiftable(it)));
                 yield break;
             }
             // 玩家在设置里要留着的东西不送（交任务例外：任务要的照样交）

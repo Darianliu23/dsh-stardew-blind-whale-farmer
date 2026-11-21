@@ -20,8 +20,7 @@ namespace BlindWhaleFarmer
             tile = default;
             error = null;
             // 地上的箱子 + 农舍/姜岛小屋的冰箱（冰箱不在 objects 里，要单独加）
-            var chests = Loc.objects.Pairs.Where(p => p.Value is Chest c && c.playerChest.Value && !c.giftbox.Value)
-                .Select(p => (tile: new Point((int)p.Key.X, (int)p.Key.Y), chest: (Chest)p.Value)).ToList();
+            var chests = PlayerChests(Loc).ToList();
             var fridge = Loc.GetFridge();
             if (fridge != null && Loc.GetFridgePosition() is Point fp)
                 chests.Add((fp, fridge));

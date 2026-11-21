@@ -34,8 +34,22 @@ namespace BlindWhaleFarmer
             + "④ 不要为了腾地方马上 sell 掉，尤其是收集包材料和等钓鱼 5 级再卖更值钱的鱼；"
             + "在矿洞里回不去箱子时：先 eat 吃掉食物，再用 trash_item 扔最不值钱的（泥土、石头、杂物），别让矿石宝石留在地上";
 
+        /// <summary>
+        /// 结果里说了“背包满了”时补上处理顺序，但同一件事只说一遍：
+        /// 动作自己已经给了处理办法（钓鱼、矿洞这类会写 tidy_backpack / trash_item）就不再补；存取箱子本身就在处理背包，也不补。
+        /// bagFullNoted 为真时，调用方别再追加“🎒 背包只剩 N 格”的提醒（真机上钓鱼一次结果里三段说的是同一件事，600 多字）。
+        /// </summary>
+        internal static string WithBagFullAdvice(string name, string result, out bool bagFullNoted)
+        {
+            bagFullNoted = result.Contains("背包满了");
+            if (!bagFullNoted || name is "store_items" or "take_items")
+                return result;
+            bool hasOwnAdvice = result.Contains("tidy_backpack") || result.Contains("trash_item");
+            return hasOwnAdvice ? result : result + "\n" + BagFullAdvice;
+        }
+
         /// <summary>有人说话也不从外面打断的工具：本身就在等人或者很短；钓鱼半路断了鱼竿还在水里，它自己在两竿之间停。</summary>
-        private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "reserve_items", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide" };
+        private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "reserve_items", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide", "map_info" };
 
         /// <summary>会往背包里攒东西的工具：做完在外面背包快满时提醒一句“回农场会自动收纳”。</summary>
         private static readonly HashSet<string> LootTools = new() { "fish", "forage", "explore_mine", "fight", "move_to", "travel_to", "interact", "check_crab_pots", "clear_area", "use_tool" };
@@ -55,9 +69,11 @@ namespace BlindWhaleFarmer
                 j => () => a.MoveTo(Int(j, "x"), Int(j, "y")),
                 P("x", "integer", "目标 x"), P("y", "integer", "目标 y"));
 
-            Add("travel_to", "自动走到另一个地点（会自动经过多个地图、开门；有马厩、马在附近又路远时会自己骑马，到了下马）。地点用英文内部名，如 Farm、FarmHouse、Town、SeedShop(皮埃尔杂货店)、Blacksmith(铁匠)、ScienceHouse(木匠)、Saloon、Beach、FishShop、Mountain、Forest、BusStop、Mine、JojaMart、ManorHouse(镇长家)、CommunityCenter、Desert(沙漠)、SkullCave(骷髅洞穴)。去沙漠会自动在巴士站买票坐巴士（500g，巴士修好后、帕姆在站台时才行），从沙漠回来也会自动坐巴士。", 300,
-                j => () => a.TravelTo(Str(j, "location"), OptBool(j, "detour") == true),
-                P("location", "string", "目标地点内部名"),
+            Add("travel_to", "自动走到另一个地点（会自动经过多个地图、开门；有马厩、马在附近又路远时会自己骑马，到了下马）。地点用英文内部名，如 Farm、FarmHouse、Town、SeedShop(皮埃尔杂货店)、Blacksmith(铁匠)、ScienceHouse(木匠)、Saloon、Beach、FishShop、Mountain、Forest、BusStop、Mine、JojaMart、ManorHouse(镇长家)、CommunityCenter、Desert(沙漠)、SkullCave(骷髅洞穴)。去沙漠会自动在巴士站买票坐巴士（500g，巴士修好后、帕姆在站台时才行），从沙漠回来也会自动坐巴士。"
+                + "给了 x,y（格子坐标，和 get_state 里“你站在 (x,y)”同一套）就到了地点再走到那一格，一步到位；只给 x,y 不给 location 就在当前地点里走过去（等于 move_to）。", 300,
+                j => () => a.TravelTo(OptStr(j, "location"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "detour") == true),
+                P("location", "string", "目标地点内部名（只给 x,y 时可省略=当前地点）", false),
+                P("x", "integer", "到了以后再走到哪格 x（和 y 一起给，可省略）", false), P("y", "integer", "到了以后再走到哪格 y", false),
                 P("detour", "boolean", "近路被挡住时绕路走。默认不绕，会先告诉你挡在哪、绕路怎么走，让你选开路还是绕路", false));
 
             Add("use_tool", "走到目标格旁边并对它使用工具。工具可写：axe/hoe/pickaxe/watering_can/scythe/weapon，或背包序号。可以砍树、敲石头、锄地、浇水、给水壶灌水（对水面使用水壶）、打怪。目标被清除后会自动停止。", 120,
@@ -71,24 +87,34 @@ namespace BlindWhaleFarmer
                 P("npc", "string", "村民名字（英文或中文），与 x,y 二选一", false),
                 P("item", "string", "交互时手里拿的物品（名称或背包序号），用于送礼/放材料", false));
 
-            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。", 60,
-                j => () => a.PlaceItem(Str(j, "item"), Int(j, "x"), Int(j, "y"), OptBool(j, "force") ?? false),
-                P("item", "string", "物品名称或背包序号"), P("x", "integer", "x"), P("y", "integer", "y"),
+            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。", 60,
+                j => () => a.PlaceItem(Str(j, "item"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false),
+                P("item", "string", "物品名称或背包序号"),
+                P("x", "integer", "放在哪格 x（和 y 一起给；都不给就在你身边自动找一格）", false), P("y", "integer", "放在哪格 y", false),
                 P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false));
 
             Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）；不给坐标只给 count 就挨着最大的田自动扩。只能在农场、温室这类种得了庄稼的地方用。区域里的杂草、石头、树枝、树桩、小树苗会先自己清掉再锄；树和大树桩大石头不动，没开出来的格子结果里会列出来。"
                 + "不同作物可以分开开几块田，每块田挑方便的地方开（状态“作物”一节的“农田”行有每块田的位置、种了什么和扩田建议）。", 300,
-                j => () => a.TillArea(OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "count"), OptBool(j, "force") ?? false),
+                j => () =>
+                {
+                    var (x1, y1, x2, y2) = TillRect(j);
+                    return a.TillArea(x1, y1, x2, y2, OptInt(j, "count"), OptBool(j, "force") ?? false, OptBool(j, "shared") ?? false);
+                },
                 P("x1", "integer", "左上 x", false), P("y1", "integer", "左上 y", false), P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false),
                 P("count", "integer", "不给坐标时用：挨着最大的田自动往空地最多的一边扩大约这么多格（默认 20，最多 80）", false),
+                P("width", "integer", "不想算右下角时用：区域宽几格（1~40）。和 x1,y1 一起给就从 (x1,y1) 往右展开；坐标都不给就以 near 为中心展开。只给 width 或 height 时是正方形", false),
+                P("height", "integer", "区域高几格（1~40），用法同 width；width、height 都不给但给了 near 时是 5x5", false),
+                P("near", "string", "以哪一格为中心展开 width x height 的区域，写 \"x,y\"（比如 \"60,15\"）；写 me 或者不写坐标就是你现在站的格子", false),
+                P("shared", "boolean", "联机时你是农场工人：不给坐标默认挨着自己小屋门口 10 格内的田扩（门口没田就在门口开第一块），不碰主机的田；传 true 才扩全农场最大的田", false),
                 P("force", "boolean", "在种不了庄稼的地方（农场、温室以外）也照样锄（一般不要用）", false));
 
-            Add("plant_seeds", "在空耕地上批量播种（或施肥）。不给区域时按田来种：先种已经种着同样作物的田，再种空着的田（新作物自己占一块），一行一行种，零散的一两格耕地不种；想种在哪块田就传那块田的区域。", 300,
-                j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200),
+            Add("plant_seeds", "在空耕地上批量播种（或施肥）。seed 参数就是种子的物品名，如 Parsnip Seeds / 防风草种子，也可以写背包序号。不给区域时按田来种：先种已经种着同样作物的田，再种空着的田（新作物自己占一块），一行一行种，零散的一两格耕地不种；想种在哪块田就传那块田的区域。", 300,
+                j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200, OptBool(j, "shared") ?? false),
                 P("seed", "string", "种子名称或背包序号"),
                 P("x1", "integer", "区域左上 x", false), P("y1", "integer", "区域左上 y", false),
                 P("x2", "integer", "区域右下 x", false), P("y2", "integer", "区域右下 y", false),
-                P("max", "integer", "最多种几格", false));
+                P("max", "integer", "最多种几格", false),
+                P("shared", "boolean", "联机时你是农场工人：不给区域默认只种自己小屋门口 10 格内的田；传 true 才往全农场的田里种", false));
 
             Add("water_crops", "给本地点所有需要浇水的作物浇水（水壶空了会自动去最近的水源灌水）。", 400,
                 j => () => a.WaterCrops(OptInt(j, "max") ?? 300),
@@ -136,6 +162,13 @@ namespace BlindWhaleFarmer
                 j => () => a.ListChests(OptStr(j, "item")),
                 P("item", "string", "要找的物品名，多个用逗号分隔，可省略", false));
 
+            Add("map_info", "查当前地图的出口（走过去就换地图）、桥（会断/要修的桥，写明修没修好）、门（店门、房门、建筑门），每条写名字、格子坐标、通向哪个地点。"
+                + "坐标和 get_state 里“你站在 (x,y)”同一套。按离你远近排，每类最多 " + MapInfo.MaxEntriesPerSection + " 条，要全部传 all=true。"
+                + "只读，不移动你、不花游戏时间。move_to 老走不到、想换地图走、找不到出口时用；要去别的地点直接 travel_to 就行，不用先查。", 10,
+                j => () => a.MapInfoTool(OptStr(j, "section"), OptBool(j, "all") ?? false),
+                P("section", "string", "只看一类：exits（出口）/ bridges（桥）/ doors（门），可以用逗号写几类；不填给全部", false),
+                P("all", "boolean", "true 时每类全部列出（默认每类最多 " + MapInfo.MaxEntriesPerSection + " 条，离你近的先）", false));
+
             Add("take_items", "从箱子里取东西回背包。指定了物品时会在所有地点的箱子里找，箱子在别的地图就自己走过去（不用先 travel_to）；不传坐标优先用这张地图里有这样东西的箱子。结果会列出箱子里还有什么。", 300,
                 j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y"), OptInt(j, "count")),
                 P("items", "string", "要取的物品名，多个用逗号分隔，可以带数量（比如“铁锭x5，煤炭x10”），不带数量就整摞拿；all 表示全部", false),
@@ -167,11 +200,14 @@ namespace BlindWhaleFarmer
                 P("item", "string", "商品名称或商店列表序号"), P("count", "integer", "数量", false),
                 P("force", "boolean", "会做也要买（材料要留着别的用时）", false));
 
-            Add("sell", "在已打开的商店里出售背包物品（立即得钱，价格和出货箱一样）。", 20,
-                j => () => a.Sell(Str(j, "item"), OptInt(j, "count")),
-                P("item", "string", "物品名称或背包序号"), P("count", "integer", "数量，默认全部", false));
+            Add("sell", "在已打开的商店里出售背包物品（立即得钱，价格和出货箱一样）。同名的东西不管分在几格（普通、银星、金星各一格）都会一起卖，便宜的品质先卖；"
+                + "写了品质（“沙丁鱼 金星”）或背包序号就只卖那一档或那一格。标了【留着】的格子不会跟着卖掉。", 20,
+                j => () => a.Sell(Str(j, "item"), OptBool(j, "all") == true ? null : OptInt(j, "count"), OptBool(j, "force") ?? false),
+                P("item", "string", "物品名称或背包序号"), P("count", "integer", "最多卖几个，不写就是全部", false),
+                P("all", "boolean", "true = 卖光所有同名的（不写 count 本来就是这样，写了 count 又想卖光时用）", false),
+                P("force", "boolean", "收集包、任务要交的东西（标了【留着】）也照样卖（一般不要用）", false));
 
-            Add("craft", "用已学会的配方制作物品（如 Chest 箱子、Scarecrow 稻草人、Basic Fertilizer 肥料）。", 20,
+            Add("craft", "用已学会的配方制作物品（如 Chest 宝箱、Scarecrow 稻草人、Basic Fertilizer 肥料）。recipe 参数就是要做的物品名，中英文都行，如 Chest / 宝箱。", 20,
                 j => () => a.Craft(Str(j, "recipe"), OptInt(j, "count") ?? 1),
                 P("recipe", "string", "配方名（中英文都可以）"), P("count", "integer", "数量", false));
 
@@ -350,7 +386,7 @@ namespace BlindWhaleFarmer
                 P("minutes", "integer", "等多少游戏分钟（10~120），和 until 二选一", false),
                 P("until", "string", "等到几点，比如 18:00（凌晨写 25:00）", false));
 
-            Add("say", "联机时在游戏聊天里说一句话，其他玩家能看到。只有联机时能用。", 10,
+            Add("say", "联机时在游戏聊天里说一句话，其他玩家能看到。只有联机时能用，而且玩家要在设置里打开“允许 AI 聊天”（默认关，关着时这个工具会直接拒绝）。", 10,
                 j => () => a.Say(Str(j, "text")),
                 P("text", "string", "要说的话（300 字以内）"));
 
@@ -401,9 +437,17 @@ namespace BlindWhaleFarmer
         {
             var arr = new JsonArray();
             foreach (var s in specs.Values)
-                arr.Add(Fn(s.Name, s.Desc, s.Params));
+                arr.Add(Fn(s.Name, WithTimeLimit(s.Desc, s.MaxSeconds), s.Params));
             return arr;
         }
+
+        /// <summary>
+        /// 长动作在描述末尾写上最长跑多久（现实时间）：客户端常见 60 秒超时，超过 45 秒模组会先回一句“还在执行”，
+        /// 做完的结果放进下一次 get_state 最前面。短动作（60 秒以内）不写，省 token。
+        /// </summary>
+        internal static string WithTimeLimit(string desc, int maxSeconds) =>
+            maxSeconds <= 60 ? desc
+            : desc + $"（最长约 {(maxSeconds >= 120 ? maxSeconds / 60 + " 分钟" : maxSeconds + " 秒")}现实时间；超过 45 秒会先回“还在执行”，做完的结果在下一次 get_state 最前面）";
 
         private static JsonObject Fn(string name, string desc, Param[] ps)
         {
@@ -435,7 +479,7 @@ namespace BlindWhaleFarmer
         public bool IsKnown(string name) => name is "update_notes" or "cancel_action" or "play_for" || specs.ContainsKey(name);
 
         /// <summary>只查信息、马上出结果的工具：内置 AI 在跑的时候 MCP 也能用（不占动作队列，不会打断它）。</summary>
-        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests" };
+        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests", "map_info" };
 
         /// <summary>在主线程上直接跑一个只读工具，取它的第一个结果；不经过动作队列。</summary>
         public string Peek(string name, string arguments)
@@ -530,10 +574,15 @@ namespace BlindWhaleFarmer
             // 打怪类动作本来就会挨打；其他动作被怪打了要停下，让 AI 先清怪
             // 记下动作开始时在哪张地图：出货、整理背包、存东西这些动作会自己走去别的地方，做完人就不在原地了
             string locBefore = null;
+            // 动作前的游戏时间、日期、体力：做完在结果后面写一句“用了多久、体力多少”（clear_area 从 8 点干到 9 点以前什么都不说）
+            (int time, int day, float stamina)? before = null;
             try
             {
                 if (StardewModdingAPI.Context.IsWorldReady)
+                {
                     locBefore = await main.Invoke(() => StardewValley.Game1.currentLocation?.NameOrUniqueName).ConfigureAwait(false);
+                    before = await main.Invoke(() => (StardewValley.Game1.timeOfDay, (int)StardewValley.Game1.stats.DaysPlayed, StardewValley.Game1.player.Stamina)).ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -550,8 +599,7 @@ namespace BlindWhaleFarmer
                 try { slept = StardewModdingAPI.Context.IsWorldReady ? await main.Invoke(GameActions.TakeStoredLootNote).ConfigureAwait(false) : null; } catch { }
                 return slept == null ? result : result + "\n" + slept;
             }
-            if (result.Contains("背包满了") && name != "store_items" && name != "take_items")
-                result += "\n" + BagFullAdvice;
+            result = WithBagFullAdvice(name, result, out bool bagFullNoted);
             // 拿到更好的鞋子、戒指就自动换上（宝箱、商店、任务奖励都可能给）；
             // 身边有怪、深夜、体力见底的提醒也接在动作结果后面：MCP 客户端不一定每步都看 get_state
             string warning = null;
@@ -573,7 +621,7 @@ namespace BlindWhaleFarmer
                         // 这次结果里有新的话就先不催，等下一步
                         string chat = GameActions.TakeChat();
                         string replyReminder = chat == null && name != "get_guide" ? GameActions.TakeReplyReminder() : null;
-                        var parts = new[] { moved, equipped != null ? "🎽 " + equipped : null, claimed != null ? "💰 " + claimed : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.TakeStoredLootNote(), LootTools.Contains(name) ? GameActions.LootReminder() : null, GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
+                        var parts = new[] { moved, equipped != null ? "🎽 " + equipped : null, claimed != null ? "💰 " + claimed : null, chat, replyReminder, GameActions.TakePickedOnTheWay(), GameActions.TakeStoredLootNote(), LootTools.Contains(name) && !bagFullNoted ? GameActions.LootReminder() : null, GameActions.ThreatWarning(), GameActions.BedtimeWarning(urgentOnly: true) }.Where(w => w != null).ToList();
                         return parts.Count > 0 ? string.Join("\n", parts) : null;
                     }).ConfigureAwait(false);
             }
@@ -581,9 +629,50 @@ namespace BlindWhaleFarmer
             {
                 // 世界未就绪等情况下不提醒
             }
+            if (before is { } b && name != "sleep")
+            {
+                try
+                {
+                    var after = StardewModdingAPI.Context.IsWorldReady
+                        ? await main.Invoke(() => (StardewValley.Game1.timeOfDay, (int)StardewValley.Game1.stats.DaysPlayed, StardewValley.Game1.player.Stamina)).ConfigureAwait(false)
+                        : ((int, int, float)?)null;
+                    if (after is { } a && CostNote(b.time, b.day, b.stamina, a.Item1, a.Item2, a.Item3) is string cost)
+                        result += "\n" + cost;
+                }
+                catch
+                {
+                    // 读不到就不写
+                }
+            }
             if (jsonFixed != null)
                 result += "\n" + jsonFixed;
             return warning == null ? result : result + "\n" + warning;
+        }
+
+        /// <summary>
+        /// “⏱ 用时 1 小时 10 分（08:10 → 09:20），体力 192 → 126（-66）”。游戏时间没走、体力也没变时返回 null（查询类、界面类不吵）。
+        /// 跨天（熬过 24 点、晕倒）只写时间点，不算分钟。时间不走（单机思考冻结、节日里）就只写体力。
+        /// </summary>
+        internal static string CostNote(int t0, int day0, float s0, int t1, int day1, float s1)
+        {
+            int ds = (int)s1 - (int)s0;
+            bool timeMoved = t1 != t0 || day1 != day0;
+            if (!timeMoved && ds == 0)
+                return null;
+            string time = null;
+            if (timeMoved)
+            {
+                if (day1 == day0 && t1 > t0)
+                {
+                    int minutes = StardewValley.Utility.CalculateMinutesBetweenTimes(t0, t1);
+                    string len = minutes >= 60 ? $"{minutes / 60} 小时" + (minutes % 60 > 0 ? $" {minutes % 60} 分" : "") : $"{minutes} 分钟";
+                    time = $"用时 {len}（{Util.TimeString(t0)} → {Util.TimeString(t1)}）";
+                }
+                else
+                    time = $"游戏时间 {Util.TimeString(t0)} → {(day1 != day0 ? "第二天 " : "")}{Util.TimeString(t1)}";
+            }
+            string stamina = ds != 0 ? $"体力 {(int)s0} → {(int)s1}（{(ds > 0 ? "+" : "")}{ds}）" : null;
+            return "⏱ " + string.Join("，", new[] { time, stamina }.Where(x => x != null));
         }
 
         /// <summary>
@@ -652,13 +741,93 @@ namespace BlindWhaleFarmer
 
         private static string CanonKey(string key) => new string(key.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
+        private static Dictionary<string, string> Aliases(params (string alias, string name)[] pairs) =>
+            pairs.ToDictionary(p => CanonKey(p.alias), p => p.name);
+
+        /// <summary>
+        /// 模型凭直觉起的参数名 → 正式参数名，按工具分（比较时用 CanonKey，大小写、下划线不同也认）。
+        /// 同一次调用里正式名已经传了，就以正式名为准，别名丢掉。
+        /// </summary>
+        /// <summary>村民名参数的各种写法（正式名是 npc）。</summary>
+        private static readonly (string alias, string name)[] NpcPairs =
+        {
+            ("name", "npc"), ("villager", "npc"), ("character", "npc"), ("target", "npc"), ("person", "npc"), ("who", "npc"), ("npc_name", "npc"),
+        };
+
+        private static Dictionary<string, string> NpcAliases() => Aliases(NpcPairs);
+
+        private static readonly Dictionary<string, Dictionary<string, string>> ParamAliases = new()
+        {
+            ["craft"] = Aliases(("item", "recipe"), ("name", "recipe"), ("item_name", "recipe")),
+            ["plant_seeds"] = Aliases(("item", "seed"), ("seed_name", "seed"), ("seeds", "seed"), ("name", "seed")),
+            ["place_item"] = Aliases(("name", "item"), ("item_name", "item")),
+            ["get_state"] = Aliases(("part", "section"), ("which", "section"), ("sections", "section")),
+            // 村民名：模型最常写 name、villager、character、target（WorkBuddy 真机：gift_info 写 name 被整段拒绝）
+            ["gift_info"] = NpcAliases(),
+            ["give_gift"] = Aliases(NpcPairs.Concat(new[] { ("gift", "item"), ("present", "item"), ("item_name", "item") }).ToArray()),
+            ["interact"] = Aliases(NpcPairs.Concat(new[] { ("item_name", "item") }).ToArray()),
+            ["use_tool"] = Aliases(("tool_name", "tool"), ("times_to_use", "times"), ("count", "times")),
+            ["eat"] = Aliases(("food", "item"), ("name", "item"), ("item_name", "item")),
+            ["use_item"] = Aliases(("name", "item"), ("item_name", "item")),
+            ["trash_item"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count")),
+            ["ship_items"] = Aliases(("name", "item"), ("items", "item"), ("item_name", "item"), ("quantity", "count")),
+            ["sell"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count")),
+            ["buy"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count"), ("amount", "count")),
+            ["cook"] = Aliases(("name", "recipe"), ("dish", "recipe"), ("item", "recipe"), ("quantity", "count")),
+            ["open_shop"] = Aliases(("shop", "shop_id"), ("id", "shop_id"), ("name", "shop_id"), ("shopid", "shop_id")),
+            ["store_items"] = Aliases(("item", "items"), ("name", "items")),
+            ["take_items"] = Aliases(("item", "items"), ("name", "items"), ("quantity", "count")),
+            ["list_chests"] = Aliases(("items", "item"), ("name", "item")),
+            ["build"] = Aliases(("name", "building"), ("type", "building"), ("building_type", "building")),
+            ["buy_animal"] = Aliases(("animal", "type"), ("kind", "type"), ("species", "type"), ("quantity", "count")),
+            ["fish"] = Aliases(("times", "casts"), ("count", "casts"), ("number", "casts"), ("facing", "direction")),
+            ["upgrade_tool"] = Aliases(("name", "tool"), ("tool_name", "tool")),
+            ["crack_geodes"] = Aliases(("name", "item"), ("geode", "item")),
+            ["wait"] = Aliases(("time", "until"), ("duration", "minutes"), ("min", "minutes")),
+            ["travel_to"] = Aliases(("place", "location"), ("destination", "location"), ("map", "location"), ("to", "location")),
+            ["check_crab_pots"] = Aliases(("place", "location"), ("map", "location")),
+            ["collect_walnuts"] = Aliases(("location", "where"), ("place", "where")),
+            ["mastery"] = Aliases(("name", "skill")),
+            ["set_name"] = Aliases(("text", "name")),
+            ["say"] = Aliases(("message", "text"), ("msg", "text"), ("content", "text")),
+            ["dialogue"] = Aliases(("option", "choice"), ("answer", "choice"), ("response", "choice")),
+            ["menu_click"] = Aliases(("button", "name"), ("label", "name")),
+            ["choose_profession"] = Aliases(("choice", "side"), ("option", "side")),
+        };
+
+
+        /// <summary>把别名换成正式名。known 里的键本来就认识，不动。</summary>
+        private static void ApplyAliases(string tool, JsonObject args, HashSet<string> known)
+        {
+            if (!ParamAliases.TryGetValue(tool, out var table))
+                return;
+            foreach (var key in args.Select(kv => kv.Key).ToList())
+            {
+                if (known.Contains(key) || !table.TryGetValue(CanonKey(key), out var name))
+                    continue;
+                var value = args[key];
+                args.Remove(key);
+                if (!args.ContainsKey(name))
+                    args[name] = value;
+            }
+        }
+
+        /// <summary>get_state 这类在 McpServer 里直接处理、不在 specs 里的工具：只换别名，不校验。</summary>
+        internal static void ApplyInfoAliases(string tool, JsonObject args)
+        {
+            if (args != null)
+                ApplyAliases(tool, args, new HashSet<string>());
+        }
+
         /// <summary>
         /// 参数名对不上时不能静默忽略（比如 startLevel 被当成没传，人就从第 1 层开始爬）：
-        /// 只是大小写、驼峰、下划线、连字符不同的，改成正确的名字；真不认识的报错，并列出这个工具的参数。
+        /// 先查别名表（craft 的 item → recipe 这类）；只是大小写、驼峰、下划线、连字符不同的，改成正确的名字；
+        /// 真不认识的报错，并列出这个工具的参数。名字都对上了再查必填参数有没有传。
         /// </summary>
         private static string NormalizeArgs(Spec spec, JsonObject args)
         {
             var known = spec.Params.Select(p => p.Name).ToHashSet();
+            ApplyAliases(spec.Name, args, known);
             var unknown = new List<string>();
             foreach (var key in args.Select(kv => kv.Key).ToList())
             {
@@ -669,21 +838,96 @@ namespace BlindWhaleFarmer
                     args.Remove(key);
                     continue;
                 }
-                var match = spec.Params.FirstOrDefault(p => CanonKey(p.Name) == CanonKey(key));
-                if (match != null && !args.ContainsKey(match.Name))
+                string match = known.FirstOrDefault(k => CanonKey(k) == CanonKey(key));
+                if (match != null && !args.ContainsKey(match))
                 {
                     var value = args[key];
                     args.Remove(key);
-                    args[match.Name] = value;
+                    args[match] = value;
                     continue;
                 }
                 unknown.Add(key);
             }
-            if (unknown.Count == 0)
-                return null;
             string list = spec.Params.Length == 0 ? "这个工具不用传参数"
                 : "这个工具的参数有：" + string.Join("、", spec.Params.Select(p => p.Name + (p.Required ? "（必填）" : "")));
-            return $"{spec.Name} 不认识参数 {string.Join("、", unknown)}，所以什么都没做。{list}。改好参数名再调用一次";
+            if (unknown.Count > 0)
+            {
+                // 参数名猜错，其实是用错了工具：dialogue 只推进已经弹出来的对话框，想和村民说话要用 interact（真机 WorkBuddy 就这样）
+                string wrongTool = spec.Name is "dialogue" or "menu_click" or "close_menu" or "skip_event" && unknown.Any(k => NpcPairs.Any(p => CanonKey(p.alias) == CanonKey(k)) || CanonKey(k) == "npc")
+                    ? "。想和村民说话用 interact（传 npc=名字，会自己走过去、开口），说出对话框以后再用 dialogue 一句句推进"
+                    : "";
+                return $"{spec.Name} 不认识参数 {string.Join("、", unknown)}，所以什么都没做。{list}。改好参数名再调用一次{wrongTool}";
+            }
+            // 传了但类型不对（整数传 "abc"、true、数组；开关传 "maybe"、2）：说清楚是类型不对，别让它以为没传、也别静默当成 false
+            var badTypes = spec.Params.Where(p => args[p.Name] is not null
+                    && ((p.Type == "integer" && OptInt(args, p.Name) == null) || (p.Type == "boolean" && OptBool(args, p.Name) == null)))
+                .Select(p => p.Type == "integer"
+                    ? $"{p.Name} 要整数，你给的是 {ShowValue(args[p.Name])}"
+                    : $"{p.Name} 要 true/false，你给的是 {ShowValue(args[p.Name])}")
+                .ToList();
+            if (badTypes.Count > 0)
+                return $"{spec.Name} 的参数 {string.Join("；", badTypes)}，所以什么都没做。整数直接写数字（比如 5），开关写 true 或 false，都不加引号，改好再调用一次";
+            var missing = spec.Params.Where(p => p.Required && args[p.Name] is null).ToList();
+            if (missing.Count > 0)
+                return $"{spec.Name} 缺少必填参数 {string.Join("、", missing.Select(p => $"{p.Name}（{p.Desc}）"))}，所以什么都没做。{list}。补上再调用一次";
+            // 成对的可选坐标：只给一半多半是写漏了，猜不出另一半
+            if (PairedKeys.TryGetValue(spec.Name, out var pair) && (args[pair.a] is null) != (args[pair.b] is null))
+                return $"{spec.Name} 的 {pair.a}、{pair.b} 要一起给，你只给了 {(args[pair.a] is null ? pair.b : pair.a)}，所以什么都没做。{pair.note}";
+            // travel_to：地点和坐标至少给一样
+            if (spec.Name == "travel_to" && string.IsNullOrWhiteSpace(OptStr(args, "location")) && args["x"] is null)
+                return $"travel_to 要给 location（去哪个地点）或者 x,y（当前地点里的哪一格），两样都没给，所以什么都没做。{list}";
+            // map_info 的 section 只有三种：参数阶段就拦下，不用等进游戏
+            if (spec.Name == "map_info" && MapInfo.ParseSections(OptStr(args, "section"), out string badSection) == null)
+                return $"map_info 不认识 section “{badSection}”。能写 exits（出口）、bridges（桥）、doors（门），可以用逗号写几类，不填给全部";
+            return null;
+        }
+
+        /// <summary>要么都给、要么都不给的一对参数，和都不给时会怎样。</summary>
+        private static readonly Dictionary<string, (string a, string b, string note)> PairedKeys = new()
+        {
+            ["place_item"] = ("x", "y", "都不给就在你身边 8 格内自动找一格空位放"),
+            ["travel_to"] = ("x", "y", "只是去那个地点就都不给；要到地点里的某一格就两个都给"),
+        };
+
+        /// <summary>
+        /// till_area 的 width/height/near 换算成 x1,y1,x2,y2。在主线程上调用（要读玩家位置）。
+        /// 四个坐标给全了就用坐标；给了 x1,y1 就从那里往右下展开；坐标一个都没给就以 near（默认玩家站的格子）为中心展开；
+        /// 只给了一部分坐标的原样交给 TillArea，由它报“坐标要给全”。width/height 只给一个时是正方形，都没给是 5x5。
+        /// </summary>
+        private static (int? x1, int? y1, int? x2, int? y2) TillRect(JsonObject j)
+        {
+            int? x1 = OptInt(j, "x1"), y1 = OptInt(j, "y1"), x2 = OptInt(j, "x2"), y2 = OptInt(j, "y2");
+            int? w = OptInt(j, "width"), h = OptInt(j, "height");
+            bool anyCoord = x1.HasValue || y1.HasValue || x2.HasValue || y2.HasValue;
+            if ((w == null && h == null && j["near"] == null) || (x1.HasValue && y1.HasValue && x2.HasValue && y2.HasValue))
+                return (x1, y1, x2, y2);
+            int width = Math.Clamp(w ?? h ?? 5, 1, 40), height = Math.Clamp(h ?? w ?? 5, 1, 40);
+            if (x1.HasValue && y1.HasValue)
+                return (x1, y1, x1 + width - 1, y1 + height - 1);
+            if (anyCoord)
+                return (x1, y1, x2, y2);
+            var c = NearPoint(j["near"]);
+            int left = c.X - (width - 1) / 2, top = c.Y - (height - 1) / 2;
+            return (left, top, left + width - 1, top + height - 1);
+        }
+
+        /// <summary>near 写成 "x,y"、[x,y] 或 {"x":..,"y":..} 就用那一格；true、"me"、"player"、没写坐标的都当玩家站的格子。</summary>
+        private static Microsoft.Xna.Framework.Point NearPoint(JsonNode near)
+        {
+            if (near is JsonObject o && OptInt(o, "x") is int ox && OptInt(o, "y") is int oy)
+                return new Microsoft.Xna.Framework.Point(ox, oy);
+            string s = near is JsonValue v && v.TryGetValue(out string str) ? str : near?.ToJsonString();
+            var m = System.Text.RegularExpressions.Regex.Match(s ?? "", @"(-?\d+)\s*[,，\s]\s*(-?\d+)");
+            if (m.Success)
+                return new Microsoft.Xna.Framework.Point(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value));
+            return StardewValley.Game1.player.TilePoint;
+        }
+
+        /// <summary>报错时原样给出模型传的值：字符串不带引号，其他按 JSON 写，太长截断。</summary>
+        internal static string ShowValue(JsonNode n)
+        {
+            string s = n is JsonValue v && v.TryGetValue(out string str) ? str : n.ToJsonString();
+            return s.Length <= 40 ? s : s.Substring(0, 40) + "…";
         }
 
         // ── 参数解析：模型有时会把数字写成字符串，这里都兼容 ──
@@ -719,15 +963,27 @@ namespace BlindWhaleFarmer
             return n.ToJsonString().Trim('"');
         }
 
-        private static bool? OptBool(JsonObject j, string key)
+        private static bool? OptBool(JsonObject j, string key) => ParseBool(j[key]);
+
+        /// <summary>
+        /// 开关参数：true/false，数字 1/0，字符串 true/false、1/0、yes/no、on/off、是/否。
+        /// 认不出来的（"maybe"、2、数组）返回 null，由调用方报“要 true/false”，不当成 false。
+        /// </summary>
+        internal static bool? ParseBool(JsonNode n)
         {
-            var n = j[key];
-            if (n is JsonValue v)
+            if (n is not JsonValue v)
+                return null;
+            if (v.TryGetValue(out bool b))
+                return b;
+            if (v.TryGetValue(out double d))
+                return d == 1 ? true : d == 0 ? false : null;
+            if (v.TryGetValue(out string s))
             {
-                if (v.TryGetValue(out bool b))
-                    return b;
-                if (v.TryGetValue(out string s))
-                    return s.Trim().ToLowerInvariant() is "true" or "1" or "yes" or "是";
+                string t = s.Trim().ToLowerInvariant();
+                if (t is "true" or "1" or "yes" or "y" or "on" or "是" or "对")
+                    return true;
+                if (t is "false" or "0" or "no" or "n" or "off" or "否" or "不")
+                    return false;
             }
             return null;
         }

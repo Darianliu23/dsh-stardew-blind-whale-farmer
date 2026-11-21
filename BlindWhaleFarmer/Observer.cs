@@ -75,6 +75,19 @@ namespace BlindWhaleFarmer
             sb.AppendLine($"时间：{Util.Stamp()}（{Game1.shortDayNameFromDayOfSeason(Game1.dayOfMonth)}），天气：{weather}，明天天气：{WeatherName(Game1.weatherForTomorrow)}");
             sb.AppendLine($"金钱：{player.Money}g  体力：{(int)player.Stamina}/{player.MaxStamina}{(player.exhausted.Value ? "（筋疲力尽：体力≤0 时跑不动，明早只有一半体力）" : "")}  生命：{player.health}/{player.maxHealth}  今日运气：{player.DailyLuck:+0.00;-0.00}");
             sb.AppendLine($"技能等级：耕种{player.FarmingLevel} 采矿{player.MiningLevel} 采集{player.ForagingLevel} 钓鱼{player.FishingLevel} 战斗{player.CombatLevel}");
+            Safe(sb, () =>
+            {
+                // 今天谁过生日：用游戏自己的村民数据（不依赖 UI Info Suite），生日送最爱的礼物好感 8 倍
+                var birthdays = new List<string>();
+                Utility.ForEachVillager(n =>
+                {
+                    if (n.isBirthday() && n.CanSocialize)
+                        birthdays.Add(n.displayName);
+                    return true;
+                });
+                var fest = Knowledge.TodaysFestival();
+                sb.AppendLine(TodayLine(birthdays, fest?.ToString()));
+            });
             Safe(sb, () => AppendCrabPotSummary(sb));
             Safe(sb, () =>
             {
@@ -107,7 +120,7 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(island);
                 if (GameActions.AffordableParrotsHint() is string parrots)
                     sb.AppendLine(parrots);
-                if (Once("farmtype", $"农场类型：{FarmTypeName()}（攻略“农场类型”一节有这种地图的要点）") is string ft && !ft.StartsWith("（"))
+                if (Once("farmtype", $"农场类型：{FarmTypeName()}（get_guide 专题“农场类型”有这种地图的要点）") is string ft && !ft.StartsWith("（"))
                     sb.AppendLine(ft);
                 if (GameActions.SpendingAdvice() is string spend)
                     sb.AppendLine(Once("spend", spend) is string sp && sp.StartsWith("（") ? "【花钱建议】和上次一样，省略" : spend);
@@ -149,8 +162,14 @@ namespace BlindWhaleFarmer
 
             sb.AppendLine();
             sb.AppendLine("## 位置");
-            sb.AppendLine($"地点：{loc.NameOrUniqueName}（{loc.DisplayName}），{(loc.IsOutdoors ? "室外" : "室内")}，地图大小 {Pathfinder.MapWidth(loc)}x{Pathfinder.MapHeight(loc)}");
+            sb.AppendLine(LocationLine(loc.NameOrUniqueName, Safe(() => loc.DisplayName, null), loc.IsOutdoors, Pathfinder.MapWidth(loc), Pathfinder.MapHeight(loc)));
             sb.AppendLine($"你站在 ({pt.X},{pt.Y})，面朝{Util.DirName(player.FacingDirection)}");
+            Safe(sb, () =>
+            {
+                // 联机时的农场工人：自己的小屋在哪、自己的田算门口多少格内（till_area / plant_seeds 不给坐标就在这一片）
+                if (GameActions.MyCabinDoor() is Point door && Utility.getHomeOfFarmer(player)?.ParentBuilding is StardewValley.Buildings.Building cabin)
+                    sb.AppendLine(CabinLine(cabin.tileX.Value, cabin.tileY.Value, door, GameActions.OwnFieldRadius));
+            });
             Safe(sb, () =>
             {
                 // 鸡舍、畜棚、小屋这些建筑里面：地点名是一串编号，说清楚这是哪栋建筑、门在农场哪儿
@@ -423,6 +442,39 @@ namespace BlindWhaleFarmer
             {
                 sb.AppendLine($"（这一部分读取失败：{ex.GetType().Name} {ex.Message}）");
             }
+        }
+
+        private static T Safe<T>(Func<T> read, T fallback)
+        {
+            try
+            {
+                return read();
+            }
+            catch
+            {
+                return fallback;
+            }
+        }
+
+        /// <summary>“你的小屋：农场 (74,44)，门口 (76,47)；你的田算门口 10 格内……”。只给联机时的农场工人。</summary>
+        internal static string CabinLine(int x, int y, Point door, int radius) =>
+            $"你的小屋：农场 ({x},{y})（左上角），门口 ({door.X},{door.Y})。联机时你的田算门口 {radius} 格以内：till_area、plant_seeds 不给坐标就开在、种在这一片，不碰主机和别人的田（要用全农场的田传 shared=true）";
+
+        /// <summary>“今日：生日 艾米丽（送最爱的礼物好感 8 倍）；节日 无”。天气和运气在上面一行已经写了，这里不重复。</summary>
+        internal static string TodayLine(IReadOnlyCollection<string> birthdays, string festival)
+        {
+            string b = birthdays is { Count: > 0 } ? $"生日 {string.Join("、", birthdays)}（生日当天送最爱的礼物好感 8 倍，不受每周 2 次限制）" : "生日 无";
+            return $"今日：{b}；节日 {(string.IsNullOrEmpty(festival) ? "无" : festival)}";
+        }
+
+        /// <summary>
+        /// “位置”段第一行：地点名、室内还是室外、地图大小（M11 确认室内室外都有，并写明坐标范围）。
+        /// 地图大小是格子数，坐标从 (0,0) 到 (宽-1,高-1)，和“你站在 (x,y)”同一套。
+        /// </summary>
+        internal static string LocationLine(string name, string displayName, bool outdoors, int width, int height)
+        {
+            string shown = string.IsNullOrEmpty(displayName) || displayName == name ? name : $"{name}（{displayName}）";
+            return $"地点：{shown}，{(outdoors ? "室外" : "室内")}，地图大小 {width}x{height}（坐标 x 是 0~{width - 1}，y 是 0~{height - 1}）";
         }
 
         private void AppendInventory(StringBuilder sb)

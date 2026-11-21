@@ -261,18 +261,33 @@ namespace BlindWhaleFarmer
             }
         }
 
+        /// <summary>
+        /// section 能写的名字 → 段落标题里的关键词。中文写标题本身或常见说法都行（背包/物品栏、箱子/储物、地图/文字地图……），
+        /// 英文不分大小写，单复数都认。
+        /// </summary>
         private static readonly Dictionary<string, string> SectionAliases = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["basic"] = "基本状态", ["menu"] = "当前界面", ["location"] = "位置", ["inventory"] = "背包", ["bag"] = "背包",
-            ["equipment"] = "穿戴", ["chests"] = "箱子", ["chest"] = "箱子", ["exits"] = "出口", ["people"] = "人物", ["npc"] = "人物",
-            ["crops"] = "作物", ["objects"] = "附近物体", ["map"] = "地图", ["quests"] = "任务", ["quest"] = "任务"
+            ["basic"] = "基本状态", ["status"] = "基本状态", ["state"] = "基本状态", ["基本"] = "基本状态", ["状态"] = "基本状态",
+            ["menu"] = "当前界面", ["ui"] = "当前界面", ["dialog"] = "当前界面", ["dialogue"] = "当前界面", ["界面"] = "当前界面", ["对话"] = "当前界面",
+            ["location"] = "位置", ["position"] = "位置", ["where"] = "位置", ["地点"] = "位置",
+            ["inventory"] = "背包", ["bag"] = "背包", ["backpack"] = "背包", ["items"] = "背包", ["物品"] = "背包", ["物品栏"] = "背包", ["包"] = "背包",
+            ["equipment"] = "穿戴", ["gear"] = "穿戴", ["equip"] = "穿戴", ["装备"] = "穿戴",
+            ["chests"] = "箱子", ["chest"] = "箱子", ["storage"] = "箱子", ["储物"] = "箱子", ["储物箱"] = "箱子",
+            ["exits"] = "出口", ["exit"] = "出口", ["doors"] = "出口", ["本地出口"] = "出口",
+            ["people"] = "人物", ["npc"] = "人物", ["npcs"] = "人物", ["characters"] = "人物", ["animals"] = "人物", ["村民"] = "人物", ["动物"] = "人物",
+            ["crops"] = "作物", ["crop"] = "作物", ["farm"] = "作物", ["fields"] = "作物", ["农田"] = "作物", ["庄稼"] = "作物",
+            ["objects"] = "附近物体", ["object"] = "附近物体", ["nearby"] = "附近物体", ["附近"] = "附近物体", ["物体"] = "附近物体",
+            ["map"] = "地图", ["文字地图"] = "地图",
+            ["quests"] = "任务", ["quest"] = "任务", ["tasks"] = "任务", ["委托"] = "任务",
         };
 
         /// <summary>get_state 只留要看的几段（按“## 标题”切）。基本状态、当前界面总留着；第一个标题前的内容也留着。</summary>
         internal static string FilterSections(string text, string section)
         {
-            var want = section.Split(new[] { ',', '，', '、', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(s => SectionAliases.TryGetValue(s, out var zh) ? zh : s).ToList();
+            var asked = section.Split(new[] { ',', '，', '、', ' ', ';', '；', '/', '|' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => s.Trim('"', '\'', '“', '”', '【', '】', '[', ']', '#', ' ')).Where(s => s.Length > 0).ToList();
+            var want = asked.Select(s => SectionAliases.TryGetValue(s, out var zh) ? zh : s).ToList();
+            var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             want.Add("基本状态");
             want.Add("当前界面");
             var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?=^## )", System.Text.RegularExpressions.RegexOptions.Multiline);
@@ -290,11 +305,20 @@ namespace BlindWhaleFarmer
                 names.Add(title);
                 // 只比标题括号前的部分（“穿戴（背包里有更好的鞋子…）”不算背包）
                 string head = title.Split('（', '(')[0];
-                if (want.Any(w => head.Contains(w, StringComparison.OrdinalIgnoreCase)))
+                var hits = want.Where(w => head.Contains(w, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (hits.Count > 0)
+                {
                     kept.Add(p);
+                    matched.UnionWith(hits);
+                }
             }
+            // 写错的名字说一声，别让它以为那一段是空的
+            var unknown = asked.Where(s => !matched.Contains(SectionAliases.TryGetValue(s, out var zh) ? zh : s)).ToList();
             string res = string.Join("", kept).TrimEnd();
-            return res + Environment.NewLine + Environment.NewLine + $"（只给了 section={section} 这几段；全部段落：{string.Join("、", names.Select(n => n.Split('（', '(')[0]))}）";
+            string all = string.Join("、", names.Select(n => n.Split('（', '(')[0]).Distinct());
+            return res + Environment.NewLine + Environment.NewLine
+                + (unknown.Count > 0 ? $"（section 里的 {string.Join("、", unknown)} 没有对应的段落，没给。" : "（")
+                + $"只给了 section={section} 这几段；全部段落：{all}，中英文都能写，比如 背包/inventory、箱子/chests、任务/quests）";
         }
 
         private JsonArray ToolList()
@@ -408,9 +432,19 @@ namespace BlindWhaleFarmer
             {
                 if (name == "get_state")
                 {
+                    // part / which 这类别名换成 section（别名表在 Tools.cs）
+                    Tools.ApplyInfoAliases(name, args);
+                    if (args?["full"] is JsonNode fullArg && Tools.ParseBool(fullArg) == null)
+                        return $"失败：get_state 的参数 full 要 true/false，你给的是 {Tools.ShowValue(fullArg)}。要看全部段落传 true，平常不传";
                     result = await mod.MainThread.Invoke(() =>
                         Context.IsWorldReady ? mod.Observer.Build(IsTrue(args?["full"])) : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
-                    string section = args?["section"] is JsonValue sv && sv.TryGetValue(out string ss) && !string.IsNullOrWhiteSpace(ss) ? ss : null;
+                    // section 写成字符串 "背包,任务" 或数组 ["背包","任务"] 都行
+                    string section = args?["section"] switch
+                    {
+                        JsonValue sv when sv.TryGetValue(out string ss) && !string.IsNullOrWhiteSpace(ss) => ss,
+                        JsonArray sa when sa.Count > 0 => string.Join(",", sa.Select(e => e is JsonValue ev && ev.TryGetValue(out string es) ? es : e?.ToJsonString())),
+                        _ => null
+                    };
                     if (section != null && Context.IsWorldReady)
                         result = FilterSections(result, section);
                     // 本次游玩进度和玩家的额外要求放最前面（它们可以在 DSH 设置里随时改，不在连接时的说明里）
@@ -488,7 +522,8 @@ namespace BlindWhaleFarmer
                 return mod.Agent.Running
                     ? "成功：内置 AI 正在运行（它在玩游戏，你的动作会被拒绝）。要自己操作就传 on=false 停掉它"
                     : "成功：内置 AI 停着，你可以正常操作。不需要启动它";
-            bool want = v.TryGetValue(out bool b) ? b : v.ToString().Trim().ToLowerInvariant() is "true" or "1" or "on" or "yes";
+            if (Tools.ParseBool(v) is not bool want)
+                return $"失败：on 要 true/false，你给的是 {Tools.ShowValue(v)}。停掉内置 AI 传 false，只看状态就别传 on";
             if (want == mod.Agent.Running)
                 return $"成功：内置 AI 本来就{(want ? "在运行" : "停着")}";
             // 内置 AI 会接管游戏、花玩家自己的 API 额度：MCP 默认只能停，启动要玩家自己按键或在配置里放行
@@ -605,6 +640,7 @@ namespace BlindWhaleFarmer
                     ["sessionMinutes"] = c.SessionMinutes,
                     ["freezeTime"] = c.McpFreezeTime,
                     ["idleSeconds"] = c.McpIdleSeconds,
+                    ["allowChat"] = c.AllowChat,
                     ["extraInstructions"] = c.ExtraInstructions,
                     ["reservedItems"] = c.ReservedItems,
                     ["guideFile"] = c.GuideFile
@@ -617,8 +653,7 @@ namespace BlindWhaleFarmer
             };
         }
 
-        private static bool IsTrue(JsonNode n) =>
-            n is JsonValue v && (v.TryGetValue(out bool b) ? b : v.ToString().Trim().ToLowerInvariant() is "true" or "1" or "yes");
+        private static bool IsTrue(JsonNode n) => Tools.ParseBool(n) == true;
 
         private const int KeepAliveMs = 15000;
 

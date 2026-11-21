@@ -136,6 +136,13 @@ namespace BlindWhaleFarmer
                 msg += $"。还剩 {string.Join("、", leftover)} 没放下：" + ChestRoomNote(Loc, toStore.Where(i => Player.Items.Contains(i)).ToList());
             if (purpose != null)
                 msg = $"按{PurposeName[purpose]}整理。" + msg;
+            // 按出门目的整理会把这次用不上的农具也存起来（真机：钓鱼前存了锄头、水壶，第二天开田才发现“没有锄头”）：
+            // 说一声拿回来用什么，别让它忘了
+            var toolsAway = stored.Count > 0 && purpose != null && purpose != "farm"
+                ? toStore.Where(i => i is Hoe or WateringCan or Axe or Pickaxe || (i is MeleeWeapon mw && mw.isScythe())).Select(i => i.DisplayName).Distinct().ToList()
+                : new List<string>();
+            if (toolsAway.Count > 0)
+                msg += $"。注意：{string.Join("、", toolsAway)} 也存进箱子了，回来种地、浇水、砍树之前先 take_items 拿回来（或者 tidy_backpack purpose=farm 一键换成种地的装备）";
             if (missing != null)
                 msg += "。" + missing;
             yield return stored.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
@@ -419,7 +426,24 @@ namespace BlindWhaleFarmer
 
         private static IEnumerable<(Point tile, Chest chest)> PlayerChests(GameLocation loc) =>
             loc.objects.Pairs
-                .Where(p => p.Value is Chest c && c.playerChest.Value && !c.giftbox.Value)
+                .Where(p => p.Value is Chest c && c.playerChest.Value && !c.giftbox.Value && !IsOffMapChest(loc, p.Key, c))
                 .Select(p => (new Point((int)p.Key.X, (int)p.Key.Y), (Chest)p.Value));
+
+        /// <summary>
+        /// 别的模组藏在地图外面的箱子：只在列出、存取时跳过，游戏对象本身不动。
+        /// 已知的是 Grandpa's Toolbelt：每个玩家一个“第二工具栏”箱子，放在 Farm 的 objects 里，坐标在地图外（-1000~-600 随机，
+        /// 老版本固定 (-500,-500)），modData 带 GrandpasToolbelt/IsBelt 和 GrandpasToolbelt/OwnerID。
+        /// 那是那个模组自己的工具栏，AI 往里存取会弄乱玩家的快捷栏；坐标也走不过去。
+        /// 不认识的模组也一样：只要坐标在地图外就当成别人藏起来的，不报给 AI。
+        /// </summary>
+        internal static bool IsOffMapChest(GameLocation loc, Vector2 tile, Chest c) =>
+            c.modData.ContainsKey(ToolbeltChestKey) || IsOffMapTile(loc, tile);
+
+        /// <summary>Grandpa's Toolbelt 给它的工具栏箱子打的标记（GrandpasToolbelt.ModEntry.GetVoidChest）。</summary>
+        internal const string ToolbeltChestKey = "GrandpasToolbelt/IsBelt";
+
+        /// <summary>坐标在这张地图外面（没有地图时不判断，当在图内）。</summary>
+        internal static bool IsOffMapTile(GameLocation loc, Vector2 tile) =>
+            loc.Map != null && !loc.isTileOnMap((int)tile.X, (int)tile.Y);
     }
 }

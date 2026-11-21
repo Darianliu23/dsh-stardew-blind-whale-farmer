@@ -39,9 +39,12 @@ namespace BlindWhaleFarmer
 
         private static string ModeAdvice() => Mode switch
         {
-            ModeSolo => "按你自己的计划玩，不用放下手里的事。别人说话回一句，来不来帮忙看你自己的心情",
-            ModeCommand => "主要听指令：有人吩咐就做，做完用 say 汇报，然后用 follow 或 wait_chat 等下一句，不要自己找事做",
-            _ => "有人吩咐就先做，做完用 say 汇报，然后接着按自己的计划玩",
+            ModeSolo => AllowChat ? "按你自己的计划玩，不用放下手里的事。别人说话回一句，来不来帮忙看你自己的心情"
+                : "按你自己的计划玩，不用放下手里的事。聊天已关闭，你不能在游戏里说话，别人的话你照样看得到",
+            ModeCommand => AllowChat ? "主要听指令：有人吩咐就做，做完用 say 汇报，然后用 follow 或 wait_chat 等下一句，不要自己找事做"
+                : "主要听指令：有人吩咐就做，然后用 follow 或 wait_chat 等下一句，不要自己找事做。聊天已关闭，不用 say 回话",
+            _ => AllowChat ? "有人吩咐就先做，做完用 say 汇报，然后接着按自己的计划玩"
+                : "有人吩咐就先做，然后接着按自己的计划玩。聊天已关闭，你不能在游戏里说话，不用 say 汇报",
         };
 
         /// <summary>有人说话、而且现在的模式要放下手里的事去听。</summary>
@@ -77,7 +80,7 @@ namespace BlindWhaleFarmer
         internal static void AnnounceMode(string who)
         {
             incomingChat.Add($"（{who}把联机模式切换成了“{ModeName(Mode)}”）");
-            Game1.chatBox?.textBoxEnter($"好的，现在是“{ModeName(Mode)}”模式");
+            AiSay($"好的，现在是“{ModeName(Mode)}”模式");
         }
 
         /// <summary>取出还没告诉 AI 的聊天（没有返回 null）。</summary>
@@ -97,8 +100,11 @@ namespace BlindWhaleFarmer
         /// <summary>收到话之后下一个动作还没 say：提醒一次（没有要提醒的返回 null）。</summary>
         public static string TakeReplyReminder()
         {
-            if (!chatAwaitingReply)
+            if (!chatAwaitingReply || !AllowChat)
+            {
+                chatAwaitingReply = false;
                 return null;
+            }
             chatAwaitingReply = false;
             return "⚠ 刚才别人对你说的话，你还没用 say 回。写在回复里的字对方看不到，只有 say 说的话游戏里才看得到，现在补一句";
         }
@@ -138,12 +144,32 @@ namespace BlindWhaleFarmer
             }
             Mode = target;
             ModeChanged?.Invoke(target);
-            Game1.chatBox?.textBoxEnter($"好的，现在是“{ModeName(target)}”模式");
+            AiSay($"好的，现在是“{ModeName(target)}”模式");
             yield return ActionResult.Success($"已经切换成“{ModeName(target)}”。{ModeAdvice()}");
+        }
+
+        /// <summary>
+        /// 允许 AI 说话吗（config.json 的 AllowChat，DSH 设置页 allowChat 会改它）。默认不允许。
+        /// 模组里所有“AI 自己往聊天里发话”的地方都走 AiSay，只有玩家自己输入的话（F6 输入框）不走这里。
+        /// </summary>
+        internal static bool AllowChat;
+
+        /// <summary>AI 往聊天框发一句话；聊天关着就什么都不发，返回 false。</summary>
+        internal static bool AiSay(string text)
+        {
+            if (!AllowChat || Game1.chatBox == null)
+                return false;
+            Game1.chatBox.textBoxEnter(text);
+            return true;
         }
 
         public IEnumerable<object> Say(string text)
         {
+            if (!AllowChat)
+            {
+                yield return ActionResult.Fail("聊天已关闭：玩家不让你在游戏聊天里说话（别人说的话你照样听得到）。要说的事写在回复里就行，不用 say");
+                yield break;
+            }
             if (!Context.IsMultiplayer || Game1.chatBox == null)
             {
                 yield return ActionResult.Fail("只有联机时才能说话");

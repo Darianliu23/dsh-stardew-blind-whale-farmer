@@ -17,7 +17,7 @@ namespace BlindWhaleFarmer
             StardewValley.Utility.ForEachLocation(loc =>
             {
                 foreach (var p in loc.objects.Pairs)
-                    if (p.Value is StardewValley.Objects.Chest c && c.playerChest.Value && found.Count < 3)
+                    if (p.Value is StardewValley.Objects.Chest c && c.playerChest.Value && found.Count < 3 && !GameActions.IsOffMapChest(loc, p.Key, c))
                     {
                         int n = 0;
                         foreach (var i in c.GetItemsForPlayer())
@@ -93,10 +93,72 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>去掉状态里显示的品质后缀（“土豆 银星”→“土豆”），模型常把整段名字原样抄回来。</summary>
+        /// <summary>名字末尾写的品质：铱星 4、金星 2、银星 1，没写返回 -1。</summary>
+        public static int QualityFromSpec(string spec)
+        {
+            spec = (spec ?? "").Trim();
+            return spec.EndsWith("铱星") ? 4 : spec.EndsWith("金星") || spec.EndsWith("金星+") ? 2 : spec.EndsWith("银星") || spec.EndsWith("银星+") ? 1 : -1;
+        }
+
         public static string StripQuality(string name) =>
             System.Text.RegularExpressions.Regex.Replace(name.Trim(), @"\s*(银星|金星|铱星)\+?$", "");
 
         /// <summary>按序号或名称在背包里找物品，返回背包下标，找不到返回 -1。同名不同品质时优先品质和名字都对上的。</summary>
+        /// <summary>
+        /// 名字有多像（0 = 不像）：去掉空格、下划线、点再比，不分大小写。
+        /// 一个包含另一个最像；否则看共有的字（中文按字、英文按单词片段），共有的越多越像。
+        /// 用在“找不到 X”的报错里给候选，不用来自动替换（猜错了会买错、扔错东西）。
+        /// </summary>
+        public static int NameScore(string want, string name)
+        {
+            static string Norm(string s) => new string((s ?? "").Where(c => !char.IsWhiteSpace(c) && c is not ('_' or '.' or '-' or '（' or '）' or '(' or ')')).ToArray()).ToLowerInvariant();
+            string a = Norm(want), b = Norm(name);
+            if (a.Length == 0 || b.Length == 0)
+                return 0;
+            if (a == b)
+                return 100;
+            if (b.Contains(a) || a.Contains(b))
+                return 80 - Math.Min(30, Math.Abs(a.Length - b.Length));
+            // 共有的字：中文一个字算一个，英文 3 个字母一段
+            bool cjk = a.Any(c => c > 0x2E80);
+            var grams = cjk ? a.Select(c => c.ToString()).Distinct().ToList()
+                : Enumerable.Range(0, Math.Max(1, a.Length - 2)).Select(i => a.Substring(i, Math.Min(3, a.Length - i))).Distinct().ToList();
+            int hit = grams.Count(g => b.Contains(g));
+            // 两个字的中文名只共有一个字不算像（真机：“鳀鱼”给出“竹鱼竿”，只因为都有“鱼”）
+            if (cjk && grams.Count <= 2 && hit < grams.Count)
+                return 0;
+            if (hit == 0 || (cjk ? hit * 2 < grams.Count : hit * 3 < grams.Count))
+                return 0;
+            return 10 + 50 * hit / grams.Count;
+        }
+
+        /// <summary>背包里名字和 spec 最像的几样（给“背包里没有 X”的报错用），最多 max 个，没有返回空。</summary>
+        public static List<string> ItemCandidates(string spec, Func<Item, bool> filter = null, int max = 3)
+        {
+            if (string.IsNullOrWhiteSpace(spec) || Game1.player == null)
+                return new List<string>();
+            string bare = StripQuality(spec.Trim());
+            return Game1.player.Items
+                .Where(i => i != null && (filter == null || filter(i)))
+                .Select(i => (name: i.DisplayName, score: Math.Max(NameScore(bare, i.DisplayName), NameScore(bare, i.Name))))
+                .Where(t => t.score > 0)
+                .GroupBy(t => t.name).Select(g => g.First())
+                .OrderByDescending(t => t.score)
+                .Take(max).Select(t => t.name).ToList();
+        }
+
+        /// <summary>
+        /// “背包里没有 X”后面接的一句：有名字像的就列出来（“是不是：A、B”），没有就列背包里能用的几样，背包空就不接。
+        /// </summary>
+        public static string NotFoundHint(string spec, Func<Item, bool> filter = null)
+        {
+            var near = ItemCandidates(spec, filter);
+            if (near.Count > 0)
+                return $"。名字相近的：{string.Join("、", near)}（照着写全名，或者写背包序号）";
+            var some = Game1.player?.Items.Where(i => i != null && (filter == null || filter(i))).Select(i => i.DisplayName).Distinct().Take(6).ToList();
+            return some is { Count: > 0 } ? $"。背包里能用的有：{string.Join("、", some)}" : "";
+        }
+
         public static int FindItemIndex(string spec, Func<Item, bool> filter = null)
         {
             if (string.IsNullOrWhiteSpace(spec))

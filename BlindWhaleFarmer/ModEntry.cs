@@ -71,6 +71,7 @@ namespace BlindWhaleFarmer
             PatchChat();
             chatInput = new ChatInput(Monitor);
             GameActions.Mode = GameActions.NormalizeMode(Config.CompanionMode);
+            GameActions.AllowChat = Config.AllowChat;
             GameActions.ModeChanged = mode =>
             {
                 Config.CompanionMode = mode;
@@ -179,6 +180,8 @@ namespace BlindWhaleFarmer
                 Config.McpIdleSeconds = Math.Clamp(idle.GetValue<int>(), 10, 3600);
             if (s["forageRadius"] is { } fr)
                 GameActions.ForageRadius = Config.ForageRadius = Math.Clamp(fr.GetValue<int>(), 0, 10);
+            if (s["allowChat"] is { } chat)
+                GameActions.AllowChat = Config.AllowChat = chat.GetValue<bool>();
             if (s["companionMode"] is { } mode)
             {
                 string newMode = GameActions.NormalizeMode(mode.GetValue<string>());
@@ -465,7 +468,8 @@ namespace BlindWhaleFarmer
             try
             {
                 bool mcp = !Agent.Running && McpPlaying && !PlayerInControl;
-                Hud.Draw(b, Agent.Running || mcp, Agent.IsThinking || (mcp && !MainThread.IsBusy), mcp);
+                // 联机时 SetTimeFrozen 什么都不做，时间照走：HUD 只在真冻住了的时候说“时间已冻结”
+                Hud.Draw(b, Agent.Running || mcp, Agent.IsThinking || (mcp && !MainThread.IsBusy), mcp, timeFrozenByUs);
             }
             catch (Exception ex)
             {
@@ -501,7 +505,13 @@ namespace BlindWhaleFarmer
                 action = s;
         }
 
-        public void Draw(SpriteBatch b, bool running, bool thinking, bool viaMcp = false)
+        /// <summary>HUD 第一行：MCP 思考时只有真的冻住了时间才说“时间已冻结”（联机时冻不了，以前照样这么写）。</summary>
+        internal static string McpStatusLine(bool thinking, bool timeFrozen) =>
+            !thinking ? "[MCP 客户端操作中]"
+            : timeFrozen ? "[MCP 客户端思考中，时间已冻结]"
+            : "[MCP 客户端思考中，时间照常走]";
+
+        public void Draw(SpriteBatch b, bool running, bool thinking, bool viaMcp = false, bool timeFrozen = false)
         {
             string s, t, a;
             lock (sync)
@@ -518,7 +528,7 @@ namespace BlindWhaleFarmer
             const int width = 520;
             var lines = new List<string>();
             if (viaMcp)
-                lines.Add(thinking ? "[MCP 客户端思考中，时间已冻结]" : "[MCP 客户端操作中]");
+                lines.Add(McpStatusLine(thinking, timeFrozen));
             else
                 lines.Add((running ? (thinking ? "[AI 思考中] " : "[AI 运行中] ") : "[AI 已停止] ") + s);
             if (running)

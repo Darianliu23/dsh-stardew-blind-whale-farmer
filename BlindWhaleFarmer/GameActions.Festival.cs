@@ -307,7 +307,7 @@ namespace BlindWhaleFarmer
                 if (festivalReadySaid != readyKey)
                 {
                     festivalReadySaid = readyKey;
-                    Game1.chatBox?.textBoxEnter("我准备好了，可以找刘易斯开始主活动了");
+                    AiSay("我准备好了，可以找刘易斯开始主活动了");
                 }
                 string prepared = notes.Count > 0 ? string.Join("；", notes) + "。" : "";
                 for (int t = 0; t < 300 * 60 && !FestivalMainRunning(ev) && Game1.CurrentEvent == ev; t++)

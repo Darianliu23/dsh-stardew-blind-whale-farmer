@@ -232,7 +232,7 @@ namespace BlindWhaleFarmer
             return $"最近的水在{dir}边 ({p.X},{p.Y})，离你 {Util.Manhattan(p, from)} 格：先 move_to 走到那附近再 fish，或者换个地方（Beach、Mountain 的湖、Town/Forest 的河）";
         }
 
-        private const string BagFullForFishing = "背包满了，再钓拿不下的会掉在地上。想留在这里接着钓：钓上来的垃圾（报纸、破眼镜、浮木这类）用 trash_item 扔掉就能腾出位置。"
+        private const string BagFullForFishing = "背包满了，再钓拿不下的会掉在地上。想留在这里接着钓：能吃的东西（海草、藻类）直接 eat，真正的垃圾（报纸、破眼镜、浮木这类）才用 trash_item 扔掉，就能腾出位置。"
             + "东西都要留的话，放进出货箱（ship_items）或者整理（tidy_backpack）：出货箱和箱子都在农场，这两个动作会把你带回 Farm，做完想接着钓要先 travel_to 回钓鱼的地方。体力够时别为了腾位置吃鱼";
 
         public IEnumerable<object> Fish(int casts, int? x, int? y, string direction)
@@ -398,6 +398,8 @@ namespace BlindWhaleFarmer
                 summary += $"。水面 ({far.X},{far.Y}) 在冒泡（抛中咬钩快、鱼更好），但从岸边抛不到那么远：钓鱼等级越高抛得越远（4 级、8 级各多一格）";
             if (stopReason != null)
                 summary += $"（{stopReason}）";
+            if (stopReason == BagFullForFishing && EatInsteadHint() is string eatFirst)
+                summary += "。先看这个：" + eatFirst;
             if (stopReason == BagFullForFishing && TripClutterHint("fish") is string clutter)
                 summary += "。" + clutter;
             summary += $"，体力 {(int)Player.Stamina}，现在 {Util.TimeString(Game1.timeOfDay)}";
