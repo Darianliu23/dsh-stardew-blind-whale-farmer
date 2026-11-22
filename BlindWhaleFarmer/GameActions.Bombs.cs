@@ -232,26 +232,22 @@ namespace BlindWhaleFarmer
             return set;
         }
 
-        /// <summary>一个炸石头的位置：用哪颗炸弹、罩住几个矿石/宝石节点、一共几块石头。</summary>
+        /// <summary>一个合算的炸点：用哪颗炸弹，放在哪一格。</summary>
         private struct BlastSpot
         {
             public Point Tile;
             public (int idx, string id, int radius, string name) Bomb;
-            public int Ores, Stones;
-            public bool Found => Stones > 0;
+            public bool Found => Bomb.radius > 0;
         }
 
         /// <summary>
-        /// 身边 range 格内炸石头最划算的位置：矿石、宝石、晶球节点一个顶 4 块普通石头；大炸弹贵（樱桃炸弹 4 铜矿 + 1 煤，
-        /// 炸弹 4 铁矿 + 1 煤，超级炸弹 4 金矿 + 太阳精华 + 虚空精华），要比小炸弹多罩住不少才用大的。skip 里的格子放过没成，不再挑。
+        /// 炸点按节点评分累加，所有石头也算清路、找楼梯的收益。大炸弹要多罩住一些才值得用，放失败的格子跳过。
         /// </summary>
-        private static BlastSpot BestBlastSpot(GameLocation loc, List<(int idx, string id, int radius, string name)> bombs, int range, ICollection<Point> skip = null)
+        private static BlastSpot BestBlastSpot(GameLocation loc, List<(int idx, string id, int radius, string name)> bombs,
+            int range, int minStones, MineGoal goal = MineGoal.Balanced, ICollection<Point> skip = null)
         {
             var me = Player.TilePoint;
-            var nodes = loc.objects.Pairs.Where(p => p.Value.IsBreakableStone())
-                .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), ore: ValuableNodeIds.Contains(p.Value.ItemId)))
-                .Where(n => Chebyshev(n.pt, me) <= range + 7)
-                .ToList();
+            var nodes = ScoredMineStones(loc, goal).Where(n => Chebyshev(n.pt, me) <= range + 7).ToList();
             var best = new BlastSpot();
             double bestScore = 0;
             if (nodes.Count == 0)
@@ -259,26 +255,28 @@ namespace BlindWhaleFarmer
             foreach (var bomb in bombs)
             {
                 double cost = bomb.radius switch { 3 => 0, 5 => 6, _ => 14 };
+                var shape = BlastShape(bomb.radius);
                 for (int dx = -range; dx <= range; dx++)
                     for (int dy = -range; dy <= range; dy++)
                     {
                         var p = new Point(me.X + dx, me.Y + dy);
                         if (skip?.Contains(p) == true || !CanHoldBomb(loc, p))
                             continue;
-                        int ores = 0, stones = 0;
-                        var shape = BlastShape(bomb.radius);
+                        int nodeScore = 0, stones = 0;
                         foreach (var n in nodes)
                             if (shape.Contains(new Point(n.pt.X - p.X, n.pt.Y - p.Y)))
                             {
                                 stones++;
-                                if (n.ore)
-                                    ores++;
+                                nodeScore += n.score;
                             }
-                        double score = ores * 4 + stones - cost - Util.Manhattan(p, me) * 0.05;
+                        if (stones < minStones && (goal == MineGoal.Descent || nodeScore < 14))
+                            continue;
+                        // 均衡目标下常见矿点约 8 分，折合约 4 块普通石头，和原先的炸弹成本相称。
+                        double score = nodeScore * 0.5 + stones - cost - Util.Manhattan(p, me) * 0.05;
                         if (score > bestScore)
                         {
                             bestScore = score;
-                            best = new BlastSpot { Tile = p, Bomb = bomb, Ores = ores, Stones = stones };
+                            best = new BlastSpot { Tile = p, Bomb = bomb };
                         }
                     }
             }
@@ -291,14 +289,16 @@ namespace BlindWhaleFarmer
         private IEnumerable<object> BlastStones(BlastSpot spot, Outcome o, List<string> notes, Action<int, int> done)
         {
             var loc = Loc;
-            var before = loc.objects.Pairs.Where(p => p.Value.IsBreakableStone())
-                .ToDictionary(p => new Point((int)p.Key.X, (int)p.Key.Y), p => ValuableNodeIds.Contains(p.Value.ItemId));
+            var shape = BlastShape(spot.Bomb.radius);
+            var before = loc.objects.Pairs.Where(p => p.Value.IsBreakableStone()
+                    && shape.Contains(new Point((int)p.Key.X - spot.Tile.X, (int)p.Key.Y - spot.Tile.Y)))
+                .ToDictionary(p => p.Key, p => GetMineNodeTier(p.Value, loc));
             foreach (var s in PlaceBombAndRun(spot.Tile, spot.Bomb, o))
                 yield return s;
             if (!o.Ok)
                 yield break;
-            var gone = before.Where(kv => !loc.objects.TryGetValue(new Vector2(kv.Key.X, kv.Key.Y), out var obj) || !obj.IsBreakableStone()).ToList();
-            done(gone.Count, gone.Count(kv => kv.Value));
+            var gone = before.Where(kv => !loc.objects.TryGetValue(kv.Key, out var obj) || !obj.IsBreakableStone()).ToList();
+            done(gone.Count, gone.Count(kv => kv.Value != MineNodeTier.Stone));
             // 炸出来的东西散在爆炸范围里，走过去捡（背包满了会在 notes 里说）
             int r = spot.Bomb.radius + 1;
             var keep = o.Message;
@@ -309,7 +309,7 @@ namespace BlindWhaleFarmer
 
         /// <summary>
         /// use_bomb：在指定的格子（或者自动挑）放一颗炸弹，跑开等它炸完。
-        /// 自动挑：附近有倒地的木乃伊就炸它们，没有就找身边 8 格内矿石最多（其次石头最多）的地方，炸完把掉的东西捡回来。
+        /// 自动挑：附近有倒地的木乃伊就炸它们，没有就按矿点评分和石头数量挑身边 8 格内的炸点，炸完把掉的东西捡回来。
         /// </summary>
         public IEnumerable<object> UseBomb(int? x, int? y, string kind)
         {
@@ -353,7 +353,7 @@ namespace BlindWhaleFarmer
             int blasted = 0, ores = 0;
             if (x.HasValue && y.HasValue)
             {
-                foreach (var s in BlastStones(new BlastSpot { Tile = new Point(x.Value, y.Value), Bomb = bombs[0], Stones = 1 }, o, notes, (b, n) => (blasted, ores) = (b, n)))
+                foreach (var s in BlastStones(new BlastSpot { Tile = new Point(x.Value, y.Value), Bomb = bombs[0] }, o, notes, (b, n) => (blasted, ores) = (b, n)))
                     yield return s;
                 yield return o.Ok
                     ? ActionResult.Success(BlastSummary(o.Message, blasted, ores, notes))
@@ -378,11 +378,11 @@ namespace BlindWhaleFarmer
                 }
             }
 
-            // 再看石头：身边 8 格内，矿石/宝石节点罩住得最多（其次石头最多）的位置；指定了炸弹种类就只用那种
-            var spot = BestBlastSpot(Loc, bombs, 8);
-            if (!spot.Found || (spot.Ores < 2 && spot.Stones < 3))
+            // 再看石头：按均衡目标的矿点评分和清石头的收益挑位置；指定了炸弹种类就只用那种。
+            var spot = BestBlastSpot(Loc, bombs, 8, 3);
+            if (!spot.Found)
             {
-                yield return ActionResult.Fail("附近没有倒地的木乃伊，矿石和石头也不多（一颗炸弹罩不住 2 个矿或 3 块石头），不值得炸。指定坐标就照放：use_bomb 传 x、y");
+                yield return ActionResult.Fail("附近没有倒地的木乃伊，也找不到矿点评分够高或能罩住至少 3 块石头的合算炸点。指定坐标就照放：use_bomb 传 x、y");
                 yield break;
             }
             foreach (var s in BlastStones(spot, o, notes, (b, n) => (blasted, ores) = (b, n)))

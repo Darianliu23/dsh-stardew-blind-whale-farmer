@@ -11,6 +11,7 @@ using StardewValley.Locations;
 using StardewValley.Menus;
 using StardewValley.Monsters;
 using StardewValley.Objects;
+using StardewValley.SpecialOrders;
 using StardewValley.TerrainFeatures;
 using SObject = StardewValley.Object;
 
@@ -21,11 +22,13 @@ namespace BlindWhaleFarmer
     {
         private readonly ModConfig config;
         private readonly IReflectionHelper reflection;
+        private readonly MainThread main;
 
-        public Observer(ModConfig config, IReflectionHelper reflection)
+        public Observer(ModConfig config, IReflectionHelper reflection, MainThread main)
         {
             this.config = config;
             this.reflection = reflection;
+            this.main = main;
         }
 
         public const string Legend =
@@ -62,7 +65,69 @@ namespace BlindWhaleFarmer
             return text;
         }
 
-        public string Build(bool full = false)
+        private readonly ScreenHistory screenHistory = new();
+        private readonly Dictionary<HUDMessage, (string text, int number)> hudSeen = new(ReferenceEqualityComparer.Instance);
+        private DialogueBox lastBox;
+        private string lastPage;
+        private Event lastDialogueEvent;
+        private int lastDialogueCommand;
+
+        internal void ResetScreenHistory()
+        {
+            screenHistory.Clear();
+            hudSeen.Clear();
+            lastBox = null;
+            lastPage = null;
+            lastDialogueEvent = null;
+        }
+
+        internal void SampleScreen()
+        {
+            string stamp = null;
+            // 原版合并或刷新 HUD 时会留着同一个对象，叠加物品只更新数量。
+            if (hudSeen.Count > 0)
+                foreach (var expired in hudSeen.Keys.Where(m => !Game1.hudMessages.Contains(m)).ToArray())
+                    hudSeen.Remove(expired);
+            foreach (var message in Game1.hudMessages)
+            {
+                string text = message.message;
+                int count = message.number;
+                bool known = hudSeen.TryGetValue(message, out var previous);
+                if (!string.IsNullOrWhiteSpace(text) && ScreenHistory.HudChanged(known, previous, (text, count)))
+                {
+                    string quantity = count > 1 || (known && count >= 0 && count != previous.number) ? $" ×{count}" : "";
+                    screenHistory.Add(stamp ??= Util.Stamp(), "提示", ScreenHistory.Clip(text, 160 - quantity.Length) + quantity, message);
+                }
+                hudSeen[message] = (text, count);
+            }
+
+            if (Game1.activeClickableMenu is not DialogueBox box)
+            {
+                lastBox = null;
+                lastPage = null;
+                return;
+            }
+            // 只收当前页，等对话框展开且已经开始显示文字。
+            if (box.transitioning || box.characterIndexInDialogue <= 0)
+                return;
+            string page = box.getCurrentString();
+            if (string.IsNullOrWhiteSpace(page) || (ReferenceEquals(lastBox, box) && lastPage == page))
+                return;
+            lastBox = box;
+            lastPage = page;
+            var ev = Game1.CurrentEvent;
+            lastDialogueEvent = ev;
+            lastDialogueCommand = ev?.CurrentCommand ?? -1;
+            string speaker = box.characterDialogue?.speaker?.displayName;
+            screenHistory.Add(stamp ?? Util.Stamp(), "台词", speaker != null && Game1.options.showPortraits ? $"{speaker}：{page}" : page);
+        }
+
+        internal bool SawCurrentEventDialogue(Event ev) =>
+            ReferenceEquals(lastDialogueEvent, ev) && lastDialogueCommand == ev.CurrentCommand;
+
+        internal Func<string> FieldSummary;
+
+        public string Build(bool full = false, bool includeRecentScreen = false)
         {
             showAll = full;
             var sb = new StringBuilder();
@@ -71,6 +136,10 @@ namespace BlindWhaleFarmer
             var pt = player.TilePoint;
 
             sb.AppendLine("## 基本状态");
+            if (FieldSummary?.Invoke() is string fields)
+                sb.AppendLine(fields);
+            if (main.TakeOutsideInventoryNote() is string outsideInventory)
+                sb.AppendLine(outsideInventory);
             string weather = Game1.isRaining ? (Game1.isLightning ? "雷雨" : "下雨") : Game1.isSnowing ? "下雪" : "晴";
             sb.AppendLine($"时间：{Util.Stamp()}（{Game1.shortDayNameFromDayOfSeason(Game1.dayOfMonth)}），天气：{weather}，明天天气：{WeatherName(Game1.weatherForTomorrow)}");
             sb.AppendLine($"金钱：{player.Money}g  体力：{(int)player.Stamina}/{player.MaxStamina}{(player.exhausted.Value ? "（筋疲力尽：体力≤0 时跑不动，明早只有一半体力）" : "")}  生命：{player.health}/{player.maxHealth}  今日运气：{player.DailyLuck:+0.00;-0.00}");
@@ -142,6 +211,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(threat);
                 if (GameActions.BedtimeWarning() is string bed)
                     sb.AppendLine(bed);
+                if (GameActions.ShippingBedtimeReminder() is string shipping)
+                    sb.AppendLine(shipping);
             });
             if (player.mailbox.Count > 0)
                 sb.AppendLine($"邮箱里有 {player.mailbox.Count} 封未读信件：邮箱在 Farm 的 ({player.getMailboxPosition().X},{player.getMailboxPosition().Y})，用 read_mail 一次读完（会自己走过去）。信里常有任务、物品，有的剧情要先读信才会触发（比如威利送鱼竿）");
@@ -159,6 +230,19 @@ namespace BlindWhaleFarmer
             sb.AppendLine();
             sb.AppendLine("## 当前界面");
             Safe(sb, () => sb.AppendLine(DescribeMenu()));
+
+            if (includeRecentScreen)
+            {
+                SampleScreen();
+                var recent = screenHistory.TakeRecent();
+                if (recent.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("## 最近的提示/台词");
+                    foreach (var line in recent)
+                        sb.AppendLine(line);
+                }
+            }
 
             sb.AppendLine();
             sb.AppendLine("## 位置");
@@ -215,8 +299,23 @@ namespace BlindWhaleFarmer
                 {
                     sb.AppendLine();
                     sb.AppendLine("## 箱子（所有地点，按数量列主要物品；找某样东西用 list_chests item=名字）");
-                    sb.AppendLine(Once("chests", chests));
+                    string shown = Once("chests", chests);
+                    // 折叠时也留一行摘要，不用重新查就知道箱子里大概有什么
+                    sb.AppendLine(shown.StartsWith("（") ? $"（和上次一样，没变化，省略。摘要：{GameActions.ChestSummary()}；要看每个箱子就 get_state full=true，找某样东西用 list_chests）" : shown);
                 }
+            });
+
+            Safe(sb, () =>
+            {
+                if (GameActions.StorageSpreadHint() is string storage)
+                    sb.AppendLine(storage);
+            });
+
+            Safe(sb, () =>
+            {
+                sb.AppendLine();
+                sb.AppendLine("## 农场机器（含室内，完整位置用 list_machines）");
+                sb.AppendLine(Once("farm_machines", GameActions.FarmMachineOverview()));
             });
 
             sb.AppendLine();
@@ -302,6 +401,8 @@ namespace BlindWhaleFarmer
         /// <summary>背包里能捐给博物馆、能交给社区中心收集包的东西。</summary>
         private static void AppendDonationHints(StringBuilder sb)
         {
+            if (Knowledge.MuseumCollection() is { } collection)
+                sb.AppendLine($"博物馆已捐 {collection.Count(p => p.Donated)}/{collection.Count} 件（用 museum_info 看缺哪些）");
             var museum = Knowledge.MuseumDonatable();
             if (museum.Count > 0)
                 sb.AppendLine($"可以捐给博物馆：{string.Join("、", museum.Select(i => i.DisplayName))}（用 donate_museum）");
@@ -798,10 +899,23 @@ namespace BlindWhaleFarmer
                         if (tree.stump.Value)
                             return ('S', "树桩", "斧头");
                         if (tree.growthStage.Value >= 5)
-                            return ('T', "树", "斧头（大树要砍很多下）");
-                        return ('t', "小树苗", "斧头/镰刀");
-                    case FruitTree:
-                        return ('F', "果树", "");
+                        {
+                            bool tapped = tree.tapped.Value;
+                            return ('T', WildTreeName(tree) + (tapped ? "（已挂采集器）" : ""),
+                                tapped ? "斧头（砍掉会把采集器弄掉；采集器上的树液用 interact 收）" : "斧头（大树要砍很多下）；橡树、枫树、松树等能挂树液采集器");
+                        }
+                        return ('t', WildTreeName(tree) + "小树苗", "斧头/镰刀");
+                    case FruitTree ft:
+                        string fruitName = "";
+                        try
+                        {
+                            // GetDisplayName 取不到数据时返回错误物品名，DisplayName 本身也可能带“树”字：改取第一个产出的果实的显示名再拼“树”
+                            string fruitId = ft.GetData()?.Fruit?.FirstOrDefault()?.ItemId;
+                            if (!string.IsNullOrEmpty(fruitId) && ItemRegistry.GetData(fruitId) is { } fd)
+                                fruitName = fd.DisplayName;
+                        }
+                        catch { }
+                        return ('F', string.IsNullOrEmpty(fruitName) ? "果树" : fruitName + "树", "");
                     case Grass:
                         return ('"', "草", "镰刀");
                     case Flooring:
@@ -809,6 +923,23 @@ namespace BlindWhaleFarmer
                 }
             }
             return ('\0', null, null);
+        }
+
+        /// <summary>野树品种名。游戏数据（Data/WildTrees）里没有显示名，按 Tree.cs 里的类型编号对：1 橡树 2 枫树 3 松树 6/9 棕榈 7 蘑菇树 8 桃花心木 10/11/12 绿雨树 13 神秘树；冬天的 4/5 游戏本身会当成 1/2。</summary>
+        internal static string WildTreeName(Tree tree)
+        {
+            return tree.treeType.Value switch
+            {
+                "1" or "4" => "橡树",
+                "2" or "5" => "枫树",
+                "3" => "松树",
+                "6" or "9" => "棕榈树",
+                "7" => "蘑菇树",
+                "8" => "桃花心木树",
+                "10" or "11" or "12" => "绿雨树",
+                "13" => "神秘树",
+                _ => "树"
+            };
         }
 
         private void AppendNearby(StringBuilder sb, GameLocation loc, Point pt)
@@ -991,7 +1122,8 @@ namespace BlindWhaleFarmer
         private void AppendQuests(StringBuilder sb)
         {
             var quests = Game1.player.questLog;
-            if (quests.Count == 0)
+            var orders = Game1.player.team.specialOrders.Where(order => !order.IsHidden()).ToList();
+            if (quests.Count == 0 && orders.Count == 0)
                 return;
             sb.AppendLine();
             sb.AppendLine("## 任务");
@@ -1006,9 +1138,22 @@ namespace BlindWhaleFarmer
                 {
                     // 有些任务没有目标描述
                 }
-                string days = q.IsTimedQuest() && q.daysLeft.Value > 0 ? $"（还剩 {q.daysLeft.Value} 天）" : "";
+                // 布告栏每天刷新，沙漠节钓鱼挑战每天可接；其余按 Data/Quests 识别剧情或信件任务。
+                bool? repeatable = q.dailyQuest.Value || q.id.Value == "98765" ? true
+                    : q.id.Value is string id && DataLoader.Quests(Game1.content).ContainsKey(id) ? false : null;
+                string labels = GameActions.QuestLabels(!q.completed.Value && q.IsTimedQuest(), q.GetDaysLeft(), repeatable);
                 string how = q.completed.Value ? null : GameActions.QuestHowTo(q);
-                sb.AppendLine($"- {q.GetName()}：{obj}{days}{(q.completed.Value ? "（已完成）" : "")}{(how != null ? "。怎么交：" + how : "")}");
+                sb.AppendLine($"- {q.GetName()}{labels}：{obj}{(q.completed.Value ? "（已完成）" : "")}{(how != null ? "。怎么交：" + how : "")}");
+            }
+            foreach (var order in orders)
+            {
+                string status = order.questState.Value switch
+                {
+                    SpecialOrderStatus.Complete => "（已完成）",
+                    SpecialOrderStatus.Failed => "（已失败）",
+                    _ => ""
+                };
+                sb.AppendLine($"- 特别订单 {order.GetName()}{GameActions.SpecialOrderLabels(order)}{status}");
             }
         }
 

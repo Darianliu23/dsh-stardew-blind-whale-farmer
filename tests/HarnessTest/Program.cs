@@ -6,6 +6,9 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using StardewValley;
+using StardewValley.Tools;
 
 // 通过反射调用模组里的 internal 类型，在不启动游戏的情况下测试：工具 schema、参数解析、DeepSeek 客户端收发。
 partial class Program
@@ -41,6 +44,22 @@ partial class Program
             Check(ok, "schema 合法：" + name);
         }
         Console.WriteLine("schema 字节数：" + schema.ToJsonString().Length);
+        TestTidyBackpack(tActions);
+        TestInventoryDiff(asm);
+        TestScreenHistory(asm);
+        TestMineNodeScoring(tActions, schema);
+        TestPrepareFishing(tActions, schema);
+        TestPrepareField(tActions, schema);
+
+        var machineParams = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "list_machines")?["function"]?["parameters"];
+        Check(machineParams?["properties"] is JsonObject machineProps && machineProps.Count == 1
+            && machineProps["item"]?["type"]?.GetValue<string>() == "string" && machineParams["required"] is JsonArray { Count: 0 },
+            "list_machines 的 schema：只有一个可选的 item(string)");
+        var readOnly = (HashSet<string>)tTools.GetField("ReadOnlyTools", BindingFlags.Public | BindingFlags.Static).GetValue(null);
+        Check(readOnly.Contains("list_machines"), "list_machines 注册为只读工具");
+        TestMuseumInfo(asm, schema, readOnly);
+        TestQuestLabels(tActions);
+        TestHayAndStorage(tActions, schema, readOnly);
 
         var exec = tTools.GetMethod("Execute");
         string r1 = await (Task<string>)exec.Invoke(tools, new object[] { "update_notes", "{\"notes\":\"种防风草\"}" });
@@ -66,6 +85,8 @@ partial class Program
             return await t;
         }
         bool ArgsAccepted(string r) => !r.Contains("不认识参数") && !r.Contains("缺少必填参数") && !r.Contains("缺少参数");
+        string autoInteract = await Run("interact", "{\"item\":\"铜矿石\"}");
+        Check(autoInteract.Contains("游戏世界未就绪"), "interact 只传 item 通过参数校验");
         foreach (var (name, json) in new[]
         {
             ("craft", "{\"item\":\"Chest\"}"),
@@ -143,6 +164,13 @@ partial class Program
         string Strip(string s) => (string)strip.Invoke(null, new object[] { s });
         Check(Strip("成功：已放下") == "已放下" && Strip("失败：放不了") == "放不了", "StripResultPrefix 砍掉成功/失败前缀");
         Check(Strip("对话已推进") == "对话已推进" && Strip("错误：崩了") == "错误：崩了" && Strip("") == "" && Strip(null) == "", "StripResultPrefix 不是成功/失败开头的原样返回");
+
+        // say 聊天文字清理：开头的 / 去掉；模型吐坏的工具调用标记从最早出现的位置截断
+        var clean = tActions.GetMethod("CleanChatText", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        string Clean(string s) => (string)clean.Invoke(null, new object[] { s });
+        Check(Clean("你好呀</text> </｜DSML｜ invoke> </｜DSML｜ calls>") == "你好呀", "CleanChatText 截掉 </text> 和 DSML 标记");
+        Check(Clean("/helpme 来啦 <invoke name=\"x\">") == "helpme 来啦" && Clean("好的</invoke>") == "好的" && Clean("a</parameter>b") == "a", "CleanChatText 去掉开头 / 并截掉 invoke/parameter");
+        Check(Clean("正常的话") == "正常的话" && Clean("</text>") == "" && Clean(null) == "" && Clean("  <｜x ") == "", "CleanChatText 正常话原样，只有标记返回空");
 
         // 版本号（M3）：装进游戏要能和上游 v1.1.25 的包区分
         // 从测试程序所在目录往上找仓库根（有 BlindWhaleFarmer/manifest.json 的那一层）
@@ -228,6 +256,32 @@ partial class Program
 
         Console.WriteLine(failures == 0 ? "\n全部通过" : $"\n{failures} 项失败");
         return failures;
+    }
+
+    static void TestTidyBackpack(Type tActions)
+    {
+        const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+        var parse = tActions.GetMethod("TryParsePurposes", flags);
+        (bool ok, List<string> purposes, string error) Parse(string spec)
+        {
+            object[] args = { spec, null, null };
+            bool ok = (bool)parse.Invoke(null, args);
+            return (ok, (List<string>)args[1], (string)args[2]);
+        }
+
+        var mixed = Parse(" Fish，去镇上、下矿 和 种地 fish ");
+        Check(mixed.ok && mixed.purposes.SequenceEqual(new[] { "fish", "town", "mine", "farm" }), "整理背包识别逗号、顿号、空格和「和」，重复目的只算一次");
+        var fishTown = Parse("fish,town");
+        var purposeName = tActions.GetMethod("TripPurposeName", flags);
+        Check(fishTown.ok && (string)purposeName.Invoke(null, new object[] { fishTown.purposes }) == "钓鱼+去镇上", "整理背包合并显示出门目的");
+        var unspecified = Parse(" ");
+        Check(unspecified.ok && unspecified.purposes.Count == 0, "整理背包没写目的时按通用规则");
+        var unknown = Parse("fish,看电影,town");
+        Check(!unknown.ok && unknown.error.Contains("不认识出门目的“看电影”")
+            && new[] { "mine", "fish", "farm", "town" }.All(p => unknown.error.Contains(p)), "整理背包拒绝含未知段的目的并列出可选值");
+        Check(!Parse("、,").ok, "整理背包拒绝只有分隔符的目的");
+
+        // 选留哪些东西要建 Hoe、MeleeWeapon 等游戏对象，离线没有物品注册表（ItemId 一设就抛 KeyNotFoundException），只能进游戏测
     }
 
     // ── MCP 服务器：真实启动 HttpListener，用 HTTP 发 JSON-RPC，和 WorkBuddy 等客户端一样 ──

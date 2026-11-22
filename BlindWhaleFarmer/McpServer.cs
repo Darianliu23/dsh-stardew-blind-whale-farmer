@@ -281,7 +281,7 @@ namespace BlindWhaleFarmer
             ["quests"] = "任务", ["quest"] = "任务", ["tasks"] = "任务", ["委托"] = "任务",
         };
 
-        /// <summary>get_state 只留要看的几段（按“## 标题”切）。基本状态、当前界面总留着；第一个标题前的内容也留着。</summary>
+        /// <summary>get_state 只留要看的几段（按“## 标题”切）。基本状态、当前界面和最近的提示台词总留着；第一个标题前的内容也留着。</summary>
         internal static string FilterSections(string text, string section)
         {
             var asked = section.Split(new[] { ',', '，', '、', ' ', ';', '；', '/', '|' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -290,6 +290,7 @@ namespace BlindWhaleFarmer
             var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             want.Add("基本状态");
             want.Add("当前界面");
+            want.Add("最近的提示");
             var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?=^## )", System.Text.RegularExpressions.RegexOptions.Multiline);
             var kept = new List<string>();
             var names = new List<string>();
@@ -437,7 +438,7 @@ namespace BlindWhaleFarmer
                     if (args?["full"] is JsonNode fullArg && Tools.ParseBool(fullArg) == null)
                         return $"失败：get_state 的参数 full 要 true/false，你给的是 {Tools.ShowValue(fullArg)}。要看全部段落传 true，平常不传";
                     result = await mod.MainThread.Invoke(() =>
-                        Context.IsWorldReady ? mod.Observer.Build(IsTrue(args?["full"])) : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
+                        Context.IsWorldReady ? mod.Observer.Build(IsTrue(args?["full"]), includeRecentScreen: true) : "游戏还没有进入存档（在标题画面或正在加载）。请玩家先读取存档。").ConfigureAwait(false);
                     // section 写成字符串 "背包,任务" 或数组 ["背包","任务"] 都行
                     string section = args?["section"] switch
                     {
@@ -641,6 +642,8 @@ namespace BlindWhaleFarmer
                     ["freezeTime"] = c.McpFreezeTime,
                     ["idleSeconds"] = c.McpIdleSeconds,
                     ["allowChat"] = c.AllowChat,
+                    ["allowSpendSharedMoney"] = c.AllowSpendSharedMoney,
+                    ["aiHomeLocation"] = c.AiHomeLocation,
                     ["extraInstructions"] = c.ExtraInstructions,
                     ["reservedItems"] = c.ReservedItems,
                     ["guideFile"] = c.GuideFile

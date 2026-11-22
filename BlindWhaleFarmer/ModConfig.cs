@@ -31,6 +31,15 @@ namespace BlindWhaleFarmer
         /// </summary>
         public bool AllowChat { get; set; } = true;
 
+        /// <summary>联机共用钱包时，允许 AI 在聊天播报后直接花共用金币，无需玩家同意。默认关闭，每次先问玩家。</summary>
+        public bool AllowSpendSharedMoney { get; set; } = false;
+
+        /// <summary>
+        /// 联机时让 AI 把哪栋房子当家。填地图的 NameOrUniqueName，例如主机的 FarmHouse 或某个 Cabin 的唯一地图名。
+        /// 留空按游戏登记的家。只影响 AI 回家和睡觉的目的地，不改游戏登记的房屋归属。
+        /// </summary>
+        public string AiHomeLocation { get; set; } = "";
+
         /// <summary>联机时 AI 怎么安排自己：solo 自己玩、command 主要听指令、hybrid 指令做完接着自己玩。</summary>
         public string CompanionMode { get; set; } = GameActions.ModeHybrid;
 

@@ -8,6 +8,42 @@ namespace BlindWhaleFarmer
 {
     internal sealed partial class GameActions
     {
+        internal static volatile bool AllowSpendSharedMoney;
+
+        internal static bool CanSpendSharedMoney(bool multiplayer, bool sharedWallet, bool allowSpend, bool confirm) =>
+            !multiplayer || !sharedWallet || allowSpend || confirm;
+
+        /// <summary>联机共用钱包时，先在聊天里报出这笔支出，再按设置和玩家同意决定能不能付钱。</summary>
+        private static bool CheckSharedMoneySpend(int cost, string what, bool confirm, out string message)
+        {
+            message = null;
+            if (cost <= 0)
+                return true;
+
+            bool multiplayer = StardewModdingAPI.Context.IsMultiplayer;
+            bool sharedWallet = !Player.useSeparateWallets;
+            bool allowed = CanSpendSharedMoney(multiplayer, sharedWallet, AllowSpendSharedMoney, confirm);
+            if (!multiplayer || !sharedWallet)
+                return allowed;
+            string announcement = $"我要花共用的钱 {cost} 金买 {what}。";
+            bool announced = AiSay(announcement + (allowed ? "" : "可以买吗？"));
+            string chatIssue = announced ? "" : AllowChat
+                ? "游戏聊天框不可用，没能播报"
+                : "AllowChat 已关闭，没能在游戏聊天里播报";
+            if (!allowed)
+            {
+                message = $"{announcement}共用钱包，需要玩家同意；玩家同意后用 confirm=true 再调用"
+                    + (announced ? "" : $"。{chatIssue}，请先开启游戏聊天并向玩家说明这笔采购");
+                return false;
+            }
+            if (!announced)
+            {
+                message = $"{announcement}{chatIssue}，暂缓购买；恢复游戏聊天后再调用";
+                return false;
+            }
+            return true;
+        }
+
         // ───────────────────────── 花钱建议 ─────────────────────────
 
         /// <summary>背包 + 农场所有箱子里某种物品的总数（判断材料够不够）。</summary>

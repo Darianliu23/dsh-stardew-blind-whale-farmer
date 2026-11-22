@@ -10,7 +10,7 @@ namespace BlindWhaleFarmer
     /// <summary>暴露给大模型的工具：JSON Schema 定义 + 调用分发。</summary>
     internal sealed class Tools
     {
-        private sealed record Param(string Name, string Type, string Desc, bool Required);
+        private sealed record Param(string Name, string Type, string Desc, bool Required, string[] Choices, string Default);
 
         private sealed class Spec
         {
@@ -70,7 +70,7 @@ namespace BlindWhaleFarmer
                 P("x", "integer", "目标 x"), P("y", "integer", "目标 y"));
 
             Add("travel_to", "自动走到另一个地点（会自动经过多个地图、开门；有马厩、马在附近又路远时会自己骑马，到了下马）。地点用英文内部名，如 Farm、FarmHouse、Town、SeedShop(皮埃尔杂货店)、Blacksmith(铁匠)、ScienceHouse(木匠)、Saloon、Beach、FishShop、Mountain、Forest、BusStop、Mine、JojaMart、ManorHouse(镇长家)、CommunityCenter、Desert(沙漠)、SkullCave(骷髅洞穴)。去沙漠会自动在巴士站买票坐巴士（500g，巴士修好后、帕姆在站台时才行），从沙漠回来也会自动坐巴士。"
-                + "给了 x,y（格子坐标，和 get_state 里“你站在 (x,y)”同一套）就到了地点再走到那一格，一步到位；只给 x,y 不给 location 就在当前地点里走过去（等于 move_to）。", 300,
+                + "给了 x,y（格子坐标，和 get_state 里“你站在 (x,y)”同一套）就到了地点再走到那一格，一步到位；只给 x,y 不给 location 就在当前地点里走过去（等于 move_to）。location 可填“回家”，联机时按 AiHomeLocation 设置选择房子。", 300,
                 j => () => a.TravelTo(OptStr(j, "location"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "detour") == true),
                 P("location", "string", "目标地点内部名（只给 x,y 时可省略=当前地点）", false),
                 P("x", "integer", "到了以后再走到哪格 x（和 y 一起给，可省略）", false), P("y", "integer", "到了以后再走到哪格 y", false),
@@ -81,17 +81,18 @@ namespace BlindWhaleFarmer
                 P("tool", "string", "工具"), P("x", "integer", "目标 x"), P("y", "integer", "目标 y"),
                 P("times", "integer", "最多使用几次（砍大树约需10次），默认1", false));
 
-            Add("interact", "走到目标旁边并按“动作键”：和村民聊天、开门、捡采集品、收获作物、收取机器产物、读邮箱、看告示板。传 npc 名字可以自动追着村民走。传 item 则先拿着该物品再交互（用于送礼、往机器里放材料）。", 120,
+            Add("interact", "走到目标旁边并按“动作键”：和村民聊天、开门、捡采集品、收获作物、收取机器产物、读邮箱、看告示板。传 npc 名字可以自动追着村民走。传 item 可以送礼或投料；只给 item 会在当前地点和农场找空闲的普通机器投料。", 120,
                 j => () => a.Interact(OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "npc"), OptStr(j, "item")),
                 P("x", "integer", "目标 x", false), P("y", "integer", "目标 y", false),
                 P("npc", "string", "村民名字（英文或中文），与 x,y 二选一", false),
-                P("item", "string", "交互时手里拿的物品（名称或背包序号），用于送礼/放材料", false));
+                P("item", "string", "手里拿的物品（名称或背包序号）；只传 item 自动找机器投料", false));
 
-            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。", 60,
-                j => () => a.PlaceItem(Str(j, "item"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false),
+            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。放箱子时也可以先用 storage_info 查储藏区，然后用 near=\"x,y\" 选定箱子群或新锚点，在它旁边挑一个合规空位。near 和直接放置的 x,y 二选一。", 60,
+                j => () => a.PlaceItem(Str(j, "item"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false, OptStr(j, "near")),
                 P("item", "string", "物品名称或背包序号"),
                 P("x", "integer", "放在哪格 x（和 y 一起给；都不给就在你身边自动找一格）", false), P("y", "integer", "放在哪格 y", false),
-                P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false));
+                P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false),
+                P("near", "string", "只放箱子用，写当前地图的箱子坐标或锚点 x,y，自动在它旁边放（始终检查空位和通路）", false));
 
             Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）；不给坐标只给 count 就挨着最大的田自动扩。只能在农场、温室这类种得了庄稼的地方用。区域里的杂草、石头、树枝、树桩、小树苗会先自己清掉再锄；树和大树桩大石头不动，没开出来的格子结果里会列出来。"
                 + "不同作物可以分开开几块田，每块田挑方便的地方开（状态“作物”一节的“农田”行有每块田的位置、种了什么和扩田建议）。", 300,
@@ -107,6 +108,20 @@ namespace BlindWhaleFarmer
                 P("near", "string", "以哪一格为中心展开 width x height 的区域，写 \"x,y\"（比如 \"60,15\"）；写 me 或者不写坐标就是你现在站的格子", false),
                 P("shared", "boolean", "联机时你是农场工人：不给坐标默认挨着自己小屋门口 10 格内的田扩（门口没田就在门口开第一块），不碰主机的田；传 true 才扩全农场最大的田", false),
                 P("force", "boolean", "在种不了庄稼的地方（农场、温室以外）也照样锄（一般不要用）", false));
+
+            Add("prepare_field", "按同一份图清障、从中心向外锄地、安放设备、播种。先 preview 看覆盖和走道，再用同样参数 execute；中断或补齐物资后按 get_state 的编号 resume。选 none 手浇，选等级即使缺洒水器也留位；稻草人也可预留。棚架自动留路，普通作物可要求行间走道。例子见 get_guide topic=种田。", 600,
+                j => () => a.PrepareField(OptStr(j,"mode") ?? "preview",OptInt(j,"plan_id"),
+                    j["near"] == null ? null : NearPoint(j["near"]),OptInt(j,"x1"),OptInt(j,"y1"),OptInt(j,"x2"),OptInt(j,"y2"),
+                    OptInt(j,"count"),OptStr(j,"seed"),OptStr(j,"sprinkler") ?? "none",OptBool(j,"scarecrow") ?? false,OptStr(j,"path") ?? "auto"),
+                P("mode","string","preview 只看图，execute 施工，resume 按编号续跑",false,new[] { "preview","execute","resume" },"preview"),
+                P("plan_id","integer","resume 用的编号",false), P("near","string","中心 x,y 或 me，和矩形二选一",false),
+                P("x1","integer","矩形一角 x",false), P("y1","integer","矩形一角 y",false),
+                P("x2","integer","另一角 x",false), P("y2","integer","另一角 y",false),
+                P("count","integer","目标种植格 1～80；只给数量则挨已有田选区，农场工人按小屋边界",false),
+                P("seed","string","一种作物的种子名或背包序号；不填只整地",false),
+                P("sprinkler","string","none、basic、quality、iridium；自行选择留哪种喷头",false,new[] { "none","basic","quality","iridium" },"none"),
+                P("scarecrow","boolean","是否为现有稻草人保护不到的作物补位置",false),
+                P("path","string","auto 棚架自动留路，rows 普通作物也隔行留路",false,new[] { "auto","rows" },"auto"));
 
             Add("plant_seeds", "在空耕地上批量播种（或施肥）。seed 参数就是种子的物品名，如 Parsnip Seeds / 防风草种子，也可以写背包序号。不给区域时按田来种：先种已经种着同样作物的田，再种空着的田（新作物自己占一块），一行一行种，零散的一两格耕地不种；想种在哪块田就传那块田的区域。", 300,
                 j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200, OptBool(j, "shared") ?? false),
@@ -151,16 +166,23 @@ namespace BlindWhaleFarmer
                 j => () => a.Festival(Str(j, "action")),
                 P("action", "string", "enter / greet / start / leave / grange", true));
 
-            Add("tidy_backpack", "整理背包：每类工具只留最好的一把（低级鱼竿、多余的武器等存起来），身上留吃的（料理；不够两样时再留回血最多的普通食物）、种子、肥料、鱼饵钓具、炸弹、任务物品、要摆放的机器，"
-                + "其余（矿石、石头木材、宝石、鱼、作物、怪物掉落……）存进农场的箱子，一个满了换下一个。不在农场会先回农场。出门下矿/钓鱼前、背包快满时用。"
-                + "传 purpose 时只留这次出门用得上的：mine 下矿（武器、镐子、炸弹、最多 5 样回血食物）、fish 钓鱼（鱼竿、鱼饵钓具、料理）、farm 种地（农具、种子肥料、洒水器机器）、town 去镇上（料理、花束）；还会提醒这次该带却在箱子里的东西。", 300,
+            Add("tidy_backpack", "整理背包：每类工具只留最好的一把，用不上的东西存箱子，一个满了换下一个；这里没箱子会先回农场。出门前先想好今天要干的所有事，一起写进 purpose，只要有一件事用得上就留。今天会用到但规则不带的东西（比如去镇上也想带剑、要送的礼物）写进 keep。还会提醒这次该带却没带的东西。", 300,
                 j => () => a.TidyBackpack(OptStr(j, "keep"), OptStr(j, "purpose")),
                 P("keep", "string", "额外要留在身上的物品名，多个用逗号分隔（比如今天要送的礼物、要交的收集包材料）", false),
-                P("purpose", "string", "出门干什么：mine / fish / farm / town，可省略", false));
+                P("purpose", "string", "今天出门要做的所有事：mine 下矿、fish 钓鱼、farm 种地、town 去镇上。多个用逗号分隔，例如 fish,town。不传就按通用规则整理", false));
 
             Add("list_chests", "列出所有箱子（农场、农舍、冰箱……）在哪、里面有什么；传 item 只找这样东西放在哪个箱子。不花游戏时间。找东西、出门前想想要带什么时用，别凭记忆。", 10,
                 j => () => a.ListChests(OptStr(j, "item")),
                 P("item", "string", "要找的物品名，多个用逗号分隔，可省略", false));
+
+            Add("storage_info", "看玩家放的箱子在哪些地图聚成储藏区，每组给范围、箱子数、空格数及上下左右能放箱子的坐标。只读。可给地点筛选，或给 near=\"x,y\" 单查某个箱子群或新锚点。不填 location 时，near 用当前地图坐标；两者都不填时查所有箱子群。你来决定放在哪和往哪边扩。", 20,
+                j => () => a.StorageInfo(OptStr(j, "location"), OptStr(j, "near")),
+                P("location", "string", "地图内部名（可省略）", false),
+                P("near", "string", "箱子坐标或自选锚点，写成 x,y（可省略）", false));
+
+            Add("list_machines", "列出农场及室内机器的位置和状态，传 item 按机器名筛选。不走路，不花游戏时间。", 10,
+                j => () => a.ListMachines(OptStr(j, "item")),
+                P("item", "string", "机器名（中英文），可省略", false));
 
             Add("map_info", "查当前地图的出口（走过去就换地图）、桥（会断/要修的桥，写明修没修好）、门（店门、房门、建筑门），每条写名字、格子坐标、通向哪个地点。"
                 + "坐标和 get_state 里“你站在 (x,y)”同一套。按离你远近排，每类最多 " + MapInfo.MaxEntriesPerSection + " 条，要全部传 all=true。"
@@ -191,7 +213,7 @@ namespace BlindWhaleFarmer
                 P("force", "boolean", "时间还早、走回农场来得及时，传送图腾：农场默认不让用（图腾留到深夜赶不回去时再用）；确实要现在用才传 true", false));
 
             Add("open_shop", "在商店所在地点打开商店界面（店主要在场、在营业时间）。不传 shop_id 就自动判断：SeedShop→杂货店，Blacksmith→铁匠，ScienceHouse→木匠，FishShop→鱼店，Saloon→酒吧，"
-                + "Forest→旅行货车（周五、周日），Sewer→科罗布斯（卖星之果实等），QiNutRoom→齐钻商店，Mine→矮人，SandyHouse→桑迪，Desert→沙漠商人，Club→赌场，IslandNorth→岛上商人，VolcanoDungeon5→火山矮人。", 20,
+                + "Forest→旅行货车（周五、周日），Sewer→科罗布斯（卖星之果实等），QiNutRoom→齐钻商店，Mine→矮人，SandyHouse→桑迪，Desert→沙漠商人，Club→赌场，IslandNorth→岛上商人，VolcanoDungeon5→火山矮人。沙漠节时在 DesertFestival 直接用 open_shop 查当前能开的店，村民摊位用 DesertFestival_ 加摊主的英文内部名。", 20,
                 j => () => a.OpenShop(OptStr(j, "shop_id")),
                 P("shop_id", "string", "商店ID，可省略", false));
 
@@ -207,7 +229,7 @@ namespace BlindWhaleFarmer
                 P("all", "boolean", "true = 卖光所有同名的（不写 count 本来就是这样，写了 count 又想卖光时用）", false),
                 P("force", "boolean", "收集包、任务要交的东西（标了【留着】）也照样卖（一般不要用）", false));
 
-            Add("craft", "用已学会的配方制作物品（如 Chest 宝箱、Scarecrow 稻草人、Basic Fertilizer 肥料）。recipe 参数就是要做的物品名，中英文都行，如 Chest / 宝箱。", 20,
+            Add("craft", "用已学会的配方制作物品（如 Chest 宝箱、Scarecrow 稻草人、Basic Fertilizer 肥料）。recipe 参数就是要做的物品名，中英文都行，如 Chest / 宝箱。制作机器时会提示农场和背包里已有几台。", 20,
                 j => () => a.Craft(Str(j, "recipe"), OptInt(j, "count") ?? 1),
                 P("recipe", "string", "配方名（中英文都可以）"), P("count", "integer", "数量", false));
 
@@ -230,21 +252,37 @@ namespace BlindWhaleFarmer
                 j => () => a.ChooseProfession(Str(j, "side")),
                 P("side", "string", "left 或 right"));
 
-            Add("skip_event", "跳过当前可以跳过的剧情事件。", 20,
+            Add("skip_event", "跳过当前可以跳过的剧情事件。结果会列出可确定的剩余脚本台词，可能有分支没走到。", 20,
                 j => () => a.SkipEvent());
 
             Add("leave_festival", "离开正在参加的节日（复活节、花舞节等）。节日里时间停止、普通的移动/干活工具都不能用；离开后游戏会把你送回去（时间按游戏规则推进）。", 320,
                 j => () => a.LeaveFestival());
 
-            Add("fish", "钓鱼：自动在附近找岸边、抛竿、等咬钩、提竿并完成钓鱼小游戏，连钓多次。需要背包里有鱼竿。每次抛竿约消耗 8 体力、几十分钟游戏时间。也可以指定站立坐标和朝向。", 900,
+            Add("prepare_fishing", "从背包挑最好的鱼竿、装现有鱼饵和钓具。要采购就走到威利鱼店（FishShop）的柜台，按实际在售商品和预算，先升级鱼竿，再补鱼饵，最后给有槽的竿买一个钓具。"
+                + "联机共用钱包时会先在游戏聊天报出金额和商品；AllowSpendSharedMoney 默认关闭，玩家在聊天同意后才传 confirm=true 再调用。游戏聊天发不出去就暂缓采购。", 240,
+                j => () => a.PrepareFishing(OptInt(j, "budget"), OptBool(j, "buy_rod") ?? true,
+                    OptInt(j, "bait_count") ?? GameActions.DefaultFishingBaitCount, OptBool(j, "confirm") ?? false),
+                P("budget", "integer", "最多花多少金币；省略用当前余额，0 只配现有装备", false),
+                P("buy_rod", "boolean", "允许购买更好的鱼竿，默认 true", false),
+                P("bait_count", "integer", "鱼饵目标总数（算上已有鱼饵），0～999，默认 30", false),
+                P("confirm", "boolean", "玩家已在游戏聊天里同意这笔共用钱包采购才传 true，默认 false", false));
+
+            Add("fish", "钓鱼：自动在附近找岸边、抛竿、等咬钩、提竿并完成钓鱼小游戏，连钓多次。需要背包里有鱼竿。每次抛竿约消耗 8 体力、几十分钟游戏时间。也可以指定站立坐标和朝向。装备不齐可以先用 prepare_fishing。", 900,
                 j => () => a.Fish(OptInt(j, "casts") ?? 5, OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "direction")),
                 P("casts", "integer", "抛竿次数 1~20，默认 5", false),
                 P("x", "integer", "站立的 x（可省略，自动找）", false), P("y", "integer", "站立的 y", false),
                 P("direction", "string", "朝向 up/down/left/right（可省略）", false));
 
-            Add("care_animals", "照顾所有动物：自动走进每个鸡舍/畜棚，捡蛋和羊毛等地上的产物、清空自动采集器、给食槽放干草（用筒仓里的干草）、摸每只动物、用挤奶桶/剪刀收奶和毛，最后处理农场上在外面的动物。每天做一次（早上最好）。door=open 会打开动物门让它们出去吃草（晴天、非冬季），door=close 关门（下雨/晚上）。", 600,
+            Add("care_animals", "照顾所有动物：自动走进每个鸡舍/畜棚，捡蛋和羊毛等地上的产物、清空自动采集器、给食槽放干草（用筒仓里的干草）、摸每只动物、用挤奶桶/剪刀收奶和毛，最后处理农场上在外面的动物。每天做一次（早上最好）。door=open 会打开动物门让它们出去吃草（晴天、非冬季），door=close 关门（下雨/晚上）。干草不够时，有筒仓且农场有草就先 cut_hay，不够再去 Marnie 那里买。", 600,
                 j => () => a.CareAnimals(OptStr(j, "door")),
                 P("door", "string", "open/close，可省略（不动门）", false));
+
+            Add("cut_hay", "到主农场逐格用镰刀割草并按筒仓实际净增报干草。默认补到筒仓满，每批最多挥刀 60 格，先割近处。可用 x1,y1,x2,y2 圈一块，不给就找主农场的草。留动物门三格内的牧草、约四分之一的草和单独一格的草。没筒仓就不割。", 400,
+                j => () => a.CutHay(OptInt(j, "target"), OptInt(j, "max_tiles"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2")),
+                P("target", "integer", "想补到的干草总数，默认筒仓总容量", false),
+                P("max_tiles", "integer", "本批最多挥刀的草格数，默认 60，上限 300", false),
+                P("x1", "integer", "左上 x（四个坐标要一起给）", false), P("y1", "integer", "左上 y", false),
+                P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false));
 
             Add("gift_info","查询村民的送礼喜好（最爱/喜欢/讨厌）、生日、好感和本周送礼次数，以及背包里哪些东西他喜欢。不花游戏时间。", 10,
                 j => () => a.GiftInfo(Str(j, "npc")),
@@ -257,6 +295,11 @@ namespace BlindWhaleFarmer
 
             Add("donate_museum", "去博物馆（ArchaeologyHouse，8:00-18:00）把背包里所有还没捐过的矿物/古物捐掉，并领取捐赠奖励（种子、配方、家具等）。", 240,
                 j => () => a.DonateMuseum());
+
+            Add("museum_info", "查看博物馆捐赠进度，按矿物、文物列出还缺或已捐的藏品。只读，不用去博物馆。", 10,
+                j => () => Knowledge.MuseumInfo(OptStr(j, "section"), OptStr(j, "kind")),
+                P("section", "string", "missing=还缺（默认），donated=已捐，all=两份都列", false, new[] { "missing", "donated", "all" }, "missing"),
+                P("kind", "string", "minerals=矿物，artifacts=文物，省略则两类都列", false, new[] { "minerals", "artifacts" }));
 
             Add("bundle_info", "查看社区中心收集包：每个包还缺哪些材料、背包里有哪些能交。all=true 时也列出还没解锁的区域。", 10,
                 j => () => a.BundleInfo(OptBool(j, "all") ?? false),
@@ -278,14 +321,15 @@ namespace BlindWhaleFarmer
                 P("radius", "integer", "多远以内的怪（格），默认 12", false),
                 P("min_health_percent", "integer", "生命低于百分之多少就吃东西，默认 40", false));
 
-            Add("explore_mine", "自动下矿洞：打附近的怪、用镐敲石头找楼梯、下楼，下够 levels 层或体力/生命/时间不够时停下。在矿洞外会先去矿洞入口；start_level 可用电梯直达（5 的倍数且到过）。出发前带上武器、镐子和回血食物。where=skull 去沙漠的骷髅洞穴（要有骷髅钥匙，会自己坐巴士过去；没有电梯，每次从第 1 层开始；遇到竖井、血量充足就跳，一次连降几层）。背包里有炸弹时，碰到一片值得炸的石头（罩住 2 个以上矿石/宝石，或 8 块以上石头；体力不到三成时 3 块就炸）会自己炸，炸完把掉的东西捡回来；骷髅洞穴里留 2 颗对付木乃伊。", 900,
-                j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level"), OptStr(j, "where"), OptInt(j, "bombs")),
+            Add("explore_mine", "自动下矿洞：打附近的怪、用镐敲石头找楼梯、下楼，下够 levels 层或体力/生命/时间不够时停下。在矿洞外会先去矿洞入口；start_level 可用电梯直达（5 的倍数且到过）。出发前带上武器、镐子和回血食物。where=skull 去沙漠的骷髅洞穴（要有骷髅钥匙，会自己坐巴士过去；没有电梯，每次从第 1 层开始；遇到竖井、血量充足就跳，一次连降几层）。背包里有炸弹时，碰到一片值得炸的石头（罩住 2 个以上矿石/宝石，或 8 块以上石头；体力不到三成时 3 块就炸）会自己炸，炸完把掉的东西捡回来；骷髅洞穴里留 2 颗对付木乃伊。goal 会调整顺手挖矿和炸点偏好，炸矿门槛按节点总分折算（约等于两个常见矿点）；descent 先找楼梯，按石头数量决定要不要炸。", 900,
+                j => () => a.ExploreMine(OptInt(j, "levels") ?? 3, OptInt(j, "start_level"), OptStr(j, "where"), OptInt(j, "bombs"), OptStr(j, "goal")),
                 P("levels", "integer", "这次往下走几层（1~20），默认 3", false),
-                P("start_level", "integer", "从哪层开始（电梯层，可省略；骷髅洞穴没有电梯）", false),
-                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴，volcano=姜岛火山（往上走 0~9 层到火山口：自己敲石头、用水壶浇冷挡路的岩浆、踩机关开关开门；levels 最多 10；第 0 层入口和第 5 层能给水壶灌水）。人已经在沙漠/骷髅洞穴入口时默认 skull，在火山里或岛北时默认 volcano", false),
-                P("bombs", "integer", "这次最多用几颗炸弹炸石头（默认 5，0=不用炸弹；炸木乃伊不算在内）", false));
+                P("start_level", "integer", "从哪层开始（电梯层，5 的倍数且到过；不传就坐电梯到你到过的最深电梯层，没解锁电梯则从第 1 层；想从头挖传 1；骷髅洞穴没有电梯，总是从第 1 层开始）", false),
+                P("where", "string", "mine=普通矿洞（默认），skull=骷髅洞穴（也认 skullcavern、skull cavern、desert、沙漠、骷髅洞），volcano=姜岛火山（往上走 0~9 层到火山口：自己敲石头、用水壶浇冷挡路的岩浆、踩机关开关开门；levels 最多 10；第 0 层入口和第 5 层能给水壶灌水）。人已经在沙漠/骷髅洞穴入口时默认 skull，在火山里或岛北时默认 volcano", false),
+                P("bombs", "integer", "这次最多用几颗炸弹炸石头（默认 5，0=不用炸弹；炸木乃伊不算在内）", false),
+                P("goal", "string", "balanced=均衡（默认）；descent=优先下楼，只挖顺路的高分矿；ore=找金属矿（铱>金>铁>铜）；coal=找煤矿和容易掉煤的石头；gems=找宝石和晶球", false));
 
-            Add("use_bomb", "放炸弹：走到那格旁边放下，马上跑出爆炸范围，等它炸完再返回。不传坐标就自动挑：附近有倒地的木乃伊就炸它们（木乃伊倒地时只有炸弹能炸死），没有就找身边矿石、宝石节点最多（其次石头最多）的地方，炸完把掉出来的矿石宝石捡回来。爆炸范围是以炸弹为中心的正方形：樱桃炸弹半径 3、炸弹 5、超级炸弹 7；来不及跑出范围的位置不会放。fight 和 explore_mine 只剩倒地的木乃伊时也会自己用；explore_mine 碰到一片值得炸的石头也会自己炸。", 60,
+            Add("use_bomb", "放炸弹：走到那格旁边放下，马上跑出爆炸范围，等它炸完再返回。不传坐标就自动挑：附近有倒地的木乃伊就炸它们（木乃伊倒地时只有炸弹能炸死），没有就按均衡模式的矿点评分和石头数量挑身边的炸点，炸完把掉出来的矿石宝石捡回来。爆炸范围是以炸弹为中心的正方形：樱桃炸弹半径 3、炸弹 5、超级炸弹 7；来不及跑出范围的位置不会放。fight 和 explore_mine 只剩倒地的木乃伊时也会自己用；explore_mine 碰到一片值得炸的石头也会自己炸。", 60,
                 j => () => a.UseBomb(OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "kind")),
                 P("x", "integer", "炸弹放在哪格 x（可省略，自动挑）", false), P("y", "integer", "y", false),
                 P("kind", "string", "cherry（樱桃炸弹）/ bomb（炸弹）/ mega（超级炸弹），可省略=自动挑（小炸弹优先，大炸弹罩住的矿多得多时才用）", false));
@@ -377,7 +421,7 @@ namespace BlindWhaleFarmer
             Add("upgrade_house", "找 Robin 升级农舍：第一次 10000g+450木材，升级后有厨房（可以 cook）和冰箱。", 240,
                 j => () => a.UpgradeHouse());
 
-            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。18:00 前睡会被拦一下，提醒你一天还长（浇完水就睡等于白白浪费一天）；确实要睡传 force=true。", 420,
+            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。18:00 前睡会被拦一下，提醒你一天还长（浇完水就睡等于白白浪费一天）；确实要睡传 force=true。联机时如果设置了 AiHomeLocation，会优先走到那栋房子的床上。", 420,
                 j => () => a.Sleep(OptBool(j, "force") ?? false),
                 P("force", "boolean", "18:00 前想睡也要传 true（确认今天真的没别的事可做、或者想跳过今天）", false));
 
@@ -386,7 +430,7 @@ namespace BlindWhaleFarmer
                 P("minutes", "integer", "等多少游戏分钟（10~120），和 until 二选一", false),
                 P("until", "string", "等到几点，比如 18:00（凌晨写 25:00）", false));
 
-            Add("say", "联机时在游戏聊天里说一句话，其他玩家能看到。只有联机时能用，而且玩家要在设置里打开“允许 AI 聊天”（默认关，关着时这个工具会直接拒绝）。", 10,
+            Add("say", "联机时在游戏聊天里说一句话，其他玩家能看到。只有联机时能用，而且玩家要在设置里打开“允许 AI 聊天”（默认开，玩家关掉后这个工具会直接拒绝）。", 10,
                 j => () => a.Say(Str(j, "text")),
                 P("text", "string", "要说的话（300 字以内）"));
 
@@ -426,7 +470,8 @@ namespace BlindWhaleFarmer
                 new[] { P("minutes", "integer", "现实分钟数：半小时 30，一小时 60；不按现实时间就传 0", false), P("days", "integer", "游戏日数：玩 4 天传 4，一周 7；不按游戏日就传 0", false) }));
         }
 
-        private static Param P(string name, string type, string desc, bool required = true) => new(name, type, desc, required);
+        private static Param P(string name, string type, string desc, bool required = true, string[] choices = null, string defaultValue = null) =>
+            new(name, type, desc, required, choices, defaultValue);
 
         private void Add(string name, string desc, int maxSeconds, Func<JsonObject, Func<IEnumerable<object>>> make, params Param[] ps)
         {
@@ -455,7 +500,12 @@ namespace BlindWhaleFarmer
             var required = new JsonArray();
             foreach (var p in ps)
             {
-                props[p.Name] = new JsonObject { ["type"] = p.Type, ["description"] = p.Desc };
+                var prop = new JsonObject { ["type"] = p.Type, ["description"] = p.Desc };
+                if (p.Choices != null)
+                    prop["enum"] = new JsonArray(p.Choices.Select(choice => (JsonNode)JsonValue.Create(choice)).ToArray());
+                if (p.Default != null)
+                    prop["default"] = p.Default;
+                props[p.Name] = prop;
                 if (p.Required)
                     required.Add(p.Name);
             }
@@ -479,7 +529,7 @@ namespace BlindWhaleFarmer
         public bool IsKnown(string name) => name is "update_notes" or "cancel_action" or "play_for" || specs.ContainsKey(name);
 
         /// <summary>只查信息、马上出结果的工具：内置 AI 在跑的时候 MCP 也能用（不占动作队列，不会打断它）。</summary>
-        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests", "map_info" };
+        public static readonly HashSet<string> ReadOnlyTools = new() { "gift_info", "bundle_info", "list_chests", "list_machines", "map_info", "museum_info", "storage_info" };
 
         /// <summary>在主线程上直接跑一个只读工具，取它的第一个结果；不经过动作队列。</summary>
         public string Peek(string name, string arguments)
@@ -510,14 +560,15 @@ namespace BlindWhaleFarmer
 
         public async Task<string> Execute(string name, string arguments)
         {
-            string result = await ExecuteCore(name, arguments).ConfigureAwait(false);
+            string inventoryNote = null;
+            string result = await ExecuteCore(name, arguments, note => inventoryNote = note).ConfigureAwait(false);
             // 玩家说了“玩半小时”：每个动作后面写还剩几分钟，免得 AI 做完一件事就停下汇报
             if (Session != null && name is not ("play_for" or "update_notes" or "reserve_items") && Session.GoalReminder() is string goal)
                 result += "\n" + goal;
-            return result;
+            return inventoryNote == null ? result : result + "\n这次拿到了：" + inventoryNote;
         }
 
-        private async Task<string> ExecuteCore(string name, string arguments)
+        private async Task<string> ExecuteCore(string name, string arguments, Action<string> reportInventory)
         {
             JsonObject args;
             string jsonFixed = null;
@@ -555,6 +606,10 @@ namespace BlindWhaleFarmer
                 return Session.SetGoal(minutes ?? 0, days ?? 0);
             }
 
+            if (name is "list_machines" or "museum_info")
+                return await main.Invoke(() => StardewModdingAPI.Context.IsWorldReady
+                    ? Peek(name, arguments) : "失败：游戏世界未就绪").ConfigureAwait(false);
+
             if (!specs.TryGetValue(name, out var spec))
                 return $"失败：没有叫 {name} 的工具";
 
@@ -591,7 +646,28 @@ namespace BlindWhaleFarmer
             bool interruptOnDamage = !CombatTools.Contains(name) && !InterfaceTools.Contains(name);
             // 本来就在剧情里用的（对话、跳过、关界面）、本来就要进剧情的（节日、睡觉时的夜间事件和婚礼）以外，途中冒出剧情就停下
             bool stopOnScene = !InterfaceTools.Contains(name) && name is not ("festival" or "sleep");
-            string result = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name, !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name), stopOnScene).ConfigureAwait(false);
+            // 开田预览只读现场，跳过自动换装、领奖等动作后处理。
+            bool fieldPreview = name == "prepare_field" && (OptStr(args, "mode") ?? "preview") == "preview";
+            bool trackInventory = !ReadOnlyTools.Contains(name) && !fieldPreview;
+            string equipped = null, claimed = null;
+            Action afterAction = null;
+            if (trackInventory && name != "sleep")
+            {
+                afterAction = () =>
+                {
+                    // 自动换装会把旧装备放回背包，所以和动作一起结算。
+                    equipped = GameActions.AutoEquip();
+                    // 已完成的任务要在日志里点一下才发金币，这里替 AI 领。
+                    claimed = GameActions.ClaimQuestRewards();
+                };
+            }
+            var completed = await main.RunAction(factory, spec.MaxSeconds, InterfaceTools.Contains(name), interruptOnDamage, name,
+                !InterfaceTools.Contains(name) && !NoChatInterrupt.Contains(name), stopOnScene, trackInventory, afterAction).ConfigureAwait(false);
+            reportInventory(completed.InventoryNote);
+            string result = completed.Message;
+            if (name == "prepare_field" && !fieldPreview && result.StartsWith("失败") && !result.Contains("plan_id=")
+                && MainThread.Progress is string fieldStep && fieldStep.StartsWith("plan "))
+                result += "\n开田停在：" + fieldStep;
             if (name == "sleep")
             {
                 // 睡前顺手收纳了战利品就说一声
@@ -600,8 +676,7 @@ namespace BlindWhaleFarmer
                 return slept == null ? result : result + "\n" + slept;
             }
             result = WithBagFullAdvice(name, result, out bool bagFullNoted);
-            // 拿到更好的鞋子、戒指就自动换上（宝箱、商店、任务奖励都可能给）；
-            // 身边有怪、深夜、体力见底的提醒也接在动作结果后面：MCP 客户端不一定每步都看 get_state
+            // 身边有怪、深夜、体力见底的提醒接在动作结果后面：MCP 客户端不一定每步都看 get_state
             string warning = null;
             try
             {
@@ -609,15 +684,12 @@ namespace BlindWhaleFarmer
                 if (StardewModdingAPI.Context.IsWorldReady)
                     warning = await main.Invoke(() =>
                     {
-                        var equipped = GameActions.AutoEquip();
                         // 动作把人带到了别的地图（比如在海边 ship_items，会走回农场的出货箱）：明说现在在哪，免得 AI 以为还在原地
                         string locNow = StardewValley.Game1.currentLocation?.NameOrUniqueName;
                         string moved = locBefore != null && locNow != null && locNow != locBefore && name != "travel_to"
                             && StardewValley.Game1.currentLocation is not StardewValley.Locations.MineShaft
                             ? $"📍 这个动作把你从 {locBefore} 带到了 {locNow}，你现在在 {locNow}。接下来的动作都在这里进行；要回 {locBefore} 接着干就用 travel_to"
                             : null;
-                        // 做完的任务，金币奖励要在日志里点一下才到手；AI 没有翻日志的工具，这里替它领
-                        var claimed = GameActions.ClaimQuestRewards();
                         // 这次结果里有新的话就先不催，等下一步
                         string chat = GameActions.TakeChat();
                         string replyReminder = chat == null && name != "get_guide" ? GameActions.TakeReplyReminder() : null;

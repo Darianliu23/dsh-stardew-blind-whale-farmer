@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using StardewValley;
 using StardewValley.Locations;
 using StardewValley.Menus;
@@ -343,6 +344,80 @@ namespace BlindWhaleFarmer
                     list.Add(item);
             }
             return list;
+        }
+
+        internal sealed record MuseumPiece(string Name, bool Mineral, bool Donated);
+
+        /// <summary>按游戏的捐赠规则取完整清单，用展台上的物品 ID 标记已捐。</summary>
+        public static List<MuseumPiece> MuseumCollection()
+        {
+            if (Museum is not { } museum)
+                return null;
+
+            var donated = museum.museumPieces.Values
+                .Select(id => ItemRegistry.ManuallyQualifyItemId(id, "(O)"))
+                .ToHashSet(StringComparer.Ordinal);
+            var pieces = new List<MuseumPiece>();
+            foreach (string id in ItemRegistry.RequireTypeDefinition("(O)").GetAllIds())
+            {
+                string qualifiedId = "(O)" + id;
+                if (!LibraryMuseum.IsItemSuitableForDonation(qualifiedId, checkDonatedItems: false))
+                    continue;
+                var data = ItemRegistry.GetDataOrErrorItem(qualifiedId);
+                bool mineral = data.ObjectType == "Minerals" || data.Category is SObject.GemCategory or SObject.mineralsCategory;
+                string name = data.DisplayName;
+                pieces.Add(new MuseumPiece(name, mineral, donated.Contains(qualifiedId)));
+            }
+            return pieces;
+        }
+
+        public static IEnumerable<object> MuseumInfo(string section, string kind)
+        {
+            section = section?.Trim().ToLowerInvariant() ?? "missing";
+            kind = kind?.Trim().ToLowerInvariant();
+            if (section is not ("missing" or "donated" or "all"))
+                yield return ActionResult.Fail("section 要传 missing（还缺）、donated（已捐）或 all（全部）");
+            else if (kind is not (null or "minerals" or "artifacts"))
+                yield return ActionResult.Fail("kind 要传 minerals（矿物）或 artifacts（文物），也可以省略");
+            else if (MuseumCollection() is not { } pieces)
+                yield return ActionResult.Fail("找不到博物馆");
+            else
+                yield return ActionResult.Success(MuseumCollectionText(pieces, section, kind));
+        }
+
+        internal static string MuseumCollectionText(List<MuseumPiece> pieces, string section, string kind)
+        {
+            var sb = new StringBuilder($"博物馆已捐 {pieces.Count(p => p.Donated)}/{pieces.Count} 件");
+            if (kind != "artifacts")
+                AppendKind("矿物", mineral: true);
+            if (kind != "minerals")
+                AppendKind("文物", mineral: false);
+            return sb.ToString();
+
+            void AppendKind(string label, bool mineral)
+            {
+                var items = pieces.Where(p => p.Mineral == mineral).ToList();
+                int donated = items.Count(p => p.Donated);
+                sb.Append($"\n{label}：已捐 {donated} 件，还缺 {items.Count - donated} 件");
+                if (section is "missing" or "all")
+                {
+                    AppendNames("还缺", donated: false);
+                    if (donated < items.Count)
+                        sb.Append(mineral ? "\n  部分矿物可以用 crack_geodes 开晶球获得。" : "\n  部分文物可以用锄头挖远古斑点获得。");
+                }
+                if (section is "donated" or "all")
+                    AppendNames("已捐", donated: true);
+
+                void AppendNames(string status, bool donated)
+                {
+                    var names = items.Where(p => p.Donated == donated).Select(p => p.Name)
+                        .OrderBy(name => name, StringComparer.Ordinal).ToArray();
+                    if (names.Length == 0)
+                        sb.Append($"\n  {status}：无");
+                    foreach (var line in names.Chunk(12))
+                        sb.Append($"\n  {status}：{string.Join("、", line)}");
+                }
+            }
         }
     }
 }

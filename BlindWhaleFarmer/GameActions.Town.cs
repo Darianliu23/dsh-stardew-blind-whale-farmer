@@ -248,12 +248,18 @@ namespace BlindWhaleFarmer
                     menu.heldItem = geode;
                     var spot = menu.geodeSpot.bounds.Center;
                     menu.receiveLeftClick(spot.X, spot.Y);
+                    // 第一颗金椰子（(O)791）要先向主机申请锁，砸开是在回调里才开始的（GeodeMenu.waitingForServerResponse）：
+                    // 这期间 heldItem 必须留在手上，不然回调执行时手里是空的，一直卡在铁匠铺
+                    for (int w = 0; w < 600 && menu.waitingForServerResponse; w++)
+                        yield return null;
                     bool started = menu.geodeAnimationTimer > 0;
                     Player.Items[slot] = menu.heldItem;
                     menu.heldItem = null;
                     if (!started)
                     {
-                        stop = "背包满了，开出来的东西没地方放，先空出一格";
+                        stop = menu.waitingForServerResponse ? "等主机回应（金椰子要先申请锁）等了 10 秒没等到，稍后再试"
+                            : Player.freeSpotsInInventory() <= 0 ? "背包满了，开出来的东西没地方放，先空出一格"
+                            : "晶球没能开始砸（游戏没响应），稍后再试";
                         break;
                     }
                     cost += 25;
@@ -522,7 +528,7 @@ namespace BlindWhaleFarmer
             var q = Game1.questOfTheDay;
             if (q == null || q.accepted.Value || !Game1.CanAcceptDailyQuest())
                 return null;
-            return $"镇上告示板（Town，皮埃尔杂货店门口）今天有委托任务：{q.GetName()}（用 quest_board 查看/接受）";
+            return $"镇上告示板（Town，皮埃尔杂货店门口）今天有委托任务：{q.GetName()}{QuestLabels(timed: false, daysLeft: 0, repeatable: true)}（用 quest_board 查看/接受）";
         }
 
         /// <summary>农场山洞（果蝠掉的水果 / 蘑菇箱）有东西可收时的提示。没有返回 null。</summary>
@@ -576,16 +582,22 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Success("告示板今天没有委托任务");
                 yield break;
             }
-            string desc = $"委托：{q.GetName()}\n{q.GetDescription()}\n目标：{string.Join("；", q.GetObjectiveDescriptions() ?? new List<string>())}" +
+            string name = q.GetName();
+            string details = $"\n{q.GetDescription()}\n目标：{string.Join("；", q.GetObjectiveDescriptions() ?? new List<string>())}" +
                 (q.GetMoneyReward() > 0 ? $"\n报酬：{q.GetMoneyReward()}g" : "");
+            string DescribeQuest()
+            {
+                string labels = QuestLabels(q.accepted.Value && !q.completed.Value && q.IsTimedQuest(), q.GetDaysLeft(), repeatable: true);
+                return $"委托：{name}{labels}{details}";
+            }
             if (q.accepted.Value || !Game1.CanAcceptDailyQuest())
             {
-                yield return ActionResult.Success("今天的委托已经接过了。\n" + desc);
+                yield return ActionResult.Success("今天的委托已经接过了。\n" + DescribeQuest());
                 yield break;
             }
             if (!accept)
             {
-                yield return ActionResult.Success(desc + "\n（要接受就用 quest_board accept=true）");
+                yield return ActionResult.Success(DescribeQuest() + "\n（要接受就用 quest_board accept=true）");
                 yield break;
             }
             // 与告示板界面点“接受任务”按钮的逻辑一致
@@ -597,7 +609,7 @@ namespace BlindWhaleFarmer
             Player.questLog.Add(q);
             Player.acceptedDailyQuest.Set(newValue: true);
             Game1.playSound("newArtifact");
-            yield return ActionResult.Success("接受了委托（2 天内完成）。\n" + desc);
+            yield return ActionResult.Success("接受了委托（2 天内完成）。\n" + DescribeQuest());
         }
 
         // ───────────────────────── 买动物 ─────────────────────────

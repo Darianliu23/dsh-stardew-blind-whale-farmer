@@ -79,9 +79,10 @@ namespace BlindWhaleFarmer
         /// 下火山：打附近的怪、开宝箱、捡东西，找路去这一层的出口（路上的石头敲掉、岩浆用水壶浇冷），
         /// 出口被机关门挡着就先去踩开关。下够 levels 层、到了火山口、或者体力/生命/时间不够时停下。
         /// </summary>
-        public IEnumerable<object> ExploreVolcano(int levels, int? maxBombs)
+        private IEnumerable<object> ExploreVolcano(int levels, int? maxBombs, MineGoal goal)
         {
             var o = new Outcome();
+            var minedNodes = new MineNodeTally();
             string clutter = TripClutterHint("mine", i => i is WateringCan); // 火山里水壶要用来浇岩浆
             if (Loc is not VolcanoDungeon && Loc is not Caldera)
             {
@@ -103,7 +104,7 @@ namespace BlindWhaleFarmer
             }
             if (Loc is Caldera)
             {
-                yield return ActionResult.Success("已经在火山口了（最顶上，有锻造台；回去用 travel_to）");
+                yield return ActionResult.Success("已经在火山口了（最顶上，有锻造台；回去用 travel_to）" + minedNodes.Summary(goal));
                 yield break;
             }
             int pick = Util.FindTool<Pickaxe>();
@@ -115,7 +116,7 @@ namespace BlindWhaleFarmer
 
             levels = Math.Clamp(levels, 1, 10);
             var startLoc = Loc;
-            int descended = 0, rocks = 0, switchesPressed = 0, lavaCooled = 0;
+            int descended = 0, switchesPressed = 0, lavaCooled = 0;
             var st = new FightStats();
             var loot = new List<string>();
             var chestNotes = new List<string>();
@@ -128,7 +129,6 @@ namespace BlindWhaleFarmer
             int bombBudget = Math.Clamp(maxBombs ?? 5, 0, 50), blastBombs = 0, blastStones = 0, blastOres = 0;
             var skippedBlasts = new HashSet<Point>();
             var skippedNodes = new HashSet<(VolcanoDungeon, Point)>();
-            int oreNodes = 0;
             var blastNotes = new List<string>();
             string stop = null;
             VolcanoDungeon refilledOn = null;
@@ -136,7 +136,8 @@ namespace BlindWhaleFarmer
 
             while (descended < levels && guard++ < 300)
             {
-                MainThread.Progress = $"{VolcanoLevelName(Loc)}，这次已上 {descended}/{levels} 层，敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+                minedNodes.Observe(Loc as VolcanoDungeon);
+                MainThread.Progress = $"{VolcanoLevelName(Loc)}，这次已上 {descended}/{levels} 层，敲了 {minedNodes.Rocks} 块石头，打倒 {st.Kills} 只怪，生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
                 if (Game1.isWarping || Game1.fadeToBlack || Game1.globalFade)
                 {
                     foreach (var s in WaitSceneSettled())
@@ -212,8 +213,11 @@ namespace BlindWhaleFarmer
                     continue;
                 }
 
-                // 3) 顺手捡附近地上的东西、劈木箱
-                if (NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
+                var exits = VolcanoExits(vd);
+                var exitRoute = Pathfinder.FindPath(vd, Player.TilePoint, exits, 8000);
+                // 有通路才顺手捡附近的东西、劈木箱；赶楼层时直接找出口。
+                if (exitRoute != null && goal != MineGoal.Descent && NearestThreat(3) == null
+                    && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
                     && MineExtras(vd, skippedExtras).FirstOrDefault() is var extra && extra.obj != null)
                 {
                     bool box = extra.obj is StardewValley.Objects.BreakableContainer;
@@ -237,17 +241,18 @@ namespace BlindWhaleFarmer
                     continue;
                 }
 
-                // 4) 有炸弹、附近一片值得炸的石头：炸一颗（和下矿一样的条件）
-                if (blastBombs < bombBudget && NearestThreat(4) == null && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
+                // 路通了才顺手炸矿；要赶层或要清路时先走出口或踩开关。
+                if (exitRoute != null && goal != MineGoal.Descent && blastBombs < bombBudget
+                    && NearestThreat(4) == null && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
                 {
                     var bombs = BombsInBag();
                     if (bombs.Count > 0)
                     {
                         bool tired = Player.Stamina < Player.MaxStamina * 0.3f;
-                        var spot = BestBlastSpot(vd, bombs, 8, skippedBlasts);
-                        if (spot.Found && (spot.Ores >= 2 || spot.Stones >= 8 || (tired && spot.Stones >= 3)))
+                        var spot = BestBlastSpot(vd, bombs, 8, tired ? 3 : 8, goal, skippedBlasts);
+                        if (spot.Found)
                         {
-                            foreach (var s in BlastStones(spot, o, blastNotes, (b, n) => { blastStones += b; blastOres += n; rocks += b; }))
+                            foreach (var s in BlastStones(spot, o, blastNotes, (b, n) => { blastStones += b; blastOres += n; }))
                                 yield return s;
                             if (o.Ok)
                                 blastBombs++;
@@ -259,17 +264,14 @@ namespace BlindWhaleFarmer
                     }
                 }
 
-                // 4.5) 附近值钱的矿石/宝石节点顺手敲掉（和下矿时楼梯边的矿一样：不远、体力还够、身边没怪才敲）
-                if (Player.Stamina >= Player.MaxStamina * 0.2f && NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
-                    && vd.objects.Pairs
-                        .Where(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId))
-                        .Select(kv => new Point((int)kv.Key.X, (int)kv.Key.Y))
-                        .Where(p => !skippedNodes.Contains((vd, p)) && Util.Manhattan(p, Player.TilePoint) <= MineExtraRange + 2)
-                        .OrderBy(p => Util.Manhattan(p, Player.TilePoint))
-                        .Select(p => (Point?)p).FirstOrDefault() is Point node)
+                // 出口路边的矿按评分挑，体力还够、身边没怪才敲。
+                var nearExit = exitRoute != null && Player.Stamina >= Player.MaxStamina * 0.2f
+                    && NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
+                    ? MineNodeNearExit(vd, goal, exitRoute, ScoredMineStones(vd, goal).Where(t => !skippedNodes.Contains((vd, t.pt)))) : null;
+                if (nearExit is { } near)
                 {
-                    foreach (var s in GoAdjacent(node, o))
-                        yield return s;
+                    var node = near.tile;
+                    foreach (var s in GoAdjacent(node, o, near.stand))
                     if (!o.Ok)
                     {
                         o.Succeed();
@@ -288,33 +290,26 @@ namespace BlindWhaleFarmer
                         if (!o.Ok)
                             break;
                     }
-                    if (!vd.objects.ContainsKey(new Vector2(node.X, node.Y)))
-                    {
-                        rocks++;
-                        oreNodes++;
-                    }
-                    else if (Player.health >= hpBefore && NearestThreat(2) == null)
+                    if (vd.objects.TryGetValue(new Vector2(node.X, node.Y), out var remaining) && remaining.IsBreakableStone()
+                        && Player.health >= hpBefore && NearestThreat(2) == null)
                         skippedNodes.Add((vd, node)); // 敲了 8 下还在（镐子太差之类），别再来
                     o.Succeed();
                     continue;
                 }
 
                 // 5) 去出口：路上的石头、杂物敲掉，岩浆浇冷（GoToAnyClearing 每清一格重新找路）
-                var exits = VolcanoExits(vd);
                 if (exits.Count == 0)
                 {
                     stop = $"{VolcanoLevelName(vd)}没找到出口";
                     break;
                 }
                 int lavaBefore = vd.cooledLavaTiles.Count();
-                int stonesBefore = vd.objects.Values.Count(x => x.IsBreakableStone());
-                var path = Pathfinder.FindPath(vd, Player.TilePoint, exits, 30000, clearable: ClearableObstacle, clearCost: 6);
+                var path = exitRoute ?? Pathfinder.FindPath(vd, Player.TilePoint, exits, 30000, clearable: ClearableObstacle, clearCost: 6);
                 if (path != null)
                 {
                     foreach (var s in GoToAnyClearing(exits, o, "这一层的出口"))
                         yield return s;
                     lavaCooled += Math.Max(0, vd.cooledLavaTiles.Count() - lavaBefore);
-                    rocks += Math.Max(0, stonesBefore - vd.objects.Values.Count(x => x.IsBreakableStone()));
                     // 站上出口格：游戏只在人自己走动碰到传送点时才传送（我们是直接挪的坐标），所以和 travel_to 一样手动传送，
                     // 目标坐标照抄地图上的传送点（到下一层后游戏按 y=1 把人放到入口）
                     if (o.Ok && Loc == vd && exits.Contains(Player.TilePoint) && !Game1.isWarping && Game1.locationRequest == null)
@@ -383,7 +378,9 @@ namespace BlindWhaleFarmer
                 break;
             }
 
-            string msg = $"从{VolcanoLevelName(startLoc)}到了{VolcanoLevelName(Loc)}（上了 {descended} 层），敲了 {rocks} 块石头" + (oreNodes > 0 ? $"（其中顺手挖的矿石/宝石节点 {oreNodes} 个）" : "") + $"，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            string nodeSummary = minedNodes.Summary(goal);
+            string msg = $"从{VolcanoLevelName(startLoc)}到了{VolcanoLevelName(Loc)}（上了 {descended} 层），敲了 {minedNodes.Rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            msg += nodeSummary;
             if (lavaCooled > 0)
                 msg += $"；浇冷了 {lavaCooled} 格岩浆";
             if (switchesPressed > 0)
@@ -408,7 +405,7 @@ namespace BlindWhaleFarmer
                 msg += "；停下原因：" + stop;
             if (clutter != null)
                 msg += "。" + clutter;
-            yield return descended > 0 || rocks > 0 || st.Kills > 0 || loot.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
+            yield return descended > 0 || minedNodes.Rocks > 0 || st.Kills > 0 || loot.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
         }
     }
 }

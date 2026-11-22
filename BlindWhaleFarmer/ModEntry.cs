@@ -59,8 +59,10 @@ namespace BlindWhaleFarmer
             GameActions.ForageRadius = Math.Clamp(Config.ForageRadius, 0, 10);
             GameActions.ReservedItems = Config.ReservedItems ?? "";
             MainThread = new MainThread(Monitor);
-            Observer = new Observer(Config, helper.Reflection);
+            Observer = new Observer(Config, helper.Reflection, MainThread);
             Actions = new GameActions(helper.Reflection, Observer);
+            Actions.WriteFieldBook = book => Helper.Data.WriteJsonFile(FieldBookFile, book);
+            Observer.FieldSummary = Actions.FieldSummary;
             Agent = new Agent(this);
             Session = new PlaySession(Config);
             Tools = new Tools(MainThread, Actions, notes => Agent.UpdateNotes(notes)) { Session = Session };
@@ -72,6 +74,8 @@ namespace BlindWhaleFarmer
             chatInput = new ChatInput(Monitor);
             GameActions.Mode = GameActions.NormalizeMode(Config.CompanionMode);
             GameActions.AllowChat = Config.AllowChat;
+            GameActions.AllowSpendSharedMoney = Config.AllowSpendSharedMoney;
+            GameActions.AiHomeLocation = Config.AiHomeLocation;
             GameActions.ModeChanged = mode =>
             {
                 Config.CompanionMode = mode;
@@ -85,7 +89,13 @@ namespace BlindWhaleFarmer
                 Exits.ClearCache();
                 Session.OnDayStarted();
             };
-            helper.Events.GameLoop.ReturnedToTitle += (_, _) => Agent.Stop("回到了标题画面");
+            helper.Events.GameLoop.ReturnedToTitle += (_, _) =>
+            {
+                MainThread.ResetInventory();
+                Observer.ResetScreenHistory();
+                Actions.LoadFields(null);
+                Agent.Stop("回到了标题画面");
+            };
             helper.Events.GameLoop.GameLaunched += (_, _) => RestorePauseOptionIfNeeded();
             helper.Events.GameLoop.Saved += (_, _) => OnSavedPauseOption();
             helper.Events.Input.ButtonPressed += OnButtonPressed;
@@ -151,9 +161,20 @@ namespace BlindWhaleFarmer
 
         private void OnSaveLoaded(object sender, SaveLoadedEventArgs e)
         {
+            MainThread.ResetInventory(worldReady: true);
+            Observer.ResetScreenHistory();
             var data = Helper.Data.ReadJsonFile<SaveData>(NotesFile) ?? new SaveData();
             Agent.Notes = data.Notes ?? "";
             GameActions.LoadSaveReserved(data.Reserved);
+            Actions.LoadFields(null);
+            try
+            {
+                Actions.LoadFields(Helper.Data.ReadJsonFile<GameActions.FieldBook>(FieldBookFile) ?? new GameActions.FieldBook());
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log("开田待办读取失败：" + ex.Message, LogLevel.Error);
+            }
             Agent.ClearLog();
             Exits.ClearCache();
             // 每次读档算新的一次游玩，时长重新计
@@ -182,6 +203,10 @@ namespace BlindWhaleFarmer
                 GameActions.ForageRadius = Config.ForageRadius = Math.Clamp(fr.GetValue<int>(), 0, 10);
             if (s["allowChat"] is { } chat)
                 GameActions.AllowChat = Config.AllowChat = chat.GetValue<bool>();
+            if (s["allowSpendSharedMoney"] is { } sharedMoney)
+                GameActions.AllowSpendSharedMoney = Config.AllowSpendSharedMoney = sharedMoney.GetValue<bool>();
+            if (s["aiHomeLocation"] is { } home)
+                GameActions.AiHomeLocation = Config.AiHomeLocation = home.GetValue<string>().Trim();
             if (s["companionMode"] is { } mode)
             {
                 string newMode = GameActions.NormalizeMode(mode.GetValue<string>());
@@ -216,6 +241,8 @@ namespace BlindWhaleFarmer
                 + $"{(Config.SessionMinutes > 0 ? Config.SessionMinutes + " 分钟" : "不限时长")}，思考时冻结时间={Config.McpFreezeTime}"
                 + (guideLog != null ? "；" + guideLog : "");
         }
+
+        private string FieldBookFile => Path.Combine("data", "field-plans", Constants.SaveFolderName + "-" + Game1.uniqueIDForThisGame + ".json");
 
         private string NotesFile => Path.Combine("data", Constants.SaveFolderName + ".json");
 
@@ -349,6 +376,8 @@ namespace BlindWhaleFarmer
                     GameActions.AnnounceMode("玩家在 DSH 设置里");
             }
 
+            if (ready)
+                Observer.SampleScreen();
             MainThread.Tick(ready);
             if (ready)
             {
@@ -540,6 +569,19 @@ namespace BlindWhaleFarmer
             float lineH = font.LineSpacing;
             int height = (int)(lines.Count * lineH) + 20;
             int x = 8, y = 8;
+            // 矿洞/火山地牢的层数画在左上角（titleSafeArea.Left+16, Top+16，字高 SpriteText.getHeightOfString），HUD 往下让开，别盖住它
+            try
+            {
+                if (Game1.currentLocation is StardewValley.Locations.MineShaft || Game1.currentLocation is StardewValley.Locations.VolcanoDungeon)
+                {
+                    var safe = StardewValley.Extensions.FrameworkExtensions.GetTitleSafeArea(Game1.game1.GraphicsDevice.Viewport);
+                    y = Math.Max(y, safe.Top + 16 + StardewValley.BellsAndWhistles.SpriteText.getHeightOfString("0") + 12);
+                }
+            }
+            catch
+            {
+                // 取不到就保持原位
+            }
             IClickableMenu.drawTextureBox(b, Game1.menuTexture, new Rectangle(0, 256, 60, 60), x, y, width, height, Color.White * 0.85f, 1f, false);
             float cy = y + 10;
             foreach (var line in lines)

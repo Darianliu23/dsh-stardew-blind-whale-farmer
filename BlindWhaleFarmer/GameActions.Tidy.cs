@@ -13,31 +13,58 @@ namespace BlindWhaleFarmer
     {
         // ───────────────────────── 整理背包 ─────────────────────────
 
-        /// <summary>
-        /// 整理背包时要留在身上的：每类工具只留最好的一把（鱼竿按 RodScore、武器按伤害、其他工具按升级等级），
-        /// 吃的（料理；不够两样时补上回血最多的普通食物，鱼排在后面）、种子、肥料、鱼饵钓具、炸弹、任务物品、
-        /// 要摆放的机器/洒水器/箱子，以及玩家点名要留的。其余都存进箱子。
-        /// </summary>
-        private static HashSet<Item> ItemsToKeep(Func<Item, bool> keepAlso, string purpose = null)
+        /// <summary>出门会用到的工具：按同类分组，分数高的优先留在身上。</summary>
+        private static (string kind, int score) TripTool(Item i) => i switch
         {
-            var keep = new HashSet<Item>();
-            var items = Player.Items.Where(i => i != null).ToList();
-            void BestOf<T>(Func<T, bool> where, Func<T, int> score) where T : Item
+            FishingRod rod => ("鱼竿", RodScore(rod)),
+            // 镰刀的品质由物品 ID 区分，升级等级一样。
+            MeleeWeapon w when w.isScythe() => ("镰刀", w.ItemId switch
             {
-                var best = items.OfType<T>().Where(where).OrderByDescending(score).FirstOrDefault();
+                MeleeWeapon.iridiumScytheID => 2,
+                MeleeWeapon.goldenScytheId => 1,
+                _ => 0
+            }),
+            MeleeWeapon w => ("近战武器", w.minDamage.Value + w.maxDamage.Value),
+            Slingshot sling => ("弹弓", sling.ItemId switch
+            {
+                Slingshot.galaxySlingshotId => 4,
+                Slingshot.masterSlingshotId => 2,
+                _ => 1
+            }),
+            Pickaxe t => ("镐子", t.UpgradeLevel),
+            Axe t => ("斧头", t.UpgradeLevel),
+            Hoe t => ("锄头", t.UpgradeLevel),
+            WateringCan t => ("水壶", t.UpgradeLevel),
+            _ => (null, 0)
+        };
+
+        /// <summary>
+        /// 整理背包时每类工具只留最好的一把，其他东西按今天要做的事筛选。
+        /// 没写目的就按通用规则留吃的、种子、肥料、鱼饵钓具、炸弹、任务物品和要摆放的机器。
+        /// 点名要留的也留在身上。
+        /// </summary>
+        private static HashSet<Item> ItemsToKeep(Func<Item, bool> keepAlso, IReadOnlyList<string> purposes = null)
+            => SelectItemsToKeep(Player.Items, keepAlso, purposes ?? Array.Empty<string>(), purposes?.Count > 0 ? ReservedChecker() : null);
+
+        private static HashSet<Item> SelectItemsToKeep(IEnumerable<Item> inventory, Func<Item, bool> keepAlso,
+            IReadOnlyList<string> purposes, Func<Item, string> reserved)
+        {
+            var items = inventory.Where(i => i != null).ToList();
+            var keep = items.Where(i => purposes.Count > 0 || i is not Slingshot)
+                .Select(i => (item: i, tool: TripTool(i)))
+                .Where(x => x.tool.kind != null)
+                .GroupBy(x => x.tool.kind)
+                .Select(g => g.OrderByDescending(x => x.tool.score).First().item)
+                .ToHashSet();
+            void BestOf<T>(Func<T, int> score) where T : Item
+            {
+                var best = items.OfType<T>().OrderByDescending(score).FirstOrDefault();
                 if (best != null)
                     keep.Add(best);
             }
-            BestOf<FishingRod>(_ => true, RodScore);
-            BestOf<MeleeWeapon>(w => !w.isScythe(), w => w.minDamage.Value + w.maxDamage.Value);
-            BestOf<MeleeWeapon>(w => w.isScythe(), w => w.UpgradeLevel);
-            BestOf<Pickaxe>(_ => true, t => t.UpgradeLevel);
-            BestOf<Axe>(_ => true, t => t.UpgradeLevel);
-            BestOf<Hoe>(_ => true, t => t.UpgradeLevel);
-            BestOf<WateringCan>(_ => true, t => t.UpgradeLevel);
-            BestOf<Pan>(_ => true, t => t.UpgradeLevel);
-            BestOf<MilkPail>(_ => true, _ => 0);
-            BestOf<Shears>(_ => true, _ => 0);
+            BestOf<Pan>(t => t.UpgradeLevel);
+            BestOf<MilkPail>(_ => 0);
+            BestOf<Shears>(_ => 0);
             foreach (var i in items)
             {
                 if (i is Tool)
@@ -50,9 +77,10 @@ namespace BlindWhaleFarmer
                     || o.Name.Contains("Bomb")
                     || o.questItem.Value
                     || o.QualifiedItemId is "(O)458" or "(O)460");   // 花束和美人鱼吊坠：买来就是要送的
-                if (usefulOnHand || i is Ring or Boots || keepAlso(i))
+                if (usefulOnHand || i is Ring or Boots || purposes.Any(p => UsefulFor(p, i, includeHealingFood: false)))
                     keep.Add(i);
             }
+            keep.UnionWith(items.Where(keepAlso));
             // 没带够回血的就下矿，打到一半只能撤退
             bool Heals(Item i) => i is SObject f && f.Edibility > 0 && f.healthRecoveredOnConsumption() > 0;
             var extraFood = items.Where(i => Heals(i) && !keep.Contains(i))
@@ -61,20 +89,36 @@ namespace BlindWhaleFarmer
                 .Take(Math.Max(0, 2 - keep.Count(Heals)));
             keep.UnionWith(extraFood.ToList());
 
-            // 给了出门目的：这次用不上的（下矿的锄头水壶种子、钓鱼的镐子武器……）也存起来；任务要交的和点名要留的照样留
-            if (purpose != null)
+            // 给了出门目的：任一件事用得上的、任务要交的和点名要留的都留着。
+            if (purposes.Count > 0)
             {
-                var reserved = ReservedChecker();
-                keep.RemoveWhere(i => !UsefulFor(purpose, i) && !keepAlso(i) && !(i is SObject q && (q.questItem.Value || reserved(i)?.StartsWith("任务") == true || reserved(i)?.StartsWith("特别订单") == true)));
-                // 下矿多带点回血的：一路打下去两样不够吃
-                if (purpose == "mine")
+                keep.RemoveWhere(i => !purposes.Any(p => UsefulFor(p, i)) && !keepAlso(i)
+                    && !(i is SObject q && (q.questItem.Value || reserved(i)?.StartsWith("任务") == true || reserved(i)?.StartsWith("特别订单") == true)));
+                if (purposes.Contains("mine"))
+                {
                     keep.UnionWith(items.Where(IsEscapeItem));
-                if (purpose == "mine")
+                    // 下矿多带点回血的：一路打下去两样不够吃
                     keep.UnionWith(items.Where(i => Heals(i) && reserved(i) == null)
                         .OrderBy(i => ((SObject)i).sellToStorePrice() / Math.Max(1, ((SObject)i).healthRecoveredOnConsumption()))
                         .Take(Math.Max(0, 5 - keep.Count(Heals))).ToList());
+                }
             }
             return keep;
+        }
+
+        /// <summary>提醒这趟用不上、已经存进箱子且身上没有更好同类的工具。</summary>
+        private static IEnumerable<Item> ToolsAway(IEnumerable<Item> stored, IEnumerable<Item> inventory, IReadOnlyList<string> purposes)
+        {
+            if (purposes.Count == 0)
+                yield break;
+            var carried = inventory.Select(TripTool).Where(t => t.kind != null).ToLookup(t => t.kind);
+            foreach (var item in stored)
+            {
+                var tool = TripTool(item);
+                if (tool.kind != null && !purposes.Any(p => UsefulFor(p, item))
+                    && !carried[tool.kind].Any(t => t.score > tool.score))
+                    yield return item;
+            }
         }
 
         /// <summary>
@@ -88,20 +132,20 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(why);
                 yield break;
             }
-            string purpose = NormalizePurpose(purposeSpec);
-            if (!string.IsNullOrWhiteSpace(purposeSpec) && purpose == null)
+            if (!TryParsePurposes(purposeSpec, out var purposes, out string error))
             {
-                yield return ActionResult.Fail($"不认识出门目的“{purposeSpec}”，可以用 mine（下矿）、fish（钓鱼）、farm（种地）、town（去镇上送礼办事），不传就按通用规则整理");
+                yield return ActionResult.Fail(error);
                 yield break;
             }
             var keepFilter = string.IsNullOrWhiteSpace(keep) ? (_ => false) : ItemFilter(keep);
-            var keepSet = ItemsToKeep(keepFilter, purpose);
+            var keepSet = ItemsToKeep(keepFilter, purposes);
             var toStore = Player.Items.Where(i => i != null && !keepSet.Contains(i)).ToList();
             // 这次要用、但现在在箱子里的东西（比如下矿要的炸弹、回血料理），整理完顺手提醒
-            string missing = purpose != null ? MissingForTrip(purpose) : null;
+            string missing = MissingForTrips(purposes);
+            string prefix = purposes.Count > 0 ? $"按{TripPurposeName(purposes)}整理。" : "";
             if (toStore.Count == 0)
             {
-                yield return ActionResult.Success("背包已经很整齐了，没有需要存起来的东西" + (missing != null ? "。" + missing : ""));
+                yield return ActionResult.Success(prefix + "背包已经很整齐了，没有需要存起来的东西" + (missing != null ? "。" + missing : ""));
                 yield break;
             }
 
@@ -125,7 +169,8 @@ namespace BlindWhaleFarmer
             }
 
             var stored = new List<string>();
-            foreach (var s in StoreIntoChests(toStore, stored))
+            var storedTools = new List<Item>();
+            foreach (var s in StoreIntoChests(toStore, stored, storedTools))
                 yield return s;
 
             var leftover = toStore.Where(i => Player.Items.Contains(i)).Select(i => i.DisplayName).ToList();
@@ -134,15 +179,10 @@ namespace BlindWhaleFarmer
             msg += $"。身上留着：{string.Join("、", kept)}（空位 {Player.freeSpotsInInventory()} 个）";
             if (leftover.Count > 0)
                 msg += $"。还剩 {string.Join("、", leftover)} 没放下：" + ChestRoomNote(Loc, toStore.Where(i => Player.Items.Contains(i)).ToList());
-            if (purpose != null)
-                msg = $"按{PurposeName[purpose]}整理。" + msg;
-            // 按出门目的整理会把这次用不上的农具也存起来（真机：钓鱼前存了锄头、水壶，第二天开田才发现“没有锄头”）：
-            // 说一声拿回来用什么，别让它忘了
-            var toolsAway = stored.Count > 0 && purpose != null && purpose != "farm"
-                ? toStore.Where(i => i is Hoe or WateringCan or Axe or Pickaxe || (i is MeleeWeapon mw && mw.isScythe())).Select(i => i.DisplayName).Distinct().ToList()
-                : new List<string>();
+            msg = prefix + msg;
+            var toolsAway = ToolsAway(storedTools, Player.Items, purposes).Select(i => i.DisplayName).Distinct().ToList();
             if (toolsAway.Count > 0)
-                msg += $"。注意：{string.Join("、", toolsAway)} 也存进箱子了，回来种地、浇水、砍树之前先 take_items 拿回来（或者 tidy_backpack purpose=farm 一键换成种地的装备）";
+                msg += $"。注意：{string.Join("、", toolsAway)} 存进箱子了，今天还要用的话先 take_items 拿回来，或者重新 tidy_backpack，把今天要干的事都写进 purpose，要带的写进 keep";
             if (missing != null)
                 msg += "。" + missing;
             yield return stored.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
@@ -153,7 +193,7 @@ namespace BlindWhaleFarmer
         /// 同样的东西归到一起：先放进已经有这种东西的箱子（能叠就叠），再放进装着同一类东西的箱子，都没有才放进最近的有空位的箱子。
         /// 按计划一个箱子一个箱子走过去放；计划的箱子放不下了（比如格子算错），剩下的再按远近找有空位的箱子。走不到的箱子跳过。
         /// </summary>
-        private IEnumerable<object> StoreIntoChests(List<Item> toStore, List<string> stored)
+        private IEnumerable<object> StoreIntoChests(List<Item> toStore, List<string> stored, List<Item> storedTools = null)
         {
             var o = new Outcome();
             var chests = PlayerChests(Loc).ToList();
@@ -179,7 +219,7 @@ namespace BlindWhaleFarmer
                     continue;
                 }
                 at = Player.TilePoint;
-                PutInto(next, items, perChest);
+                PutInto(next, items, perChest, storedTools);
             }
 
             // 第二轮：计划里的箱子没放下的，按远近找还有空位的箱子
@@ -197,14 +237,14 @@ namespace BlindWhaleFarmer
                     o.Succeed();
                     continue;
                 }
-                PutInto(chest, pending, perChest);
+                PutInto(chest, pending, perChest, storedTools);
             }
             foreach (var (chest, names) in perChest)
                 stored.Add($"{Loc.DisplayName}（{Loc.NameOrUniqueName}）({tiles[chest].X},{tiles[chest].Y}) 的箱子：{string.Join("、", names)}");
         }
 
         /// <summary>把东西放进箱子，放进去多少记在 perChest 里。</summary>
-        private static void PutInto(Chest chest, List<Item> items, Dictionary<Chest, List<string>> perChest)
+        private static void PutInto(Chest chest, List<Item> items, Dictionary<Chest, List<string>> perChest, List<Item> storedTools)
         {
             foreach (var item in items)
             {
@@ -219,6 +259,8 @@ namespace BlindWhaleFarmer
                     if (!perChest.TryGetValue(chest, out var names))
                         perChest[chest] = names = new List<string>();
                     names.Add(moved > 1 ? $"{name}x{moved}" : name);
+                    if (left == null && item is Tool)
+                        storedTools?.Add(item);
                 }
             }
             chest.clearNulls();

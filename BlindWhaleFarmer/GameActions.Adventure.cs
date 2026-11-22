@@ -891,20 +891,195 @@ namespace BlindWhaleFarmer
         /// <summary>血量到这个数才跳竖井：一次最多连降 15 层、掉 45 点血，跳完还要剩三成血应付下面的怪。</summary>
         private static int ShaftSafeHealth => 45 + (int)(Player.maxHealth * 0.3f);
 
-        /// <summary>
-        /// 敲了会掉矿石、宝石、晶球、煤炭的“石头”（和普通石头一样 IsBreakableStone，只是编号不同，见 GameLocation.breakStone）：
-        /// 铜 751/849、铁 290/850、金 764、铱 765、放射性 95、煤炭节点、宝石 2~14/44、神秘石 46、晶球 75/76/77/819、贻贝 25、熔岩碎片 843/844、火山 816~818。
-        /// </summary>
-        private static readonly HashSet<string> ValuableNodeIds = new()
+        internal enum MineGoal { Balanced, Descent, Ore, Coal, Gems }
+
+        internal enum MineNodeTier
         {
-            "751", "849", "290", "850", "764", "765", "95", "VolcanoGoldNode",
-            "BasicCoalNode0", "BasicCoalNode1", "VolcanoCoalNode0", "VolcanoCoalNode1",
-            "2", "4", "6", "8", "10", "12", "14", "44", "46",
-            "75", "76", "77", "819", "25", "843", "844", "816", "817", "818"
+            Stone, Copper, Iron, Gold, Iridium, Coal, CoalStone, LowCoalStone, Gem,
+            Geode, FrozenGeode, MagmaGeode, OmniGeode, Mystic, Radioactive, CalicoEgg,
+            CinderShard, Mussel, Bone, Clay
+        }
+
+        internal static MineGoal? ParseMineGoal(string goal) => goal?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "balanced" => MineGoal.Balanced,
+            "descent" => MineGoal.Descent,
+            "ore" => MineGoal.Ore,
+            "coal" => MineGoal.Coal,
+            "gems" => MineGoal.Gems,
+            _ => null
         };
 
-        /// <summary>值钱的节点多远也先敲：比最近的普通石头远这么多格以内就先去敲它。</summary>
-        private const int ValuableNodeDetour = 8;
+        // GameLocation.cs:14861-15062 是专属掉落；这里只给有额外煤率的石头单列档位。
+        // 普通矿层石头仍可能随机出煤、矿或晶球（MineShaft.cs:3670-3709），继续按普通石头找楼梯。
+        internal static MineNodeTier ClassifyMineStone(string id, bool generatedMine) => id switch
+        {
+            "751" or "849" => MineNodeTier.Copper,
+            "290" or "850" => MineNodeTier.Iron,
+            "764" or "VolcanoGoldNode" => MineNodeTier.Gold,
+            "765" => MineNodeTier.Iridium,
+            "BasicCoalNode0" or "BasicCoalNode1" or "VolcanoCoalNode0" or "VolcanoCoalNode1" => MineNodeTier.Coal,
+            "668" or "670" or "845" or "846" or "847" => MineNodeTier.CoalStone,
+            "40" or "42" when generatedMine => MineNodeTier.LowCoalStone, // MineShaft.cs:3623、3695-3704
+            "343" or "450" when !generatedMine => MineNodeTier.CoalStone, // GameLocation.cs:14832-14847
+            "2" or "4" or "6" or "8" or "10" or "12" or "14" or "44" => MineNodeTier.Gem,
+            "75" => MineNodeTier.Geode,
+            "76" => MineNodeTier.FrozenGeode,
+            "77" => MineNodeTier.MagmaGeode,
+            "819" => MineNodeTier.OmniGeode,
+            "46" => MineNodeTier.Mystic,
+            "95" => MineNodeTier.Radioactive,
+            "CalicoEggStone_0" or "CalicoEggStone_1" or "CalicoEggStone_2" => MineNodeTier.CalicoEgg,
+            "843" or "844" => MineNodeTier.CinderShard,
+            "25" => MineNodeTier.Mussel,
+            "816" or "817" => MineNodeTier.Bone,
+            "818" => MineNodeTier.Clay,
+            _ => MineNodeTier.Stone
+        };
+
+        private static MineNodeTier GetMineNodeTier(SObject node, GameLocation location)
+        {
+            string id = node.ItemId;
+            bool generatedMine = (id is "40" or "42" or "343" or "450") && MineShaft.IsGeneratedLevel(location);
+            return ClassifyMineStone(id, generatedMine);
+        }
+
+        /// <summary>单点挖矿和炸点共用的评分入口。输入真实节点和地点，档位与偏好可独立调整。</summary>
+        internal static int ScoreMineNode(SObject node, GameLocation location, MineGoal goal) =>
+            ScoreMineNodeTier(GetMineNodeTier(node, location), goal);
+
+        internal static int ScoreMineNodeTier(MineNodeTier tier, MineGoal goal)
+        {
+            // 列顺序：均衡、下楼、金属、煤、宝石。下楼分只用于顺路取舍，不换算成绕路距离。
+            var (balanced, descent, ore, coal, gems) = tier switch
+            {
+                MineNodeTier.Copper      => ( 6, 0,  8,  2,  2),
+                MineNodeTier.Iron        => ( 7, 0, 10,  2,  2),
+                MineNodeTier.Gold        => ( 8, 0, 12,  3,  3),
+                MineNodeTier.Iridium     => (12, 2, 16,  4,  4),
+                MineNodeTier.Coal        => ( 8, 0,  2, 16,  2),
+                MineNodeTier.CoalStone   => ( 2, 0,  0,  6,  0),
+                MineNodeTier.LowCoalStone => ( 1, 0,  0,  3,  0),
+                MineNodeTier.Gem         => ( 8, 0,  2,  2, 14),
+                MineNodeTier.Geode       => ( 5, 0,  1,  1,  8),
+                MineNodeTier.FrozenGeode => ( 6, 0,  1,  1, 10),
+                MineNodeTier.MagmaGeode  => ( 7, 0,  1,  1, 12),
+                MineNodeTier.OmniGeode   => ( 9, 1,  2,  2, 15),
+                MineNodeTier.Mystic      => (13, 3, 14,  4, 16),
+                MineNodeTier.Radioactive => (11, 2, 13,  3,  3),
+                MineNodeTier.CalicoEgg   => ( 8, 0,  2,  2,  2),
+                MineNodeTier.CinderShard => ( 8, 0,  4,  2,  2),
+                MineNodeTier.Mussel      => ( 4, 0,  1,  1,  1),
+                MineNodeTier.Bone        => ( 5, 0,  1,  1,  1),
+                MineNodeTier.Clay        => ( 4, 0,  1,  1,  1),
+                _                       => ( 0, 0,  0,  0,  0)
+            };
+            return goal switch
+            {
+                MineGoal.Descent => descent,
+                MineGoal.Ore => ore,
+                MineGoal.Coal => coal,
+                MineGoal.Gems => gems,
+                _ => balanced
+            };
+        }
+
+        private static int MineNodeDetour(int score, MineGoal goal) => goal == MineGoal.Descent ? 0 : score;
+
+        private static IEnumerable<(Point pt, int score)> ScoredMineStones(GameLocation location, MineGoal goal) =>
+            location.objects.Pairs.Where(kv => kv.Value.IsBreakableStone())
+                .Select(kv => (new Point((int)kv.Key.X, (int)kv.Key.Y), ScoreMineNode(kv.Value, location, goal)));
+
+        // 通路已找到才顺手挖。下楼目标只挖站在原路线就够得着的矿；其他目标按真实步数限制绕路。
+        private static (Point tile, Point stand)? MineNodeNearExit(GameLocation mine, MineGoal goal,
+            List<Point> route, IEnumerable<(Point pt, int score)> stones)
+        {
+            var candidates = stones.Where(t => t.score > 0).ToList();
+            if (goal == MineGoal.Descent)
+            {
+                foreach (var stand in route)
+                {
+                    var node = candidates.Where(t => Util.Manhattan(t.pt, stand) == 1).OrderByDescending(t => t.score).FirstOrDefault();
+                    if (node.score > 0)
+                        return (node.pt, stand);
+                }
+                return null;
+            }
+
+            var me = Player.TilePoint;
+            foreach (var node in candidates.Where(t => Util.Manhattan(t.pt, me) <= 2 + MineNodeDetour(t.score, goal))
+                .OrderBy(t => Util.Manhattan(t.pt, me) - MineNodeDetour(t.score, goal)).ThenByDescending(t => t.score))
+            {
+                var path = Pathfinder.FindPath(mine, me, Pathfinder.AdjacentStandTiles(mine, node.pt), 8000);
+                if (path != null && path.Count - 1 <= 1 + MineNodeDetour(node.score, goal))
+                    return (node.pt, path[^1]);
+            }
+            return null;
+        }
+
+        private static string MineNodeName(MineNodeTier tier) => tier switch
+        {
+            MineNodeTier.Copper => "铜矿",
+            MineNodeTier.Iron => "铁矿",
+            MineNodeTier.Gold => "金矿",
+            MineNodeTier.Iridium => "铱矿",
+            MineNodeTier.Coal => "煤矿",
+            MineNodeTier.CoalStone => "概率掉煤石",
+            MineNodeTier.LowCoalStone => "低概率掉煤石",
+            MineNodeTier.Gem => "宝石矿",
+            MineNodeTier.Geode => "普通晶球石",
+            MineNodeTier.FrozenGeode => "冰封晶球石",
+            MineNodeTier.MagmaGeode => "岩浆晶球石",
+            MineNodeTier.OmniGeode => "万象晶球石",
+            MineNodeTier.Mystic => "神秘石",
+            MineNodeTier.Radioactive => "放射性矿",
+            MineNodeTier.CalicoEgg => "三花蛋石",
+            MineNodeTier.CinderShard => "熔岩碎片矿",
+            MineNodeTier.Mussel => "贻贝石",
+            MineNodeTier.Bone => "骨头石",
+            MineNodeTier.Clay => "黏土石",
+            _ => "普通石头"
+        };
+
+        // 按回合比较矿点，连寻路时顺手清掉的也能算进去；报节点数，掉落件数由背包变化报告。
+        private sealed class MineNodeTally
+        {
+            private readonly Dictionary<MineNodeTier, int> mined = new();
+            private readonly Dictionary<Vector2, (SObject node, MineNodeTier tier)> remaining = new();
+            private GameLocation last;
+
+            public int Rocks { get; private set; }
+
+            public void Observe(GameLocation location)
+            {
+                if (last != null)
+                    foreach (var (tile, previous) in remaining)
+                    {
+                        if (last.objects.TryGetValue(tile, out var node) && ReferenceEquals(node, previous.node) && node.IsBreakableStone())
+                            continue;
+                        Rocks++;
+                        if (previous.tier != MineNodeTier.Stone)
+                            mined[previous.tier] = mined.GetValueOrDefault(previous.tier) + 1;
+                    }
+
+                last = location;
+                remaining.Clear();
+                if (location == null)
+                    return;
+                foreach (var (tile, node) in location.objects.Pairs)
+                    if (node.IsBreakableStone())
+                        remaining[tile] = (node, GetMineNodeTier(node, location));
+            }
+
+            public string Summary(MineGoal goal)
+            {
+                Observe(null);
+                string label = goal.ToString().ToLowerInvariant();
+                return mined.Count == 0 ? $"；目标 {label}，没有挖到特殊节点"
+                    : $"；目标 {label}，挖掉的节点 " + string.Join("、", mined.OrderByDescending(kv => ScoreMineNodeTier(kv.Key, goal))
+                        .ThenBy(kv => kv.Key).Select(kv => $"{MineNodeName(kv.Key)} {kv.Value}"));
+            }
+        }
 
         /// <summary>下楼前顺手处理的东西最远多少格（曼哈顿距离）：再远就不绕了。</summary>
         private const int MineExtraRange = 8;
@@ -978,9 +1153,16 @@ namespace BlindWhaleFarmer
             o.Succeed();
         }
 
-        public IEnumerable<object> ExploreMine(int levels, int? startLevel, string whichMine = null, int? maxBombs = null)
+        public IEnumerable<object> ExploreMine(int levels, int? startLevel, string whichMine = null, int? maxBombs = null, string goal = null)
         {
+            if (ParseMineGoal(goal) is not MineGoal miningGoal)
+            {
+                yield return ActionResult.Fail($"不认识采矿目标“{goal}”，可以用 balanced、descent、ore、coal 或 gems");
+                yield break;
+            }
+
             var o = new Outcome();
+            string startNote = null; // 没传 start_level 时自动坐电梯去最深层，结果里说清楚
             if (Blocked(out string blockedWhy))
             {
                 yield return ActionResult.Fail(blockedWhy);
@@ -1013,11 +1195,13 @@ namespace BlindWhaleFarmer
             // 姜岛火山：地图和走法都不一样（岩浆、机关门、往上走），单独处理
             if (whichMine is "volcano" or "火山" or "火山地牢" || (string.IsNullOrEmpty(whichMine) && Loc is VolcanoDungeon or Caldera or IslandNorth))
             {
-                foreach (var s in ExploreVolcano(levels, maxBombs))
+                foreach (var s in ExploreVolcano(levels, maxBombs, miningGoal))
                     yield return s;
                 yield break;
             }
-            bool skull = whichMine is "skull" or "skullcave" or "skull_cavern" or "骷髅" or "骷髅洞穴"
+            // 去掉空格、下划线、连字符再比，大小写不分："Skull Cavern"、skull_cavern、skullcavern 都算
+            string whereKey = (whichMine ?? "").Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
+            bool skull = whereKey is "skull" or "skullcave" or "skullcavern" or "desert" or "骷髅" or "骷髅洞" or "骷髅洞穴" or "沙漠"
                 || (string.IsNullOrEmpty(whichMine) && Loc.Name is "SkullCave" or "Desert");
             if (Loc is not MineShaft && skull)
             {
@@ -1065,9 +1249,12 @@ namespace BlindWhaleFarmer
             }
             else if (Loc is not MineShaft)
             {
-                int target = startLevel ?? 1;
                 // 电梯层：5 的倍数、到过的，最多到 120（再往下是骷髅洞穴的层数）。出发前就检查，别走到矿洞门口才说
                 int topElevator = Math.Min(MineShaft.lowestLevelReached, 120) / 5 * 5;
+                // 没传 start_level：有电梯就直接坐到到过的最深一层，别每次都从第 1 层重新挖（想从头挖就传 start_level=1）
+                int target = startLevel ?? (topElevator >= 5 ? topElevator : 1);
+                if (startLevel == null && topElevator >= 5)
+                    startNote = $"没指定 start_level，已坐电梯直达你到过的最深电梯层（第 {topElevator} 层）；想从浅层挖就传 start_level（比如 1、5、45）";
                 if (target > 1 && (target % 5 != 0 || target > topElevator))
                 {
                     string floors = topElevator < 5 ? "你还没解锁电梯（下到第 5 层才有），只能从第 1 层开始（不传 start_level）"
@@ -1126,7 +1313,8 @@ namespace BlindWhaleFarmer
 
             levels = Math.Clamp(levels, 1, 20);
             int startLvl = ((MineShaft)Loc).mineLevel;
-            int descended = 0, rocks = 0, oreNodes = 0;
+            int descended = 0;
+            var minedNodes = new MineNodeTally();
             var st = new FightStats();
             string stop = null;
             int pick = Util.FindTool<Pickaxe>();
@@ -1164,8 +1352,9 @@ namespace BlindWhaleFarmer
                     stop = "离开了矿洞";
                     break;
                 }
+                minedNodes.Observe(mine);
                 MainThread.Progress = $"{(mine.mineLevel > 120 ? $"骷髅洞穴第 {mine.mineLevel - 120} 层" : $"矿洞第 {mine.mineLevel} 层")}，这次已下 {descended}/{levels} 层，"
-                    + $"敲了 {rocks} 块石头，打倒 {st.Kills} 只怪，生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}，背包空位 {Player.freeSpotsInInventory()}";
+                    + $"敲了 {minedNodes.Rocks} 块石头，打倒 {st.Kills} 只怪，生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}，背包空位 {Player.freeSpotsInInventory()}";
                 if (Game1.isWarping || Game1.fadeToBlack || Game1.globalFade)
                 {
                     // 下楼梯/进矿洞的淡入淡出还没结束，等它结束再继续，不算停下
@@ -1204,17 +1393,17 @@ namespace BlindWhaleFarmer
                 {
                     levelSeen = mine.mineLevel;
                     levelSince = nowMin;
+                    skippedShafts.Clear();
                 }
                 bool leisure = Player.Stamina >= Player.MaxStamina * 0.35f && Player.health >= Player.maxHealth * 0.5f && NearestThreat(4) == null
                     && nowMin - levelSince <= 90 && !Player.isInventoryFull();
-                int reach = leisure ? 200 : MineExtraRange;
-                // 整层还有值钱的矿、地上的石英水晶、木箱木桶没收拾：不急着下楼/跳竖井
-                bool valuableLeft = leisure && mine.objects.Pairs.Any(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId)
-                    && !skippedStones.Contains((mine.mineLevel, new Point((int)kv.Key.X, (int)kv.Key.Y))));
-                bool leftovers = leisure && (valuableLeft || MineExtras(mine, skippedExtras, 200).Any());
-                // 0) 有竖井（骷髅洞穴里的洞）就先跳，不跟怪纠缠：一次连降几层，比打完怪再找楼梯快，也安全。每层掉 3 点血，一次最多掉 45 点，所以要求跳完还能剩三成血；这一层有没开的宝箱时先开宝箱
+                int reach = leisure && miningGoal == MineGoal.Balanced ? 200 : MineExtraRange;
+                // 血量够、开过宝箱就先跳竖井：一次最多掉 45 点血，跳完仍要留三成血。
                 var shaft = NearestMineTile(mine, 174);
-                if (shaft.HasValue && !MineChests(mine).Any(c => !skippedChests.Contains(c.tile)) && (!skippedShafts.TryGetValue(shaft.Value, out int rocksThen) || rocks >= rocksThen + 2) && Player.health >= ShaftSafeHealth && !leftovers)
+                // 有竖井却走了楼梯，多半是血量不够安全跳（每层掉 3 点血）：记下来告诉玩家，别让人以为“有洞不跳”是 bug
+                if (shaft.HasValue && Player.health < ShaftSafeHealth && !chestNotes.Any(n => n.StartsWith("有竖井")))
+                    chestNotes.Add($"有竖井但生命 {Player.health} 低于跳竖井要求的 {ShaftSafeHealth}（一次最多掉 45 点），所以没跳、走楼梯；吃点东西回血就会跳");
+                if (shaft.HasValue && !MineChests(mine).Any(c => !skippedChests.Contains(c.tile)) && (!skippedShafts.TryGetValue(shaft.Value, out int rocksThen) || minedNodes.Rocks >= rocksThen + 2) && Player.health >= ShaftSafeHealth)
                 {
                     int levelBefore = mine.mineLevel;
                     foreach (var s in JumpDownShaft(mine, shaft.Value, o))
@@ -1226,7 +1415,7 @@ namespace BlindWhaleFarmer
                         lastHp = Player.health; // 摔的那几点血不算挨打
                         continue;
                     }
-                    skippedShafts[shaft.Value] = rocks; // 走不过去或者没跳成：先照常敲石头，敲掉两块以后再试
+                    skippedShafts[shaft.Value] = minedNodes.Rocks; // 走不过去或者没跳成：先照常敲石头，敲掉两块以后再试
                     o.Succeed();
                     if (Loc != mine)
                         continue;
@@ -1269,8 +1458,18 @@ namespace BlindWhaleFarmer
                     continue;
                 }
 
-                // 2.5) 附近地上的石英、地晶、洞穴萝卜之类捡起来，木箱木桶用武器劈开（不费体力），掉出来的东西捡走。每轮处理一个，处理完回到开头先看有没有怪
-                if (NearestThreat(3) == null && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
+                var me = Player.TilePoint;
+                var ladder = NearestMineTile(mine, 173);
+                var ladderRoute = ladder is Point ladderTile
+                    ? Pathfinder.FindPath(mine, me, Pathfinder.AdjacentStandTiles(mine, ladderTile), 8000) : null;
+                bool blockedShaft = shaft is Point shaftTile && skippedShafts.ContainsKey(shaftTile) && Player.health >= ShaftSafeHealth;
+                bool surrounded = !Pathfinder.Dirs.Any(d => Pathfinder.IsPassable(mine, me.X + d.X, me.Y + d.Y));
+                bool opening = blockedShaft || surrounded || (ladder.HasValue && ladderRoute == null);
+                bool Available(Point pt) => !skippedStones.Contains((mine.mineLevel, pt));
+
+                // 通路没被堵住才顺手捡地上的东西、劈木箱；赶楼层时直接找楼梯。
+                if (!opening && miningGoal != MineGoal.Descent && NearestThreat(3) == null
+                    && Player.health >= Player.maxHealth * 0.4f && !Player.isInventoryFull()
                     && MineExtras(mine, skippedExtras, reach).FirstOrDefault() is var extra && extra.obj != null)
                 {
                     bool box = extra.obj is BreakableContainer;
@@ -1298,13 +1497,11 @@ namespace BlindWhaleFarmer
                     continue;
                 }
 
-                // 3) 有楼梯就下。下之前先把附近值钱的矿/宝石节点敲了（炸弹炸出楼梯时旁边常有矿），太远的不绕、体力不够也不敲
-                var ladder = NearestMineTile(mine, 173);
-                bool oresBeforeLadder = ladder.HasValue && Player.Stamina >= Player.MaxStamina * 0.2f && NearestThreat(3) == null
-                    && mine.objects.Pairs.Any(kv => kv.Value.IsBreakableStone() && ValuableNodeIds.Contains(kv.Value.ItemId)
-                        && Util.Manhattan(new Point((int)kv.Key.X, (int)kv.Key.Y), Player.TilePoint) <= reach + 2
-                        && !skippedStones.Contains((mine.mineLevel, new Point((int)kv.Key.X, (int)kv.Key.Y))));
-                if (ladder.HasValue && !oresBeforeLadder)
+                // 有楼梯且路通，体力有余就按目标顺手敲矿。路堵了直接去开路。
+                var nearLadder = !opening && ladderRoute != null && Player.Stamina >= Player.MaxStamina * 0.2f
+                    && NearestThreat(3) == null && !Player.isInventoryFull()
+                    ? MineNodeNearExit(mine, miningGoal, ladderRoute, ScoredMineStones(mine, miningGoal).Where(t => Available(t.pt))) : null;
+                if (ladder.HasValue && nearLadder == null)
                 {
                     foreach (var s in GoAdjacent(ladder.Value, o))
                         yield return s;
@@ -1324,9 +1521,9 @@ namespace BlindWhaleFarmer
                     o.Succeed();
                 }
 
-                // 3.5) 背包里有炸弹、附近有一片值得炸的石头（罩住 2 个以上矿/宝石节点，或者 8 块以上石头；体力不到三成时 3 块就炸）：
-                //      炸一颗省体力、更快找到楼梯，炸出来的东西捡回来。骷髅洞穴里留 2 颗炸木乃伊用。身边有怪、血不到一半时不炸
-                if (!oresBeforeLadder && blastBombs < bombBudget && NearestThreat(4) == null && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
+                // 没有现成通路要走时，炸一片石头省体力、找楼梯；骷髅洞穴里留 2 颗给木乃伊。
+                if (!opening && !ladder.HasValue && blastBombs < bombBudget && NearestThreat(4) == null
+                    && Player.health >= Player.maxHealth * 0.5f && !Player.isInventoryFull())
                 {
                     var bombs = BombsInBag();
                     int reserve = mine.mineLevel > 120 ? 2 : 0;
@@ -1334,10 +1531,10 @@ namespace BlindWhaleFarmer
                     if (bombs.Count > 0 && have > reserve)
                     {
                         bool tired = Player.Stamina < Player.MaxStamina * 0.3f;
-                        var spot = BestBlastSpot(mine, bombs, 8, skippedBlasts);
-                        if (spot.Found && (spot.Ores >= 2 || spot.Stones >= 8 || (tired && spot.Stones >= 3)))
+                        var spot = BestBlastSpot(mine, bombs, 8, tired ? 3 : 8, miningGoal, skippedBlasts);
+                        if (spot.Found)
                         {
-                            foreach (var s in BlastStones(spot, o, blastNotes, (b, n) => { blastStones += b; blastOres += n; rocks += b; oreNodes += n; }))
+                            foreach (var s in BlastStones(spot, o, blastNotes, (b, n) => { blastStones += b; blastOres += n; }))
                                 yield return s;
                             if (o.Ok)
                                 blastBombs++;
@@ -1350,21 +1547,19 @@ namespace BlindWhaleFarmer
                     }
                 }
 
-                // 3) 敲最近的石头找楼梯。矿石、宝石、晶球节点也是“石头”，只是值钱：多走几步也先敲它们
-                var stones = mine.objects.Pairs.Where(p => p.Value.IsBreakableStone())
-                    .Select(p => (pt: new Point((int)p.Key.X, (int)p.Key.Y), valuable: ValuableNodeIds.Contains(p.Value.ItemId)))
-                    .Where(t => !skippedStones.Contains((mine.mineLevel, t.pt)))
-                    // 楼梯已经有了：只敲附近值钱的节点，敲完就下楼
-                    .Where(t => !oresBeforeLadder || t.valuable && Util.Manhattan(t.pt, Player.TilePoint) <= reach + 2)
-                    // 有竖井、这层还有值钱的矿：只敲值钱的，普通石头不费体力
-                    .Where(t => !(shaft.HasValue && valuableLeft) || t.valuable).ToList();
+                // 仍然敲石头找楼梯。挡路时先敲身边或通往出口的石头；平时用评分抵掉一部分距离。
+                Point? digToward = blockedShaft ? shaft : ladder;
+                me = Player.TilePoint;
+                var stones = ScoredMineStones(mine, miningGoal).Where(t => Available(t.pt)).ToList();
+                var targets = nearLadder is { } near ? new[] { near.tile } : stones
+                    .OrderBy(t => Util.Manhattan(t.pt, me) + (surrounded ? 0 : digToward is Point exit
+                        ? Util.Manhattan(t.pt, exit) : -MineNodeDetour(t.score, miningGoal)))
+                    .ThenBy(t => opening ? Util.Manhattan(t.pt, me) : -t.score)
+                    .Take(6).Select(t => t.pt);
                 bool hit = false, skippedStone = false;
-                // 有竖井但被石头围着：优先敲通往竖井那个方向的石头，而不是只敲离自己最近的（这时不挑矿）
-                Point? digToward = shaft.HasValue && skippedShafts.ContainsKey(shaft.Value) ? shaft : null;
-                foreach (var (stone, valuable) in stones.OrderBy(t => Util.Manhattan(t.pt, Player.TilePoint)
-                             + (digToward.HasValue ? Util.Manhattan(t.pt, digToward.Value) : t.valuable ? -ValuableNodeDetour : 0)).Take(6))
+                foreach (var stone in targets)
                 {
-                    foreach (var s in GoAdjacent(stone, o))
+                    foreach (var s in GoAdjacent(stone, o, nearLadder?.stand))
                         yield return s;
                     if (!o.Ok)
                     {
@@ -1389,12 +1584,10 @@ namespace BlindWhaleFarmer
                         if (!o.Ok)
                             break;
                     }
-                    if (!mine.objects.ContainsKey(new Vector2(stone.X, stone.Y)))
-                    {
-                        rocks++;
-                        if (valuable)
-                            oreNodes++;
-                    }
+                    if (mine.objects.TryGetValue(new Vector2(stone.X, stone.Y), out var remaining) && remaining.IsBreakableStone()
+                        && o.Ok && Loc == mine && Player.health >= hpBefore && NearestThreat(2) == null
+                        && Player.health >= Player.maxHealth * 0.4f)
+                        skippedStones.Add((mine.mineLevel, stone)); // 敲了 8 下还在，先试别处
                     hit = true;
                     break;
                 }
@@ -1406,10 +1599,10 @@ namespace BlindWhaleFarmer
                 if (hit)
                     continue;
                 // 这几块够不着，但这层还有别的石头没试过：下一轮试更远的
-                if (skippedStone && stones.Any(t => !skippedStones.Contains((mine.mineLevel, t.pt))))
+                if (skippedStone && stones.Any(t => Available(t.pt)))
                     continue;
-                // 楼梯边上的矿都够不着：回到开头直接下楼
-                if (oresBeforeLadder)
+                // 楼梯边的矿够不着：回到开头重新挑，挑不到就下楼
+                if (nearLadder.HasValue)
                     continue;
 
                 // 4) 小石头都够不着：多半是矿石巨石（2x2）挡了路，任何镐子都能敲碎（游戏里 752/754/756/758 只要求是镐子）
@@ -1471,7 +1664,11 @@ namespace BlindWhaleFarmer
             }
 
             int now = Loc is MineShaft m2 ? m2.mineLevel : 0;
-            string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {rocks} 块石头{(oreNodes > 0 ? $"（其中矿石/宝石节点 {oreNodes} 个）" : "")}，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            string nodeSummary = minedNodes.Summary(miningGoal);
+            string msg = $"从{MineLevelName(startLvl)}下到{(now > 0 ? MineLevelName(now) : "第 ? 层")}（下了 {descended} 层{(shaftJumps > 0 ? $"，其中跳了 {shaftJumps} 次竖井" : "")}），敲了 {minedNodes.Rocks} 块石头，打倒 {st.Kills} 只怪，吃了 {st.Eaten} 次东西；生命 {Player.health}/{Player.maxHealth}，体力 {(int)Player.Stamina}";
+            msg += nodeSummary;
+            if (startNote != null)
+                msg += "。" + startNote;
             if (MummyNote(st, 12) is string mummyNote)
                 msg += "。" + mummyNote;
             if (blastBombs > 0)
@@ -1494,7 +1691,7 @@ namespace BlindWhaleFarmer
                 msg += "；停下原因：" + stop;
             if (clutter != null)
                 msg += "。" + clutter;
-            yield return descended > 0 || rocks > 0 || st.Kills > 0 || loot.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
+            yield return descended > 0 || minedNodes.Rocks > 0 || st.Kills > 0 || loot.Count > 0 ? ActionResult.Success(msg) : ActionResult.Fail(msg);
         }
     }
 }

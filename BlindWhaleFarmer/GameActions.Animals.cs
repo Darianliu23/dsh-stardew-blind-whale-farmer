@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using HarmonyLib;
 using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Buildings;
 using StardewValley.GameData.FarmAnimals;
 using StardewValley.Menus;
 using StardewValley.Objects;
+using StardewValley.TerrainFeatures;
+using StardewValley.Tools;
 using SObject = StardewValley.Object;
 using xLocation = xTile.Dimensions.Location;
 
@@ -126,6 +129,225 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success(string.Join("；", report));
         }
 
+        /// <summary>留住动物门附近的牧草、约四分之一的草格，以及已经长成单独一格的草。</summary>
+        internal static bool KeepHayGrass(Point tile, IReadOnlySet<Point> grass, IReadOnlyList<Point> animalDoors)
+            => ((tile.X + tile.Y) & 3) == 0
+                || animalDoors.Any(door => Math.Max(Math.Abs(tile.X - door.X), Math.Abs(tile.Y - door.Y)) <= 3)
+                || !Pathfinder.Dirs.Any(d => grass.Contains(tile + d));
+
+        private static bool IsHayGrass(TerrainFeature feature) => feature is Grass grass && grass.grassType.Value is 1 or 7;
+
+        private static List<GameLocation> HayLocations(Farm farm)
+        {
+            var locations = new List<GameLocation> { farm };
+            Utility.ForEachLocation(loc =>
+            {
+                if (loc != farm && loc.buildings.Count > 0)
+                    locations.Add(loc);
+                return true;
+            }, includeInteriors: false);
+            return locations;
+        }
+
+        private static (int silos, int capacity, int hay, bool hasRoom) HayStorage(List<GameLocation> locations)
+        {
+            int silos = 0, capacity = 0, hay = 0;
+            bool hasRoom = false;
+            foreach (var loc in locations)
+            {
+                silos += loc.buildings.Count(b => b.hayCapacity.Value > 0 && b.daysOfConstructionLeft.Value <= 0);
+                int limit = loc.GetHayCapacity();
+                capacity += limit;
+                hay += loc.piecesOfHay.Value;
+                hasRoom |= limit > loc.piecesOfHay.Value;
+            }
+            return (silos, capacity, hay, hasRoom);
+        }
+
+        private static List<Point> HayAnimalDoors(Farm farm) => farm.buildings
+            .Where(b => !b.isUnderConstruction() && b.animalDoor.X >= 0 && b.animalDoor.Y >= 0 && b.GetIndoors() is AnimalHouse)
+            .Select(b => new Point(b.tileX.Value + b.animalDoor.X, b.tileY.Value + b.animalDoor.Y)).ToList();
+
+        // 原版镰刀动画的几帧会扫过多格。只收窄本次 cut_hay 的命中范围，动画、掉落和入仓仍由游戏处理。
+        private static readonly Dictionary<MeleeWeapon, (Farm farm, Farmer player, Point tile)> HaySwings = new();
+        private static bool haySwingPatched;
+
+        private static void LimitHaySwing(MeleeWeapon __instance, ref Rectangle __result)
+        {
+            if (HaySwings.TryGetValue(__instance, out var swing) && swing.farm == Loc && swing.player == Player)
+                __result = new Rectangle(swing.tile.X * 64 + 32, swing.tile.Y * 64 + 32, 1, 1);
+        }
+
+        private static string PrepareHaySwing()
+        {
+            if (haySwingPatched)
+                return null;
+            try
+            {
+                new Harmony("Darian.BlindWhaleFarmer.CutHay").Patch(
+                    AccessTools.Method(typeof(MeleeWeapon), nameof(MeleeWeapon.getAreaOfEffect)),
+                    postfix: new HarmonyMethod(typeof(GameActions), nameof(LimitHaySwing)));
+                haySwingPatched = true;
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return $"镰刀的单格范围没能启用：{ex.Message}";
+            }
+        }
+
+        /// <summary>到主农场逐格用镰刀收干草，按筒仓读数决定何时停。</summary>
+        public IEnumerable<object> CutHay(int? target, int? maxTiles, int? x1, int? y1, int? x2, int? y2)
+        {
+            int given = new[] { x1, y1, x2, y2 }.Count(v => v.HasValue);
+            if (given != 0 && given != 4)
+            {
+                yield return ActionResult.Fail("cut_hay 的 x1、y1、x2、y2 要么四个都给，要么都不给（不给就在主农场找草）");
+                yield break;
+            }
+            if (target is < 1 || maxTiles is < 1)
+            {
+                yield return ActionResult.Fail("cut_hay 的 target 和 max_tiles 要大于 0");
+                yield break;
+            }
+            if (Blocked(out string why))
+            {
+                yield return ActionResult.Fail(why);
+                yield break;
+            }
+
+            var farm = Game1.getFarm();
+            var locations = HayLocations(farm);
+            var start = HayStorage(locations);
+            if (start.silos == 0)
+            {
+                yield return ActionResult.Fail("没筒仓割草不存干草，先建好筒仓或去 Marnie 那里买干草，本次没有割草");
+                yield break;
+            }
+            int goal = Math.Min(target ?? start.capacity, start.capacity);
+            string before = $"{start.silos} 座筒仓，干草 {start.hay}/{start.capacity}，目标 {goal}";
+            if (!start.hasRoom || start.hay >= goal)
+            {
+                yield return ActionResult.Success(before + "，本批入仓 0 份" + (start.hasRoom ? "，已达到目标" : "，筒仓已满"));
+                yield break;
+            }
+
+            int scythe = Util.FindTool<MeleeWeapon>(w => w.isScythe());
+            if (scythe < 0)
+            {
+                yield return ActionResult.Fail(before + "，背包里没有镰刀");
+                yield break;
+            }
+            var weapon = (MeleeWeapon)Player.Items[scythe];
+            var grass = farm.terrainFeatures.Pairs.Where(pair => IsHayGrass(pair.Value))
+                .Select(pair => new Point((int)pair.Key.X, (int)pair.Key.Y)).ToHashSet();
+            var doors = HayAnimalDoors(farm);
+            var candidates = grass.Where(p => !KeepHayGrass(p, grass, doors)
+                && !farm.objects.ContainsKey(new Vector2(p.X, p.Y))
+                && (given == 0 || (p.X >= Math.Min(x1.Value, x2.Value) && p.X <= Math.Max(x1.Value, x2.Value)
+                    && p.Y >= Math.Min(y1.Value, y2.Value) && p.Y <= Math.Max(y1.Value, y2.Value)))).ToList();
+            if (candidates.Count == 0)
+            {
+                yield return ActionResult.Success(before + "，本批入仓 0 份，区域内没有可割的草（牧草和草种留着）");
+                yield break;
+            }
+            if (PrepareHaySwing() is string problem)
+            {
+                yield return ActionResult.Fail(problem);
+                yield break;
+            }
+
+            var o = new Outcome();
+            if (Loc != farm)
+            {
+                foreach (var s in TravelInner("Farm", o))
+                    yield return s;
+                if (!o.Ok || Loc != farm)
+                {
+                    yield return ActionResult.Fail(o.Message ?? "没有走到主农场");
+                    yield break;
+                }
+            }
+
+            int limit = Math.Min(maxTiles ?? 60, 300), worked = 0, cut = 0;
+            string stop = null;
+            var current = start;
+            foreach (var p in Util.NearestOrder(Player.TilePoint, candidates))
+            {
+                current = HayStorage(locations);
+                if (current.hay >= goal || !current.hasRoom || worked >= limit)
+                    break;
+                foreach (var s in GoAdjacent(p, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    stop = o.Message;
+                    if (Loc != farm || Blocked(out _))
+                        break;
+                    continue;
+                }
+                var v = new Vector2(p.X, p.Y);
+                bool HasGrass(Point tile) => farm.terrainFeatures.TryGetValue(new Vector2(tile.X, tile.Y), out var f) && IsHayGrass(f);
+                // 走过去期间队友可能割掉旁边的草，或把东西放到草上。挥刀前按现场重新判断。
+                var nearby = Pathfinder.Dirs.Select(d => p + d).Where(HasGrass).ToHashSet();
+                if (!HasGrass(p) || KeepHayGrass(p, nearby, HayAnimalDoors(farm)) || farm.objects.ContainsKey(v))
+                    continue;
+
+                bool swung = false;
+                for (int hit = 0; hit < 4 && HasGrass(p) && !farm.objects.ContainsKey(v); hit++)
+                {
+                    current = HayStorage(locations);
+                    if (!current.hasRoom || current.hay >= goal || Loc != farm)
+                        break;
+                    scythe = Player.Items.IndexOf(weapon);
+                    if (scythe < 0)
+                    {
+                        o.Fail("背包里没有原来的镰刀了");
+                        break;
+                    }
+                    HaySwings.Add(weapon, (farm, Player, p));
+                    try
+                    {
+                        foreach (var s in UseToolOnce(scythe, p, o))
+                            yield return s;
+                    }
+                    finally
+                    {
+                        HaySwings.Remove(weapon);
+                    }
+                    if (!o.Ok)
+                        break;
+                    swung = true;
+                }
+                if (swung)
+                {
+                    worked++;
+                    if (!HasGrass(p))
+                        cut++;
+                }
+                if (!o.Ok)
+                {
+                    stop = o.Message;
+                    break;
+                }
+            }
+            current = HayStorage(locations);
+            string reason = !current.hasRoom ? "筒仓已满" : current.hay >= goal ? "已达到目标"
+                : worked >= limit ? "达到本批割草格数上限" : "本批没有其他能割到的草";
+            string msg = $"割完 {cut} 格草（挥刀 {worked} 格），本批筒仓净增 {current.hay - start.hay} 份干草，"
+                + $"现有 {current.hay}/{current.capacity}（{current.silos} 座，起始 {start.hay}，目标 {goal}）。{reason}"
+                + (stop != null ? $"。{stop}" : "");
+            yield return worked == 0 && stop != null ? ActionResult.Fail(msg) : ActionResult.Success(msg);
+        }
+
+        private static string HayShortageHint()
+        {
+            var farm = Game1.getFarm();
+            return HayStorage(HayLocations(farm)).silos > 0 && farm.terrainFeatures.Pairs.Any(p => IsHayGrass(p.Value))
+                ? "有筒仓、农场上有草，先用 cut_hay 补干草，不够再去 Marnie 那里买"
+                : "去 Marnie 那里买干草，有筒仓且农场有草时可以先用 cut_hay 补";
+        }
+
         private sealed class CareStats
         {
             public int Petted, Harvested, Picked, Hay, Doors, TooLate;
@@ -140,7 +362,7 @@ namespace BlindWhaleFarmer
                 if (TooLate > 0)
                     parts.Add($"{TooLate} 只已经睡了（19:00 后摸不了）");
                 if (NoHay)
-                    parts.Add("筒仓和背包里的干草都不够，食槽没喂满（用镰刀割草可以存进筒仓，或在 Marnie 那里买干草）");
+                    parts.Add($"筒仓和背包里的干草都不够，食槽没喂满（{HayShortageHint()}）");
                 parts.AddRange(Problems.Distinct().Take(4));
                 return string.Join("，", parts);
             }

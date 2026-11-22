@@ -4,11 +4,196 @@ using System.Linq;
 using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Objects;
+using StardewValley.TerrainFeatures;
+using SObject = StardewValley.Object;
 
 namespace BlindWhaleFarmer
 {
     internal sealed partial class GameActions
     {
+        // ───────────────────────── 储藏区 ─────────────────────────
+
+        /// <summary>同地图的箱子沿横竖和斜角两格以内相连，连成一片就算一组。</summary>
+        internal static List<List<Point>> ClusterChestTiles(IEnumerable<Point> tiles)
+            => MachineGroups(tiles.OrderBy(p => p.Y).ThenBy(p => p.X).ToList());
+
+        /// <summary>统计每侧紧贴范围的合规格子，四个角以外的斜格不计。</summary>
+        internal static Dictionary<string, List<Point>> StorageExpansionTiles(Rectangle bounds, Func<Point, bool> canPlace)
+        {
+            List<Point> Scan(int length, Func<int, Point> tile)
+                => Enumerable.Range(0, length).Select(tile).Where(canPlace).ToList();
+            return new Dictionary<string, List<Point>>
+            {
+                ["上"] = Scan(bounds.Width, i => new Point(bounds.Left + i, bounds.Top - 1)),
+                ["下"] = Scan(bounds.Width, i => new Point(bounds.Left + i, bounds.Bottom)),
+                ["左"] = Scan(bounds.Height, i => new Point(bounds.Left - 1, bounds.Top + i)),
+                ["右"] = Scan(bounds.Height, i => new Point(bounds.Right, bounds.Top + i))
+            };
+        }
+
+        private static bool IsStorageChest(Item item)
+            => item is Chest chest
+                ? chest.playerChest.Value && !chest.giftbox.Value
+                    && chest.SpecialChestType is Chest.SpecialChestTypes.None or Chest.SpecialChestTypes.BigChest or Chest.SpecialChestTypes.JunimoChest
+                : item != null && ChestIds.Contains(item.QualifiedItemId);
+
+        private static IEnumerable<IGrouping<GameLocation, (GameLocation loc, Point tile, Chest chest)>> StorageChests()
+            => AllChests().Where(c => IsStorageChest(c.chest) && c.chest != c.loc.GetFridge()).GroupBy(c => c.loc);
+
+        internal static string StorageSpreadHint()
+        {
+            var groups = StorageChests().SelectMany(g => ClusterChestTiles(g.Select(c => c.tile))).ToList();
+            return groups.Count >= 2 && groups.Any(g => g.Count == 1)
+                ? $"箱子分散在 {groups.Count} 处，可以集中放（用 storage_info 看能往哪边扩）"
+                : null;
+        }
+
+        private static bool TryStorageAnchor(string near, out Point anchor)
+        {
+            var parts = near?.Split(new[] { ',', '，' });
+            if (parts is { Length: 2 } && int.TryParse(parts[0], out int x) && int.TryParse(parts[1], out int y))
+            {
+                anchor = new Point(x, y);
+                return true;
+            }
+            anchor = default;
+            return false;
+        }
+
+        private static List<Point> StorageGroupAt(List<List<Point>> groups, Point anchor)
+            => groups.FirstOrDefault(g => g.Contains(anchor)) ?? new List<Point> { anchor };
+
+        private static Dictionary<string, List<Point>> StorageExpansion(List<Point> group, Func<Point, bool> canPlace)
+            => StorageExpansionTiles(BoundingBox(group), tile => group.Any(p => Math.Max(Math.Abs(p.X - tile.X), Math.Abs(p.Y - tile.Y)) <= 2) && canPlace(tile));
+
+        private static Point? StorageEntry(GameLocation loc)
+        {
+            if (loc == Loc)
+                return Player.TilePoint;
+            if (Exits.PlanRoute(Loc, loc.NameOrUniqueName) is not { Count: > 0 } route)
+                return null;
+            return ExitArrivalTile(loc, route[^1]);
+        }
+
+        private static Func<Point, bool> StoragePlacementCheck(GameLocation loc, Item item, Point start)
+        {
+            if (Utility.isPlacementForbiddenHere(loc))
+                return _ => false;
+            var exits = Exits.Get(loc).Select(e => e.Tile).ToHashSet();
+            var cache = new Dictionary<Point, bool>();
+            var reachable = ReachableTiles(loc, start, null, cache);
+            return tile => reachable.Contains(tile) && tile != start
+                && !exits.Any(exit => Util.Manhattan(exit, tile) <= 1)
+                && !Pathfinder.IsTouchWarp(loc, tile.X, tile.Y)
+                && Pathfinder.InteriorDoor(loc, tile) == null
+                && !Pathfinder.Dirs.Any(d => Pathfinder.InteriorDoor(loc, tile + d) != null)
+                && (!loc.terrainFeatures.TryGetValue(new Vector2(tile.X, tile.Y), out var feature) || feature is not HoeDirt)
+                && PlaceableProblem(loc, item, tile) == null
+                && (loc is not Farm farm || FarmPlacementProblem(farm, (SObject)item, tile, checkChestDistance: false) == null)
+                && BlockageProblem(loc, tile, cache, reachable, start) == null
+                && Pathfinder.FindPath(loc, start, Pathfinder.AdjacentStandTiles(loc, tile)
+                    .Where(p => !Pathfinder.IsTouchWarp(loc, p.X, p.Y)).ToList()) != null;
+        }
+
+        public IEnumerable<object> StorageInfo(string location, string near)
+        {
+            GameLocation map = null;
+            if (!string.IsNullOrWhiteSpace(location))
+            {
+                map = Game1.getLocationFromName(location.Trim());
+                if (map == null)
+                {
+                    yield return ActionResult.Fail($"找不到地点“{location}”，用 get_state 或 list_chests 里的地点名");
+                    yield break;
+                }
+            }
+            Point anchor = default;
+            bool hasAnchor = near != null;
+            if (hasAnchor)
+            {
+                map ??= Loc;
+                if (!TryStorageAnchor(near, out anchor) || !map.isTileOnMap(anchor.X, anchor.Y))
+                {
+                    yield return ActionResult.Fail("storage_info 的 near 要写成该地图上的格子坐标，例如 \"60,15\"");
+                    yield break;
+                }
+            }
+
+            var maps = StorageChests().Where(g => map == null || g.Key == map)
+                .ToDictionary(g => g.Key, g => g.ToDictionary(c => c.tile, c => c.chest));
+            if (hasAnchor && !maps.ContainsKey(map))
+                maps.Add(map, new Dictionary<Point, Chest>());
+            if (maps.Count == 0)
+            {
+                yield return ActionResult.Success("还没有储藏箱。选好地图和锚点后，用 storage_info near=\"x,y\" 查看周围能放的格子");
+                yield break;
+            }
+
+            var probe = ItemRegistry.Create<SObject>("(BC)130");
+            var lines = new List<string>();
+            foreach (var (loc, chests) in maps)
+            {
+                if (loc.Map?.Layers.Count is not > 0)
+                {
+                    lines.Add($"{loc.NameOrUniqueName}：地图还没加载，到了当地再查");
+                    continue;
+                }
+                var groups = ClusterChestTiles(chests.Keys);
+                if (hasAnchor)
+                    groups = new List<List<Point>> { StorageGroupAt(groups, anchor) };
+                var entry = StorageEntry(loc);
+                var canPlace = entry is Point start && loc.isTileOnMap(start.X, start.Y) ? StoragePlacementCheck(loc, probe, start) : null;
+                foreach (var group in groups)
+                {
+                    var box = BoundingBox(group);
+                    var members = group.Where(chests.ContainsKey).Select(p => chests[p]).ToList();
+                    // 祝尼魔箱子等可能共用同一份格子。组内共用的容量只算一次。
+                    var inventories = members.Select(c => (items: c.GetItemsForPlayer(), capacity: c.GetActualCapacity()))
+                        .DistinctBy(c => c.items, ReferenceEqualityComparer.Instance).ToList();
+                    int capacity = inventories.Sum(c => c.capacity);
+                    int free = inventories.Sum(c => Math.Max(0, c.capacity - c.items.Count(i => i != null)));
+                    var first = group[0];
+                    string range = $"({box.Left},{box.Top})-({box.Right - 1},{box.Bottom - 1})";
+                    string head = $"{loc.NameOrUniqueName} {range}，near=\"{first.X},{first.Y}\"，{members.Count} 个箱子，空 {free}/{capacity} 格";
+                    if (canPlace == null)
+                    {
+                        lines.Add(head + "。算不出进图位置，到了当地再查可扩空位");
+                        continue;
+                    }
+                    var sides = StorageExpansion(group, canPlace);
+                    lines.Add(head + "。可扩 " + string.Join("；", sides.Select(side => $"{side.Key} {side.Value.Count} 格"
+                        + (side.Value.Count > 0 ? $"（{string.Join("、", side.Value.Select(p => $"({p.X},{p.Y})"))}）" : ""))));
+                }
+            }
+            yield return ActionResult.Success(string.Join("\n", lines) + "\n空位按一次放一个箱子计算，放完可再查。到目标地图后，用 place_item near=\"x,y\" 扩这一组，也可以自行选坐标。");
+        }
+
+        private IEnumerable<object> PlaceChestNear(string itemSpec, string near, bool explicitTile)
+        {
+            if (explicitTile || !TryStorageAnchor(near, out var anchor) || !Loc.isTileOnMap(anchor.X, anchor.Y))
+            {
+                yield return ActionResult.Fail("place_item 的 near 要写当前地图上的锚点坐标，例如 \"60,15\"，和直接放置的 x,y 二选一");
+                yield break;
+            }
+            int index = Util.FindItemIndex(itemSpec, IsStorageChest);
+            if (index < 0)
+            {
+                yield return ActionResult.Fail($"背包里没有可用 near 摆放的箱子“{itemSpec}”");
+                yield break;
+            }
+            var groups = ClusterChestTiles(PlayerChests(Loc).Where(c => IsStorageChest(c.chest)).Select(c => c.tile));
+            var canPlace = StoragePlacementCheck(Loc, Player.Items[index], Player.TilePoint);
+            var spot = StorageExpansion(StorageGroupAt(groups, anchor), canPlace).Values.SelectMany(tiles => tiles)
+                .OrderBy(p => Util.Manhattan(p, Player.TilePoint)).Select(p => (Point?)p).FirstOrDefault();
+            if (spot is not Point tile)
+            {
+                yield return ActionResult.Fail($"锚点 ({anchor.X},{anchor.Y}) 这一片周围没有能放箱子的空位，用 storage_info 查位置或换个锚点");
+                yield break;
+            }
+            foreach (var s in PlaceItem(index.ToString(), tile.X, tile.Y, nearStorage: true))
+                yield return s;
+        }
+
         // ───────────────────────── 箱子存取 ─────────────────────────
 
         /// <summary>

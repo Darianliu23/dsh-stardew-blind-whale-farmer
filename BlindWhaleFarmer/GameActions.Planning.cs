@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewValley;
@@ -407,17 +408,49 @@ namespace BlindWhaleFarmer
             return null;
         }
 
+        /// <summary>把今天要做的事逐段识别；有一段不认识就整次报错。</summary>
+        private static bool TryParsePurposes(string purposeSpec, out List<string> purposes, out string error)
+        {
+            purposes = new List<string>();
+            error = null;
+            if (string.IsNullOrWhiteSpace(purposeSpec))
+                return true;
+
+            foreach (string part in Regex.Split(purposeSpec, @"[,，、\s和]+").Where(p => p.Length > 0))
+            {
+                string purpose = NormalizePurpose(part);
+                if (purpose == null)
+                {
+                    error = UnknownPurpose(part);
+                    return false;
+                }
+                if (!purposes.Contains(purpose))
+                    purposes.Add(purpose);
+            }
+
+            if (purposes.Count > 0)
+                return true;
+            error = UnknownPurpose(purposeSpec);
+            return false;
+
+            static string UnknownPurpose(string part) =>
+                $"不认识出门目的“{part}”，可以用 mine（下矿）、fish（钓鱼）、farm（种地）、town（去镇上送礼办事），多个用逗号分隔，不传就按通用规则整理";
+        }
+
         private static readonly Dictionary<string, string> PurposeName = new()
         {
             ["mine"] = "下矿", ["fish"] = "钓鱼", ["farm"] = "种地", ["town"] = "去镇上"
         };
 
-        /// <summary>某个出门目的用得上的东西（purpose 为 null 时什么都不额外排除）。</summary>
         /// <summary>回家用的：传送图腾（农场 688、山 689、海滩 690、姜岛 886）、回城权杖。</summary>
         internal static bool IsEscapeItem(Item i) =>
             i is StardewValley.Tools.Wand || i is SObject o && o.QualifiedItemId is "(O)688" or "(O)689" or "(O)690" or "(O)886";
 
-        private static bool UsefulFor(string purpose, Item i)
+        private static string TripPurposeName(IEnumerable<string> purposes) =>
+            string.Join("+", purposes.Select(p => PurposeName[p]));
+
+        /// <summary>某个出门目的用得上的东西。整理背包时可先跳过普通回血食物，稍后按数量补上。</summary>
+        private static bool UsefulFor(string purpose, Item i, bool includeHealingFood = true)
         {
             // 戒指、鞋子到哪都带；武器除了去镇上都带（农场晚上、钓鱼的地方也会有怪）
             if (i is Ring or Boots || purpose != "town" && i is MeleeWeapon { } mw && !mw.isScythe())
@@ -426,7 +459,7 @@ namespace BlindWhaleFarmer
             {
                 case "mine":
                     return i is Pickaxe || IsEscapeItem(i) || (i is MeleeWeapon w && !w.isScythe()) || i is Slingshot
-                        || i is SObject o && (o.Name.Contains("Bomb") || o.QualifiedItemId is "(O)71" || o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0
+                        || i is SObject o && (o.Name.Contains("Bomb") || o.QualifiedItemId is "(O)71" || includeHealingFood && o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0
                                               || o.Category == SObject.CookingCategory)
                         || i is Ring or Boots;
                 case "fish":
@@ -443,29 +476,34 @@ namespace BlindWhaleFarmer
             }
         }
 
-        /// <summary>这次出门该带、背包里却没有的东西；箱子里有的话说在哪个箱子。都带齐了返回 null。</summary>
-        private static string MissingForTrip(string purpose)
+        private static IEnumerable<(string name, Func<Item, bool> match)> TripNeeds(string purpose)
         {
-            var need = new List<(string name, Func<Item, bool> match)>();
             switch (purpose)
             {
                 case "mine":
-                    need.Add(("武器", i => i is MeleeWeapon w && !w.isScythe()));
-                    need.Add(("镐子", i => i is Pickaxe));
-                    need.Add(("回血的食物", i => i is SObject o && o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0));
+                    yield return ("武器", i => i is MeleeWeapon w && !w.isScythe());
+                    yield return ("镐子", i => i is Pickaxe);
+                    yield return ("回血的食物", i => i is SObject o && o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0);
                     break;
                 case "fish":
-                    need.Add(("鱼竿", i => i is FishingRod));
-                    need.Add(("鱼饵", i => i is SObject o && o.Category == SObject.baitCategory));
+                    yield return ("鱼竿", i => i is FishingRod);
+                    yield return ("鱼饵", i => i is SObject o && o.Category == SObject.baitCategory);
                     break;
                 case "farm":
-                    need.Add(("锄头", i => i is Hoe));
-                    need.Add(("水壶", i => i is WateringCan));
+                    yield return ("锄头", i => i is Hoe);
+                    yield return ("水壶", i => i is WateringCan);
                     break;
             }
+        }
+
+        private static string MissingForTrip(string purpose) => MissingForTrips(new[] { purpose });
+
+        /// <summary>这次出门该带、背包里却没有的东西；箱子里有的话说在哪个箱子。都带齐了返回 null。</summary>
+        private static string MissingForTrips(IReadOnlyList<string> purposes)
+        {
             var parts = new List<string>();
             List<(GameLocation loc, Point tile, Chest chest)> chests = null;
-            foreach (var (name, match) in need)
+            foreach (var (name, match) in purposes.SelectMany(TripNeeds).DistinctBy(n => n.name))
             {
                 if (Player.Items.Any(i => i != null && match(i)))
                     continue;
@@ -475,7 +513,7 @@ namespace BlindWhaleFarmer
                     ? $"{name}在 {where.loc.NameOrUniqueName} ({where.tile.X},{where.tile.Y}) 的箱子里（take_items 拿出来）"
                     : $"没有{name}");
             }
-            return parts.Count == 0 ? null : $"{PurposeName[purpose]}还缺：" + string.Join("；", parts);
+            return parts.Count == 0 ? null : $"{TripPurposeName(purposes)}还缺：" + string.Join("；", parts);
         }
 
         /// <summary>出门（下矿、钓鱼）时身上带着、但这次用不上的东西，给动作结果加一句提醒。</summary>
@@ -918,7 +956,7 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>农场上额外的规矩：别压田里、别堵建筑门口、箱子放一起。</summary>
-        private static string FarmPlacementProblem(Farm farm, SObject o, Point tile)
+        private static string FarmPlacementProblem(Farm farm, SObject o, Point tile, bool checkChestDistance = true)
         {
             foreach (var f in Fields(farm).Where(f => f.Tiles.Count >= 4))
                 if (f.Box.Contains(tile))
@@ -930,7 +968,7 @@ namespace BlindWhaleFarmer
                     return $"({tile.X},{tile.Y}) 堵在 {b.buildingType.Value}（左上角 ({bx},{by})）门口，门口 ({bx},{by + b.tilesHigh.Value})-({bx + b.tilesWide.Value - 1},{by + b.tilesHigh.Value + 1}) 要空着";
             }
             // 箱子放一起：离已有的箱子太远就拦下，告诉她挨着哪个放
-            if (o is Chest || ChestIds.Contains(o.QualifiedItemId))
+            if (checkChestDistance && (o is Chest || ChestIds.Contains(o.QualifiedItemId)))
             {
                 var others = PlayerChests(farm).Select(c => c.tile).ToList();
                 if (others.Count > 0)
@@ -977,9 +1015,9 @@ namespace BlindWhaleFarmer
         /// 在 tile 放一个挡路的东西以后：原来走得到的地方有没有被隔开（堵死一条窄路、把一块空地围起来），
         /// 附近的箱子/机器是不是还有一格能站过去用。有问题返回原因，没问题返回 null。
         /// </summary>
-        private static string BlockageProblem(GameLocation loc, Point tile, Dictionary<Point, bool> cache = null, HashSet<Point> before = null)
+        private static string BlockageProblem(GameLocation loc, Point tile, Dictionary<Point, bool> cache = null, HashSet<Point> before = null, Point? from = null)
         {
-            var start = Game1.player.TilePoint;
+            var start = from ?? Game1.player.TilePoint;
             if (start == tile)
                 return null;
             cache ??= new Dictionary<Point, bool>();
@@ -1147,6 +1185,20 @@ namespace BlindWhaleFarmer
                 sb.AppendLine(head + body);
             }
             return sb.ToString().TrimEnd();
+        }
+
+        /// <summary>get_state 里箱子概览被折叠（和上次一样）时留的一行摘要：箱子数 + 全部箱子里数量最多的几样，让 AI 不会觉得“不记得箱子里有什么”。</summary>
+        internal static string ChestSummary()
+        {
+            var chests = AllChests();
+            if (chests.Count == 0)
+                return "还没有箱子";
+            var totals = new Dictionary<string, int>();
+            foreach (var (_, _, chest) in chests)
+                foreach (var i in chest.GetItemsForPlayer().Where(i => i != null))
+                    totals[i.DisplayName] = totals.GetValueOrDefault(i.DisplayName) + i.Stack;
+            string top = string.Join("、", totals.OrderByDescending(kv => kv.Value).Take(5).Select(kv => $"{kv.Key}x{kv.Value}"));
+            return $"箱子共 {chests.Count} 个，里面一共 {totals.Count} 种东西" + (top.Length > 0 ? $"，数量最多：{top}" : "（全是空的）");
         }
 
         /// <summary>list_chests：列出所有箱子里的东西；给了 item 就只找这样东西放在哪。不花游戏时间。</summary>

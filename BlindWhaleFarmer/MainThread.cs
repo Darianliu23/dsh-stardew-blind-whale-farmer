@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using StardewModdingAPI;
+using StardewValley;
+using InventoryEntry = System.ValueTuple<string, string, int, int>;
 
 namespace BlindWhaleFarmer
 {
@@ -21,6 +24,9 @@ namespace BlindWhaleFarmer
         public static ActionResult Success(string msg) => new ActionResult(true, "成功：" + msg);
         public static ActionResult Fail(string msg) => new ActionResult(false, "失败：" + msg);
     }
+
+    /// <summary>把获得明细单独交给工具，在现有的提醒之后输出。</summary>
+    internal readonly record struct ActionCompletion(string Message, string InventoryNote = null);
 
     /// <summary>子协程用来回传结果的容器（子协程只 yield null 等待）。</summary>
     internal sealed class Outcome
@@ -51,7 +57,13 @@ namespace BlindWhaleFarmer
         private readonly ConcurrentQueue<Action> queue = new();
 
         private IEnumerator<object> current;
-        private TaskCompletionSource<string> currentTcs;
+        private Func<IEnumerable<object>> currentFactory;
+        private volatile TaskCompletionSource<ActionCompletion> currentTcs;
+        private Action currentAfterAction;
+        private bool currentTrackInventory;
+        private InventoryEntry[] actionInventoryStart;
+        private InventoryEntry[] outsideInventoryBaseline;
+        private InventoryEntry[] outsideInventoryChanges = Array.Empty<InventoryEntry>();
         private int currentTicks;
         private int currentMaxTicks;
         /// <summary>正在跑的动作叫什么、什么时候开始的（“上一个动作还在执行”时告诉 AI）。</summary>
@@ -78,7 +90,46 @@ namespace BlindWhaleFarmer
             this.monitor = monitor;
         }
 
-        public bool IsBusy => current != null;
+        public bool IsBusy => currentTcs != null;
+
+        private static InventoryEntry[] CaptureLocalInventory() => Safe(() =>
+        {
+            var items = Context.IsWorldReady ? Game1.player?.Items : null;
+            if (items == null)
+                return null;
+            return InventoryDiff.Snapshot(items.Where(item => item != null).Select(item =>
+            {
+                string id = item.QualifiedItemId;
+                return (id, Safe(() => item.DisplayName, id), item.Quality, item.Stack);
+            }));
+        });
+
+        public void ResetInventory(bool worldReady = false)
+        {
+            actionInventoryStart = null;
+            outsideInventoryBaseline = worldReady ? CaptureLocalInventory() : null;
+            outsideInventoryChanges = Array.Empty<InventoryEntry>();
+        }
+
+        private void UpdateOutsideInventory(InventoryEntry[] now)
+        {
+            if (now == null)
+                return;
+            if (outsideInventoryBaseline != null)
+                outsideInventoryChanges = InventoryDiff.Sum(outsideInventoryChanges.Concat(
+                    InventoryDiff.Difference(outsideInventoryBaseline, now)));
+            outsideInventoryBaseline = now;
+        }
+
+        public string TakeOutsideInventoryNote()
+        {
+            // 等过场时动作还没开始；动作已经在跑时，只读开始前攒下的变化。
+            if (!IsBusy || !currentTrackInventory || currentFactory != null)
+                UpdateOutsideInventory(CaptureLocalInventory());
+            string gains = InventoryDiff.FormatGains(outsideInventoryChanges);
+            outsideInventoryChanges = Array.Empty<InventoryEntry>();
+            return gains == null ? null : "上次以来动作外获得：" + gains;
+        }
 
         /// <summary>长动作自己报的进度（比如“矿洞第 12 层，已下 3/5 层”），动作开始时清空。</summary>
         public static volatile string Progress;
@@ -86,7 +137,7 @@ namespace BlindWhaleFarmer
         /// <summary>正在跑的动作：名字、跑了几秒、进度。没在跑返回 null。（HTTP 线程读，字段都是一次性赋值，读到旧值也无妨）</summary>
         public string RunningSummary()
         {
-            if (current == null)
+            if (!IsBusy)
                 return null;
             int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
             string p = Progress;
@@ -142,49 +193,45 @@ namespace BlindWhaleFarmer
         /// preemptWhenStuck：处理界面的动作（dialogue、skip_event 等）在剧情/界面打开时可以打断正在跑的动作——
         /// 那个动作被剧情挡住本来也走不动，不打断的话两边互相等，会卡死。
         /// </summary>
-        public Task<string> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false, bool interruptOnDamage = false, string name = null, bool interruptOnChat = false, bool stopOnScene = false)
+        public Task<ActionCompletion> RunAction(Func<IEnumerable<object>> factory, int maxSeconds, bool preemptWhenStuck = false,
+            bool interruptOnDamage = false, string name = null, bool interruptOnChat = false, bool stopOnScene = false,
+            bool trackInventory = true, Action afterAction = null)
         {
-            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var tcs = new TaskCompletionSource<ActionCompletion>(TaskCreationOptions.RunContinuationsAsynchronously);
             queue.Enqueue(() =>
             {
-                if (current != null && preemptWhenStuck && Safe(() => StardewValley.Game1.eventUp || StardewValley.Game1.activeClickableMenu != null))
+                if (IsBusy && preemptWhenStuck && Safe(() => Game1.eventUp || Game1.activeClickableMenu != null))
                     Finish("失败：被剧情/界面打断，已中止（先处理剧情或界面，再重新执行）");
                 // 同一步里连发两个 wait（MCP 客户端会并行调用）：第二个不报“还在执行”，并进正在跑的那个，一起返回
-                if (current != null && name == "wait" && currentName == "wait")
+                if (IsBusy && name == "wait" && currentName == "wait")
                 {
                     waitFollowers.Add(tcs);
                     return;
                 }
-                if (current != null)
+                if (IsBusy)
                 {
                     int sec = (int)(DateTime.UtcNow - currentStartedUtc).TotalSeconds;
                     string what = currentName != null ? $"（{currentName}，已经执行 {sec / 60} 分 {sec % 60} 秒，最长 {currentMaxTicks / 3600} 分钟）" : "";
                     string p = Progress;
-                    tcs.SetResult($"失败：上一个动作{what}还在执行，它结束前其他动作都会被拒绝。"
+                    tcs.SetResult(new ActionCompletion($"失败：上一个动作{what}还在执行，它结束前其他动作都会被拒绝。"
                         + (string.IsNullOrEmpty(p) ? "" : $"进度：{p}。")
-                        + "它做完后结果会出现在 get_state 最前面；可以用 get_state 看情况，过一会儿再试，或者 cancel_action 让它停下");
+                        + "它做完后结果会出现在 get_state 最前面；可以用 get_state 看情况，过一会儿再试，或者 cancel_action 让它停下"));
                     return;
                 }
-                try
-                {
-                    current = factory().GetEnumerator();
-                    currentTcs = tcs;
-                    currentName = name;
-                    currentStartedUtc = DateTime.UtcNow;
-                    Progress = null;
-                    currentTicks = 0;
-                    currentMaxTicks = Math.Max(1, maxSeconds) * 60;
-                    currentInterruptOnChat = interruptOnChat;
-                    currentFreezeWait = 0;
-                    currentStopOnScene = stopOnScene && !Safe(() => StardewValley.Game1.eventUp, false);
-                    currentSceneTicks = 0;
-                    currentStartHealth = interruptOnDamage ? Safe(() => StardewValley.Game1.player?.health ?? -1, -1) : -1;
-                }
-                catch (Exception ex)
-                {
-                    current = null;
-                    tcs.SetResult("错误：" + ex.Message);
-                }
+                currentFactory = factory;
+                currentAfterAction = afterAction;
+                currentTrackInventory = trackInventory;
+                currentName = name;
+                currentStartedUtc = DateTime.UtcNow;
+                Progress = null;
+                currentTicks = 0;
+                currentMaxTicks = Math.Max(1, maxSeconds) * 60;
+                currentInterruptOnChat = interruptOnChat;
+                currentFreezeWait = 0;
+                currentStopOnScene = stopOnScene && !Safe(() => Game1.eventUp, false);
+                currentSceneTicks = 0;
+                currentStartHealth = interruptOnDamage ? Safe(() => Game1.player?.health ?? -1, -1) : -1;
+                currentTcs = tcs;
             });
             return tcs.Task;
         }
@@ -195,7 +242,7 @@ namespace BlindWhaleFarmer
             while (queue.TryDequeue(out var action))
                 action();
 
-            if (current == null)
+            if (!IsBusy)
                 return;
 
             if (!worldReady)
@@ -253,6 +300,16 @@ namespace BlindWhaleFarmer
 
             try
             {
+                if (currentFactory is { } factory)
+                {
+                    if (currentTrackInventory)
+                    {
+                        actionInventoryStart = CaptureLocalInventory();
+                        UpdateOutsideInventory(actionInventoryStart);
+                    }
+                    currentFactory = null;
+                    current = factory().GetEnumerator();
+                }
                 if (!current.MoveNext())
                 {
                     Finish("成功：完成");
@@ -268,12 +325,6 @@ namespace BlindWhaleFarmer
             }
         }
 
-        public void Cancel(string reason)
-        {
-            if (current != null)
-                Finish("失败：" + reason);
-        }
-
         /// <summary>从任意线程中止正在跑的动作（在主线程下一帧执行）；那时已经换成别的动作就不动它。</summary>
         public void CancelCurrent(string reason)
         {
@@ -283,12 +334,12 @@ namespace BlindWhaleFarmer
             queue.Enqueue(() =>
             {
                 if (currentTcs == tcs)
-                    Cancel(reason);
+                    Finish("失败：" + reason);
             });
         }
 
         /// <summary>并进正在跑的 wait 的其他 wait 调用，等它结束时一起返回。</summary>
-        private readonly List<TaskCompletionSource<string>> waitFollowers = new();
+        private readonly List<TaskCompletionSource<ActionCompletion>> waitFollowers = new();
 
         /// <summary>中止正在执行的动作（cancel_action）：返回中止了什么、跑了多久。</summary>
         public Task<string> CancelForTool()
@@ -296,7 +347,7 @@ namespace BlindWhaleFarmer
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             queue.Enqueue(() =>
             {
-                if (current == null)
+                if (!IsBusy)
                 {
                     tcs.SetResult("成功：现在没有正在执行的动作，不用中止");
                     return;
@@ -317,15 +368,45 @@ namespace BlindWhaleFarmer
         private void Finish(string message)
         {
             var tcs = currentTcs;
-            (current as IDisposable)?.Dispose();
+            try
+            {
+                current?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                monitor?.Log($"动作清理出错：{ex}", LogLevel.Warn);
+                message = "错误：" + ex.Message;
+            }
+            string inventoryNote = null;
+            if (currentFactory == null)
+            {
+                try
+                {
+                    currentAfterAction?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    monitor?.Log($"动作后处理出错：{ex}", LogLevel.Trace);
+                }
+                if (currentTrackInventory)
+                {
+                    var now = CaptureLocalInventory();
+                    if (actionInventoryStart != null && now != null)
+                        inventoryNote = InventoryDiff.FormatGains(InventoryDiff.Difference(actionInventoryStart, now));
+                    outsideInventoryBaseline = now;
+                }
+            }
             current = null;
+            currentFactory = null;
+            currentAfterAction = null;
+            actionInventoryStart = null;
             currentTcs = null;
-            tcs?.TrySetResult(message);
+            tcs?.TrySetResult(new ActionCompletion(message, inventoryNote));
             if (waitFollowers.Count > 0)
             {
                 string merged = message.StartsWith("成功：") ? "成功：（和同时发出的上一个 wait 合并成了一次）" + message.Substring(3) : message;
                 foreach (var f in waitFollowers)
-                    f.TrySetResult(merged);
+                    f.TrySetResult(new ActionCompletion(merged, inventoryNote));
                 waitFollowers.Clear();
             }
         }

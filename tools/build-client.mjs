@@ -21,6 +21,8 @@ const LABELS = {
   idleSeconds: ['play', '空闲多少秒算不玩了'],
   forageRadius: ['play', '顺手采集范围（格）'],
   companionMode: ['play', '联机时怎么安排自己'],
+  allowSpendSharedMoney: ['play', '允许 AI 直接花共用金币'],
+  aiHomeLocation: ['play', '联机时 AI 的家'],
   extraInstructions: ['play', '额外要求'],
   reservedItems: ['play', '保留物品'],
   guideFile: ['guide', '攻略文件'],

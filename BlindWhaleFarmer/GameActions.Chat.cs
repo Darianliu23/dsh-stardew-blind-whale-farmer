@@ -149,15 +149,39 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>
-        /// 允许 AI 说话吗（config.json 的 AllowChat，DSH 设置页 allowChat 会改它）。默认不允许。
+        /// 允许 AI 说话吗（config.json 的 AllowChat，DSH 设置页 allowChat 会改它）。默认允许（v1.1.27 起）。
         /// 模组里所有“AI 自己往聊天里发话”的地方都走 AiSay，只有玩家自己输入的话（F6 输入框）不走这里。
         /// </summary>
         internal static bool AllowChat;
+
+        static readonly string[] BrokenToolMarks = { "</text>", "DSML", "<｜", "</invoke", "</parameter", "</calls", "<invoke", "<parameter" };
+
+        /// <summary>
+        /// 聊天文字清理：开头的 / 会被聊天框当成游戏命令，去掉；模型吐坏的工具调用标记（</text>、DSML、invoke 等）
+        /// 连同后面的内容一起截掉，不然会原样发进游戏聊天。清完是空的返回空串。
+        /// </summary>
+        internal static string CleanChatText(string text)
+        {
+            text = (text ?? "").Trim().TrimStart('/');
+            int cut = -1;
+            foreach (var m in BrokenToolMarks)
+            {
+                int i = text.IndexOf(m, StringComparison.OrdinalIgnoreCase);
+                if (i >= 0 && (cut < 0 || i < cut))
+                    cut = i;
+            }
+            if (cut >= 0)
+                text = text.Substring(0, cut);
+            return text.Trim();
+        }
 
         /// <summary>AI 往聊天框发一句话；聊天关着就什么都不发，返回 false。</summary>
         internal static bool AiSay(string text)
         {
             if (!AllowChat || Game1.chatBox == null)
+                return false;
+            text = CleanChatText(text);
+            if (text.Length == 0)
                 return false;
             Game1.chatBox.textBoxEnter(text);
             return true;
@@ -175,8 +199,7 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("只有联机时才能说话");
                 yield break;
             }
-            // 开头的 / 会被聊天框当成游戏命令
-            text = (text ?? "").Trim().TrimStart('/').Trim();
+            text = CleanChatText(text);
             if (text.Length == 0)
             {
                 yield return ActionResult.Fail("没有要说的内容");

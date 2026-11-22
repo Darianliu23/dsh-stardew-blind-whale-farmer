@@ -45,7 +45,7 @@ namespace BlindWhaleFarmer
                         continue;
                     int have = Player.Items.Where(i => i != null && d.IsValidItem(i)).Sum(i => i.Stack);
                     if (have > 0)
-                        hints.Add($"特别订单“{order.GetName()}”要往投递箱里放东西，背包里有 {have} 个能交（special_order_dropbox）");
+                        hints.Add($"特别订单“{order.GetName()}”{SpecialOrderLabels(order)}要往投递箱里放东西，背包里有 {have} 个能交（special_order_dropbox）");
                 }
             }
             int pending = (int)Player.stats.Get("specialOrderPrizeTickets");
@@ -56,6 +56,21 @@ namespace BlindWhaleFarmer
                 hints.Add($"背包里有 {tickets} 张奖券，可以去刘易斯家的奖券机换奖品（prize_machine）");
             return hints.Count > 0 ? string.Join("；", hints) : null;
         }
+
+        internal static string QuestLabels(bool timed, int daysLeft, bool? repeatable)
+        {
+            string timing = timed ? $"【限时 剩{Math.Max(0, daysLeft)}天】" : "";
+            return timing + (repeatable switch
+            {
+                true => "【可重复】",
+                false => "【一次性】",
+                null => "【未知】"
+            });
+        }
+
+        internal static string SpecialOrderLabels(SpecialOrder order) =>
+            QuestLabels(order.IsTimedQuest() && order.questState.Value == SpecialOrderStatus.InProgress,
+                order.GetDaysLeft(), order.GetData()?.Repeatable);
 
         /// <summary>一个特别订单给 AI 看的说明：名字、委托人的话、目标、期限、报酬。</summary>
         private static string DescribeSpecialOrder(SpecialOrder order, bool progress)
@@ -68,6 +83,7 @@ namespace BlindWhaleFarmer
                 sb.Append($"（委托人：{npc.displayName}）");
             if (Player.team.completedSpecialOrders.Contains(order.questKey.Value))
                 sb.Append("（以前完成过）");
+            sb.Append(SpecialOrderLabels(order));
             sb.AppendLine();
             string desc = order.GetDescription()?.Trim();
             if (!string.IsNullOrEmpty(desc))
@@ -90,9 +106,6 @@ namespace BlindWhaleFarmer
             // 法师的“灵外质”订单：灵外质只在订单进行中从幽灵身上掉（约 9.5%，捡到一个后就不再掉），幽灵在矿洞 51～69 层（每层最多一只），骷髅洞穴的暗层也有
             if (order.questKey.Value == "Wizard")
                 sb.AppendLine("  提示：灵外质从幽灵身上掉（只在接了这个订单后掉，约一成概率，捡到一个就不再掉）。幽灵在矿洞 51～69 层，每层最多一只，用 explore_mine 去那几层打幽灵；捡到后 give_gift npc=Wizard item=灵外质 交给法师（在法师塔）");
-            int days = order.GetDaysLeft();
-            if (days > 0)
-                sb.AppendLine($"  期限：{(progress ? "还剩 " : "")}{days} 天");
             var rewards = new List<string>();
             if (order.GetMoneyReward() > 0)
                 rewards.Add($"{order.GetMoneyReward()}g");

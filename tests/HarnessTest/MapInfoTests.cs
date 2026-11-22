@@ -548,14 +548,23 @@ partial class Program
         Check(buySrc.IndexOf("SeedWontRipen") < buySrc.IndexOf("Player.Money") || !buySrc.Substring(0, 4000).Contains("Player.Money -="), "buy 在花钱之前先判断种不熟");
         Check(gaSrc.Contains("for (int x = 0; x < w; x++)") && gaSrc.Contains("CanRefillWateringCanOnTile(x, y)") && !gaSrc.Contains("me.X - 50; x <= me.X + 50"), "灌水搜整张地图，不再只搜身边 50 格");
         Check(gaSrc.Contains("wait < 5 * 60") && gaSrc.Contains("c.Name == villager.Name") && gaSrc.Contains("追了几趟"), "interact 找人：到了新地图先等 5 秒、按名字找，等不到再追（最多 3 趟），追不到给日程提示");
-        Check(tidySrc.Contains("回来种地、浇水、砍树之前先 take_items 拿回来"), "tidy_backpack 把农具存起来时提醒拿回来");
+        Check(tidySrc.Contains("今天还要用的话先 take_items 拿回来"), "tidy_backpack 把农具存起来时提醒拿回来");
         var shipSrc = gaSrc.Substring(gaSrc.IndexOf("public IEnumerable<object> ShipItems"), 1800);
         Check(shipSrc.Contains("改出没标的那格"), "ship_items 点名的格标了【留着】、同名另一格没标时，改出没标的那格");
 
-        // 7 篇原版攻略都写明只覆盖原版
+        // 新攻略也要写明只覆盖原版
         var guideDir = System.IO.Path.Combine(repo2().FullName, "BlindWhaleFarmer", "guide");
         var vanilla = System.IO.Directory.GetFiles(guideDir, "*.md").Where(f => !System.IO.Path.GetFileName(f).StartsWith("SVE-")).ToList();
-        Check(vanilla.Count == 8 && vanilla.Where(f => !System.IO.Path.GetFileName(f).StartsWith("农场类型")).All(f => System.IO.File.ReadAllText(f).Contains("本篇只覆盖原版")), $"{vanilla.Count} 篇原版攻略都写明只覆盖原版");
+        Check(vanilla.Count == 10 && vanilla.Any(f => System.IO.Path.GetFileName(f) == "沙漠节.md") && vanilla.Any(f => System.IO.Path.GetFileName(f) == "种田.md") && vanilla.Where(f => !System.IO.Path.GetFileName(f).StartsWith("农场类型")).All(f => System.IO.File.ReadAllText(f).Contains("本篇只覆盖原版")), $"{vanilla.Count} 篇原版攻略都写明只覆盖原版");
+
+        // DSH 读插件 package.json 时直接 JSON.parse，开头带 UTF-8 BOM 会解析失败、插件整个不加载（1.1.26/1.1.27 踩过）
+        foreach (var rel in new[] { "package.json", System.IO.Path.Combine("BlindWhaleFarmer", "manifest.json"), System.IO.Path.Combine("release", "BlindWhaleFarmer", "manifest.json") })
+        {
+            var path = System.IO.Path.Combine(repo2().FullName, rel);
+            if (!System.IO.File.Exists(path)) continue;
+            var head = System.IO.File.ReadAllBytes(path);
+            Check(!(head.Length >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF), $"{rel} 不带 UTF-8 BOM（带了 DSH 解析失败，插件不加载）");
+        }
 
         // 商店、升级、砸晶球都要像玩家一样走到柜台按动作键：源码里不许再出现直接开界面的调用（注释除外）
         var srcDir = System.IO.Path.Combine(repo2().FullName, "BlindWhaleFarmer");

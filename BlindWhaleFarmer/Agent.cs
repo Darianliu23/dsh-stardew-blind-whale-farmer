@@ -96,7 +96,7 @@ namespace BlindWhaleFarmer
                 return;
             StoppedOnItsOwn = onItsOwn;
             cts?.Cancel();
-            mod.MainThread.Cancel("AI 已停止");
+            mod.MainThread.CancelCurrent("AI 已停止");
             IsThinking = false;
             mod.Hud.SetStatus("AI 已停止：" + reason);
             mod.Monitor.Log("AI 已停止：" + reason, LogLevel.Info);
