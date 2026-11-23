@@ -54,6 +54,42 @@ partial class Program
         Check(readOnly.Contains("storage_info") && Params("storage_info")["properties"]["near"] != null
             && Params("place_item")["properties"]["near"]?["type"]?.GetValue<string>() == "string",
             "storage_info 是只读工具，和 place_item 一样能传 near 锚点");
+
+        // store_items / take_items 的 items 参数：支持数组、{名字: 数量}、对象数组、以及按数量存
+        var tTools = actions.Assembly.GetType("BlindWhaleFarmer.Tools");
+        var normItems = tTools.GetMethod("NormalizeItemsArg", BindingFlags.Static | BindingFlags.NonPublic);
+        (bool ok, string val, string err) Norm(string json)
+        {
+            object[] args = { JsonNode.Parse(json), null, null };
+            bool ok = (bool)normItems.Invoke(null, args);
+            return (ok, (string)args[1], (string)args[2]);
+        }
+        var a1 = Norm("[\"铁矿石\",\"铜矿石\"]");
+        Check(a1.ok && a1.val == "铁矿石,铜矿石", "items 接受字符串数组：" + a1.val);
+        var o1 = Norm("{\"铁矿石\":5,\"铜矿石\":10}");
+        Check(o1.ok && o1.val == "铁矿石x5,铜矿石x10", "items 接受 {名字: 数量}：" + o1.val);
+        var o2 = Norm("[{\"name\":\"铁矿石\",\"count\":3},{\"item\":\"煤炭\"}]");
+        Check(o2.ok && o2.val == "铁矿石x3,煤炭", "items 接受对象数组：" + o2.val);
+        var s1 = Norm("\"[\\\"铁矿石\\\",\\\"铜矿石\\\"]\"");
+        Check(s1.ok && s1.val == "铁矿石,铜矿石", "items 接受包成字符串的 JSON 数组");
+        foreach (var bad in new[] { "[]", "{}", "[123]", "{\"铁矿石\":0}", "{\"铁矿石\":\"abc\"}", "123", "\"[铁矿石\"" })
+        {
+            var r = Norm(bad);
+            Check(!r.ok && r.err.Contains("请传逗号分隔字符串") && r.err.Contains("[\"铁矿石\"") && r.err.Contains("{\"铁矿石\": 5"),
+                $"items 传 {bad} 时报错写清正确写法");
+        }
+
+        var planStore = actions.GetMethod("PlanStoreCounts", BindingFlags.Static | BindingFlags.NonPublic);
+        var bag = new (string name, string displayName, bool isTool, int stack)[]
+        {
+            ("Iron Ore", "铁矿石", false, 20),
+            ("Copper Ore", "铜矿石", false, 15),
+            ("Bamboo Pole", "竹鱼竿", true, 1),
+        };
+        var pArr = (Dictionary<int, int>)planStore.Invoke(null, new object[] { "铁矿石,铜矿石", bag });
+        Check(pArr.Count == 2 && pArr[0] == 20 && pArr[1] == 15, "PlanStoreCounts 数组写法全存对应格，不存鱼竿");
+        var pCnt = (Dictionary<int, int>)planStore.Invoke(null, new object[] { "铁矿石x5,竹鱼竿", bag });
+        Check(pCnt.Count == 2 && pCnt[0] == 5 && pCnt[2] == 1, "PlanStoreCounts 指定数量只存 5 个，点全名的工具也存");
     }
 }
 

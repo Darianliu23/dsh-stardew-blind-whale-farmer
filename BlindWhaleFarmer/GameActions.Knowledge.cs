@@ -138,6 +138,8 @@ namespace BlindWhaleFarmer
                         : $"{Util.ObjectName(l.ItemId.Value)}就在 {l.locationOfItem.Value} 的 ({l.tileX.Value},{l.tileY.Value}) 那一格：先 travel_to {l.locationOfItem.Value}（一定是这张图，别在旁边的地图里找），到了 interact x={l.tileX.Value} y={l.tileY.Value} 捡起来（周围被灌木挡住会自己找能够到的位置），再 give_gift 交给{NpcName(l.npcName.Value)}";
                 case StardewValley.Quests.SocializeQuest:
                     return "和任务里的村民挨个说话（interact npc=名字），说完自动完成";
+                case StardewValley.Quests.Quest when q.id.Value == "134":
+                    return "带 100 个硬木去煤矿森林北边找大树桩（Forest (56,6)），用 raccoon action=fix 修好";
             }
             return null;
         }

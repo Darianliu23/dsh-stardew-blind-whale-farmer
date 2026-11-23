@@ -604,11 +604,11 @@ namespace BlindWhaleFarmer
 
         /// <summary>
         /// 锄地前 till_area 会自己清掉的杂物（和 clear_area 不带 include_trees 时清的一样）：杂草、长草、小石头、树枝、
-        /// 树桩、小树苗、远古斑点、枯死的作物。只算能开垦的地面上的。
+        /// 树桩、小树苗、远古斑点。只算能开垦的地面上的（枯死作物在已耕地上，单独提示先 clear_area）。
         /// </summary>
         internal static bool FieldClutter(GameLocation loc, Point p) =>
             loc.isTileOnMap(p.X, p.Y) && loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null
-            && Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).ch is 'w' or '"' or 'o' or '/' or '?' or 't' or 'S' or 'd';
+            && Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).ch is 'w' or '"' or 'o' or '/' or '?' or 't' or 'S';
 
         /// <summary>锄不上的格子是什么挡着（结果里告诉 AI）。</summary>
         internal static string HoleName(GameLocation loc, Point p)
@@ -663,18 +663,24 @@ namespace BlindWhaleFarmer
         internal static (Rectangle r, string side, int n, int clutter) BestExpansion(GameLocation loc, Field main, int want)
         {
             var b = main.Box;
+            int mw = Pathfinder.MapWidth(loc), mh = Pathfinder.MapHeight(loc);
             var options = new List<(Rectangle r, string side)>();
-            int rows = Math.Clamp((int)Math.Ceiling(want / (double)b.Width), 1, 4);
-            int cols = Math.Clamp((int)Math.Ceiling(want / (double)b.Height), 1, 4);
+            int rows = Math.Clamp((int)Math.Ceiling(want / (double)b.Width), 1, 12);
+            int cols = Math.Clamp((int)Math.Ceiling(want / (double)b.Height), 1, 12);
             options.Add((new Rectangle(b.Left, b.Bottom, b.Width, rows), "下"));
             options.Add((new Rectangle(b.Left, b.Top - rows, b.Width, rows), "上"));
             options.Add((new Rectangle(b.Right, b.Top, cols, b.Height), "右"));
             options.Add((new Rectangle(b.Left - cols, b.Top, cols, b.Height), "左"));
+            var covered = SprinklerCovered(loc);
             return options.Select(o =>
                 {
-                    var pts = Enumerable.Range(o.r.Left, o.r.Width).SelectMany(x => Enumerable.Range(o.r.Top, o.r.Height).Select(y => new Point(x, y))).ToList();
+                    var r = mw > 0 && mh > 0 ? Rectangle.Intersect(o.r, new Rectangle(0, 0, mw, mh)) : o.r;
+                    var pts = r.Width > 0 && r.Height > 0
+                        ? Enumerable.Range(r.Left, r.Width).SelectMany(x => Enumerable.Range(r.Top, r.Height).Select(y => new Point(x, y))).ToList()
+                        : new List<Point>();
                     int free = pts.Count(p => Tillable(loc, p)), clutter = pts.Count(p => FieldClutter(loc, p));
-                    return (o.r, o.side, n: free + clutter, clutter, score: free + 0.7 * clutter);
+                    int spr = pts.Count(p => covered.Contains(new Vector2(p.X, p.Y)) && (Tillable(loc, p) || FieldClutter(loc, p)));
+                    return (r, o.side, n: free + clutter, clutter, score: free + 0.7 * clutter + 0.5 * spr);
                 })
                 // 分数差不多时挑让田更方正的一边：扩完以后外框的长宽比越接近 1 越好浇（升级水壶一次浇一片）。
                 // 以前只看能开几格，同样多时总是往“下”扩，扩几次就成一条长带

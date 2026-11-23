@@ -193,7 +193,7 @@ namespace BlindWhaleFarmer
         /// 同样的东西归到一起：先放进已经有这种东西的箱子（能叠就叠），再放进装着同一类东西的箱子，都没有才放进最近的有空位的箱子。
         /// 按计划一个箱子一个箱子走过去放；计划的箱子放不下了（比如格子算错），剩下的再按远近找有空位的箱子。走不到的箱子跳过。
         /// </summary>
-        private IEnumerable<object> StoreIntoChests(List<Item> toStore, List<string> stored, List<Item> storedTools = null)
+        private IEnumerable<object> StoreIntoChests(List<Item> toStore, List<string> stored, List<Item> storedTools = null, Dictionary<Item, int> maxCounts = null)
         {
             var o = new Outcome();
             var chests = PlayerChests(Loc).ToList();
@@ -208,7 +208,7 @@ namespace BlindWhaleFarmer
             {
                 var next = order.OrderBy(c => Util.Manhattan(tiles[c], at)).First();
                 order.Remove(next);
-                var items = plan[next].Where(i => Player.Items.Contains(i)).ToList();
+                var items = plan[next].Where(i => Player.Items.Contains(i) && (maxCounts == null || !maxCounts.TryGetValue(i, out int rem) || rem > 0)).ToList();
                 if (items.Count == 0)
                     continue;
                 foreach (var s in GoAdjacent(tiles[next], o))
@@ -219,13 +219,13 @@ namespace BlindWhaleFarmer
                     continue;
                 }
                 at = Player.TilePoint;
-                PutInto(next, items, perChest, storedTools);
+                PutInto(next, items, perChest, storedTools, maxCounts);
             }
 
             // 第二轮：计划里的箱子没放下的，按远近找还有空位的箱子
             foreach (var (tile, chest) in chests.OrderBy(c => Util.Manhattan(c.tile, Player.TilePoint)).ToList())
             {
-                var pending = toStore.Where(i => Player.Items.Contains(i)).ToList();
+                var pending = toStore.Where(i => Player.Items.Contains(i) && (maxCounts == null || !maxCounts.TryGetValue(i, out int rem) || rem > 0)).ToList();
                 if (pending.Count == 0)
                     break;
                 if (!pending.Any(p => ChestHasRoomFor(chest, p)))
@@ -237,29 +237,63 @@ namespace BlindWhaleFarmer
                     o.Succeed();
                     continue;
                 }
-                PutInto(chest, pending, perChest, storedTools);
+                PutInto(chest, pending, perChest, storedTools, maxCounts);
             }
             foreach (var (chest, names) in perChest)
                 stored.Add($"{Loc.DisplayName}（{Loc.NameOrUniqueName}）({tiles[chest].X},{tiles[chest].Y}) 的箱子：{string.Join("、", names)}");
         }
 
+        /// <summary>把单格物品（全部或按上限数量）放进箱子，返回实际放进去的数量和箱子是否满了。</summary>
+        private static int PutItemIntoChest(Chest chest, Item item, int? maxCount, out bool chestFull)
+        {
+            chestFull = false;
+            int take = maxCount.HasValue ? Math.Min(maxCount.Value, item.Stack) : item.Stack;
+            if (take <= 0)
+                return 0;
+            Item left;
+            int moved;
+            if (take < item.Stack)
+            {
+                var piece = item.getOne();
+                piece.Stack = take;
+                left = chest.addItem(piece);
+                moved = left == null ? take : take - left.Stack;
+                if (moved > 0)
+                {
+                    item.Stack -= moved;
+                    if (item.Stack <= 0)
+                        Player.removeItemFromInventory(item);
+                }
+            }
+            else
+            {
+                int before = item.Stack;
+                left = chest.addItem(item);
+                moved = left == null ? before : before - left.Stack;
+                if (left == null)
+                    Player.removeItemFromInventory(item);
+            }
+            if (left != null)
+                chestFull = true;
+            return moved;
+        }
+
         /// <summary>把东西放进箱子，放进去多少记在 perChest 里。</summary>
-        private static void PutInto(Chest chest, List<Item> items, Dictionary<Chest, List<string>> perChest, List<Item> storedTools)
+        private static void PutInto(Chest chest, List<Item> items, Dictionary<Chest, List<string>> perChest, List<Item> storedTools, Dictionary<Item, int> maxCounts = null)
         {
             foreach (var item in items)
             {
-                int before = item.Stack;
+                int? limit = maxCounts != null && maxCounts.TryGetValue(item, out int want) ? want : null;
                 string name = item.DisplayName;
-                var left = chest.addItem(item);
-                int moved = left == null ? before : before - left.Stack;
-                if (left == null)
-                    Player.removeItemFromInventory(item);
+                int moved = PutItemIntoChest(chest, item, limit, out _);
                 if (moved > 0)
                 {
+                    if (maxCounts != null && maxCounts.ContainsKey(item))
+                        maxCounts[item] = Math.Max(0, maxCounts[item] - moved);
                     if (!perChest.TryGetValue(chest, out var names))
                         perChest[chest] = names = new List<string>();
                     names.Add(moved > 1 ? $"{name}x{moved}" : name);
-                    if (left == null && item is Tool)
+                    if (!Player.Items.Contains(item) && item is Tool)
                         storedTools?.Add(item);
                 }
             }

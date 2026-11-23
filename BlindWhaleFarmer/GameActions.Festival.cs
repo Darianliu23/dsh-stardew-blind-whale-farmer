@@ -64,7 +64,7 @@ namespace BlindWhaleFarmer
             return no >= 0 ? no : db.responses.Length - 1;
         }
 
-        public IEnumerable<object> Festival(string action)
+        public IEnumerable<object> Festival(string action, string partner = null)
         {
             action = (action ?? "").Trim().ToLowerInvariant();
             festivalWalk = true;
@@ -81,7 +81,7 @@ namespace BlindWhaleFarmer
                             yield return s;
                         break;
                     case "start":
-                        foreach (var s in StartFestivalEvent())
+                        foreach (var s in StartFestivalEvent(partner))
                             yield return s;
                         break;
                     case "leave":
@@ -230,7 +230,7 @@ namespace BlindWhaleFarmer
 
         private static string festivalReadySaid;
 
-        private IEnumerable<object> StartFestivalEvent()
+        private IEnumerable<object> StartFestivalEvent(string partner = null)
         {
             var ev = Game1.CurrentEvent;
             if (ev is not { isFestival: true })
@@ -293,8 +293,16 @@ namespace BlindWhaleFarmer
                 foreach (var s in AddLuauSoup(ev, notes))
                     yield return s;
             if (!mainRunning && ev.isSpecificFestival("spring24"))
-                foreach (var s in InviteDancePartner(ev, notes))
+            {
+                var dance = new Outcome();
+                foreach (var s in InviteDancePartner(ev, partner, dance, notes))
                     yield return s;
+                if (!dance.Ok)
+                {
+                    yield return ActionResult.Fail(dance.Message);
+                    yield break;
+                }
+            }
             if (!mainRunning && ev.isSpecificFestival("winter25"))
                 foreach (var s in GiveSecretSantaGift(ev, notes))
                     yield return s;

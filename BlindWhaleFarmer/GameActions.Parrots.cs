@@ -164,6 +164,7 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail($"点了{ParrotLabel(perch)}，但核桃没交出去（现有 {after} 个）");
                 yield break;
             }
+            Exits.ClearCache();
             ParrotUpgrades.TryGetValue(perch.upgradeName.Value, out var info);
             yield return ActionResult.Success($"交给鹦鹉 {nuts - after} 个金核桃：{ParrotLabel(perch)}" + (ParrotDone(perch) ? "修好了" : "正在修")
                 + (info.what != null ? $"（{info.what}）" : "") + $"。还剩 {after} 个核桃" + scene);

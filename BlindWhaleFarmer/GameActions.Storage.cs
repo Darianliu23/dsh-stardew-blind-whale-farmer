@@ -248,15 +248,15 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>
-        /// 拆出“要什么、要几个”：逗号/顿号分隔，每项可以带数量（铁锭x5、铁锭×5、铁锭*5、铁锭:5、铁锭 5）。
-        /// 不写数量就是全拿；空或 all 是全部。
+        /// 拆出“原名、匹配函数、要几个”：逗号/顿号分隔，每项可以带数量（铁锭x5、铁锭×5、铁锭*5、铁锭:5、铁锭 5）。
+        /// 不写数量就是全拿/全存；空或 all 是全部。
         /// </summary>
-        private static List<(Func<Item, bool> filter, int? count)> ItemCounts(string items)
+        private static List<(string rawName, Func<Item, bool> filter, int? count)> ItemSpecs(string items)
         {
-            var list = new List<(Func<Item, bool>, int?)>();
+            var list = new List<(string, Func<Item, bool>, int?)>();
             if (string.IsNullOrWhiteSpace(items) || items.Trim().Equals("all", StringComparison.OrdinalIgnoreCase) || items.Trim() == "全部")
             {
-                list.Add((_ => true, null));
+                list.Add((null, _ => true, null));
                 return list;
             }
             foreach (var part in items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -269,10 +269,86 @@ namespace BlindWhaleFarmer
                     name = m.Groups[1].Value;
                     count = c;
                 }
-                name = Util.StripQuality(name);
-                list.Add((i => i.DisplayName.Contains(name, StringComparison.OrdinalIgnoreCase) || i.Name.Contains(name, StringComparison.OrdinalIgnoreCase), count));
+                string raw = name.Trim();
+                string clean = Util.StripQuality(raw);
+                list.Add((raw, i => i.DisplayName.Contains(clean, StringComparison.OrdinalIgnoreCase) || i.Name.Contains(clean, StringComparison.OrdinalIgnoreCase), count));
             }
             return list;
+        }
+
+        private static List<(Func<Item, bool> filter, int? count)> ItemCounts(string items) =>
+            ItemSpecs(items).Select(s => (s.filter, s.count)).ToList();
+
+        private static bool IsAllItemsSpec(string items) =>
+            string.IsNullOrWhiteSpace(items) || items.Trim().Equals("all", StringComparison.OrdinalIgnoreCase) || items.Trim() == "全部";
+
+        /// <summary>纯数据版数量分配：按 specs 计算背包每格最多存多少，供离线测试和 StoreItems 共用。</summary>
+        internal static Dictionary<int, int> PlanStoreCounts(string items, IReadOnlyList<(string name, string displayName, bool isTool, int stack)> inventory)
+        {
+            var planned = new Dictionary<int, int>();
+            if (IsAllItemsSpec(items))
+            {
+                for (int idx = 0; idx < inventory.Count; idx++)
+                    if (inventory[idx].stack > 0 && !inventory[idx].isTool)
+                        planned[idx] = inventory[idx].stack;
+                return planned;
+            }
+            foreach (var part in items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                string name = part;
+                int? want = null;
+                var m = System.Text.RegularExpressions.Regex.Match(part, @"^(.+?)\s*(?:[xX×*:：]\s*|\s+)(\d+)\s*个?$");
+                if (m.Success && int.TryParse(m.Groups[2].Value, out int c) && c > 0)
+                {
+                    name = m.Groups[1].Value;
+                    want = c;
+                }
+                string raw = name.Trim();
+                string clean = Util.StripQuality(raw);
+                int left = want ?? int.MaxValue;
+                for (int idx = 0; idx < inventory.Count; idx++)
+                {
+                    if (left <= 0)
+                        break;
+                    var slot = inventory[idx];
+                    if (slot.stack <= 0)
+                        continue;
+                    bool hit = slot.isTool
+                        ? (raw.Equals(slot.displayName, StringComparison.OrdinalIgnoreCase) || raw.Equals(slot.name, StringComparison.OrdinalIgnoreCase))
+                        : ((slot.displayName ?? "").Contains(clean, StringComparison.OrdinalIgnoreCase)
+                           || (slot.name ?? "").Contains(clean, StringComparison.OrdinalIgnoreCase));
+                    if (!hit)
+                        continue;
+                    int used = planned.GetValueOrDefault(idx, 0);
+                    int avail = slot.stack - used;
+                    if (avail <= 0)
+                        continue;
+                    int take = Math.Min(left, avail);
+                    planned[idx] = used + take;
+                    left -= take;
+                }
+            }
+            return planned;
+        }
+
+        private static (List<Item> toStore, Dictionary<Item, int> maxCounts) PlanStoreItems(string items)
+        {
+            var inv = Player.Items.Select(i => i == null
+                ? (name: "", displayName: "", isTool: false, stack: 0)
+                : (name: i.Name ?? "", displayName: i.DisplayName ?? "", isTool: i is Tool, stack: i.Stack)).ToList();
+            var counts = PlanStoreCounts(items, inv);
+            var toStore = new List<Item>();
+            var maxCounts = new Dictionary<Item, int>();
+            foreach (var (slot, qty) in counts.OrderBy(kv => kv.Key))
+            {
+                var item = Player.Items[slot];
+                if (item != null && qty > 0)
+                {
+                    toStore.Add(item);
+                    maxCounts[item] = qty;
+                }
+            }
+            return (toStore, maxCounts);
         }
 
         private static string ChestSummary(Chest chest)
@@ -307,28 +383,20 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(o.Message);
                 yield break;
             }
-            var filter = ItemFilter(items);
-            // 工具和武器只存点了全名的（“剑”这种模糊的名字会把手上最好的武器也存掉）
-            var toolNames = string.IsNullOrWhiteSpace(items) ? new HashSet<string>()
-                : items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            bool Wanted(Item i) => i is Tool ? toolNames.Contains(i.DisplayName) || toolNames.Contains(i.Name) : filter(i);
+            var (toStore, maxCounts) = PlanStoreItems(items);
             var stored = new List<string>();
             bool full = false;
-            foreach (var item in Player.Items.Where(i => i != null && Wanted(i)).ToList())
+            foreach (var item in toStore)
             {
-                int before = item.Stack;
+                int want = maxCounts[item];
                 string name = item.DisplayName;
-                var left = chest.addItem(item);
-                if (left == null)
-                {
-                    Player.removeItemFromInventory(item);
-                    stored.Add($"{name}x{before}");
-                }
-                else
-                {
+                int moved = PutItemIntoChest(chest, item, want, out bool chestFull);
+                if (chestFull)
                     full = true;
-                    if (left.Stack < before)
-                        stored.Add($"{name}x{before - left.Stack}");
+                if (moved > 0)
+                {
+                    stored.Add($"{name}x{moved}");
+                    maxCounts[item] = Math.Max(0, want - moved);
                 }
             }
             chest.clearNulls();
@@ -337,7 +405,9 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail((full ? "箱子满了，" : "背包里没有符合的东西可存（工具要写全名才存），") + ChestSummary(chest));
                 yield break;
             }
-            yield return ActionResult.Success($"存进 ({tile.X},{tile.Y}) 的箱子：{string.Join("、", stored)}{(full ? $"；箱子满了，没放进去的还在背包里：{string.Join("、", Player.Items.Where(i => i != null && Wanted(i)).Select(i => $"{i.DisplayName}x{i.Stack}"))}" : "")}。{ChestSummary(chest)}");
+            var notStored = toStore.Where(i => maxCounts.GetValueOrDefault(i) > 0 && Player.Items.Contains(i))
+                .Select(i => $"{i.DisplayName}x{maxCounts[i]}").ToList();
+            yield return ActionResult.Success($"存进 ({tile.X},{tile.Y}) 的箱子：{string.Join("、", stored)}{(notStored.Count > 0 ? $"；箱子满了，没放进去的还在背包里：{string.Join("、", notStored)}" : "")}。{ChestSummary(chest)}");
         }
 
         /// <summary>
@@ -350,22 +420,18 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail("这里没有箱子。先 craft Chest（50 木材），再 place_item 放在农场上（比如出货箱旁边）；箱子在别的地方就先 travel_to 过去");
                 yield break;
             }
-            var filter = ItemFilter(items);
-            // 工具和武器只存点了全名的（“剑”这种模糊的名字会把手上最好的武器也存掉）
-            var toolNames = string.IsNullOrWhiteSpace(items) ? new HashSet<string>()
-                : items.Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            bool Wanted(Item i) => i is Tool ? toolNames.Contains(i.DisplayName) || toolNames.Contains(i.Name) : filter(i);
-            var toStore = Player.Items.Where(i => i != null && Wanted(i)).ToList();
+            var (toStore, maxCounts) = PlanStoreItems(items);
             if (toStore.Count == 0)
             {
                 yield return ActionResult.Fail("背包里没有符合的东西可存（工具要写全名才存）");
                 yield break;
             }
             var stored = new List<string>();
-            foreach (var s in StoreIntoChests(toStore, stored))
+            foreach (var s in StoreIntoChests(toStore, stored, maxCounts: maxCounts))
                 yield return s;
-            var left = toStore.Where(i => Player.Items.Contains(i)).Select(i => i.DisplayName).Distinct().ToList();
-            string rest = left.Count > 0 ? $"；{string.Join("、", left)} 还在背包里：" + ChestRoomNote(Loc, toStore.Where(i => Player.Items.Contains(i)).ToList()) : "";
+            var remaining = toStore.Where(i => Player.Items.Contains(i) && maxCounts.GetValueOrDefault(i) > 0).ToList();
+            var left = remaining.Select(i => i.DisplayName).Distinct().ToList();
+            string rest = left.Count > 0 ? $"；{string.Join("、", left)} 还在背包里：" + ChestRoomNote(Loc, remaining) : "";
             yield return stored.Count > 0
                 ? ActionResult.Success($"存进了 {string.Join("；", stored)}{rest}。背包空位 {Player.freeSpotsInInventory()} 个")
                 : ActionResult.Fail("一样也没存进去" + rest);

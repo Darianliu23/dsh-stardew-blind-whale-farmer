@@ -185,7 +185,8 @@ namespace BlindWhaleFarmer
         private static List<Exit> GetTileExits(GameLocation loc)
         {
             string key = loc.NameOrUniqueName;
-            if (TileExitCache.TryGetValue(key, out var cached))
+            if (TileExitCache.TryGetValue(key, out var cached)
+                && !(loc is StardewValley.Locations.IslandWest iw && iw.farmhouseRestored.Value && !cached.Any(e => e.Target == "IslandFarmHouse")))
                 return cached;
 
             var list = new List<Exit>();

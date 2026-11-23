@@ -56,7 +56,7 @@ namespace BlindWhaleFarmer
             var obj = (SObject)Player.Items[idx];
             string name = obj.DisplayName;
             // 传送图腾：农场 —— 走回去来得及就别浪费：走路要一个半小时以上、或者走到家已经过了 23:00 才值得用
-            if (obj.QualifiedItemId == "(O)688" && !force && Loc is not Farm && EstimateMinutesToBed() is int walk && walk < 90)
+            if (obj.QualifiedItemId == "(O)688" && !force && Loc is not Farm && EstimateMinutesToBed(ResolveAiHome()) is int walk && walk < 90)
             {
                 int arrive = FromMinutes(ToMinutes(Game1.timeOfDay) + walk);
                 if (arrive <= 2300)

@@ -94,8 +94,8 @@ namespace BlindWhaleFarmer
                 P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false),
                 P("near", "string", "只放箱子用，写当前地图的箱子坐标或锚点 x,y，自动在它旁边放（始终检查空位和通路）", false));
 
-            Add("till_area", "用锄头开垦一个矩形区域里所有能开垦的空地（最多80格）；不给坐标只给 count 就挨着最大的田自动扩。只能在农场、温室这类种得了庄稼的地方用。区域里的杂草、石头、树枝、树桩、小树苗会先自己清掉再锄；树和大树桩大石头不动，没开出来的格子结果里会列出来。"
-                + "不同作物可以分开开几块田，每块田挑方便的地方开（状态“作物”一节的“农田”行有每块田的位置、种了什么和扩田建议）。", 300,
+            Add("till_area", "用锄头开垦矩形区域里所有能开垦的空地（单次最多80格，返回“开了 N 格，还差 M 格”）；不给坐标只给 count 时优先贴合已有洒水器覆盖范围，否则挨着最大的田自动扩。只能在农场、温室这类种得了庄稼的地方用。区域里的杂草、石头、树枝、树桩、小树苗会先清掉再锄；树和大树桩大石头不动，没开出来的会列出原因与下一步。"
+                + "不同作物可分开开几块田（状态“农田”行有每块田位置、作物和扩田建议）。", 300,
                 j => () =>
                 {
                     var (x1, y1, x2, y2) = TillRect(j);
@@ -123,12 +123,12 @@ namespace BlindWhaleFarmer
                 P("scarecrow","boolean","是否为现有稻草人保护不到的作物补位置",false),
                 P("path","string","auto 棚架自动留路，rows 普通作物也隔行留路",false,new[] { "auto","rows" },"auto"));
 
-            Add("plant_seeds", "在空耕地上批量播种（或施肥）。seed 参数就是种子的物品名，如 Parsnip Seeds / 防风草种子，也可以写背包序号。不给区域时按田来种：先种已经种着同样作物的田，再种空着的田（新作物自己占一块），一行一行种，零散的一两格耕地不种；想种在哪块田就传那块田的区域。", 300,
+            Add("plant_seeds", "在空耕地上批量播种（或施肥）。seed 是种子物品名或背包序号。不给区域按同作物主田→空田→混种田→零散耕地的优先顺序顺延种（只排序不硬截断）；想指定哪块就传 x1,y1,x2,y2。返回剩余种子数、剩余空耕地和下次可用范围。", 300,
                 j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200, OptBool(j, "shared") ?? false),
                 P("seed", "string", "种子名称或背包序号"),
                 P("x1", "integer", "区域左上 x", false), P("y1", "integer", "区域左上 y", false),
                 P("x2", "integer", "区域右下 x", false), P("y2", "integer", "区域右下 y", false),
-                P("max", "integer", "最多种几格", false),
+                P("max", "integer", "最多种几格（默认 200，可传更大）", false),
                 P("shared", "boolean", "联机时你是农场工人：不给区域默认只种自己小屋门口 10 格内的田；传 true 才往全农场的田里种", false));
 
             Add("water_crops", "给本地点所有需要浇水的作物浇水（水壶空了会自动去最近的水源灌水）。", 400,
@@ -139,7 +139,7 @@ namespace BlindWhaleFarmer
                 j => () => a.HarvestCrops(OptInt(j, "max") ?? 300),
                 P("max", "integer", "最多收几株", false));
 
-            Add("clear_area", "清理一个矩形区域里的杂物：石头用镐、杂草和草用镰刀、树枝/树苗/树桩用斧头、远古斑点用锄头。默认不砍大树。一次最多60处（从离你最近的开始）。不给坐标就清你周围（左右上下各 radius 格，默认 4）；all=true 清整张地图（比如把农场上的杂草石头一批批清掉）。", 400,
+            Add("clear_area", "清理矩形区域里的杂物：石头用镐、杂草和草用镰刀、树枝/树苗/树桩用斧头、远古斑点用锄头、枯死作物用镰刀（只清枯死不伤活作物）。默认不砍大树。一次最多60处（从最近开始）。不给坐标清周围（radius 默认 4）；all=true 清整张地图。", 400,
                 j => () => a.ClearArea(OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "radius"), OptBool(j, "include_trees") ?? false, OptBool(j, "all") ?? false),
                 P("x1", "integer", "左上 x（四个坐标都不给就清周围）", false), P("y1", "integer", "左上 y", false), P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false),
                 P("radius", "integer", "不给坐标时清周围几格（1~8），默认 4", false),
@@ -158,13 +158,14 @@ namespace BlindWhaleFarmer
 
             Add("store_items", "把背包里的东西存进箱子，腾出背包（工具和武器只存写了全名的，比如“训练用鱼竿”；整理背包更推荐 tidy_backpack）。不传坐标就自动挑箱子：同样的东西放进已经有它的箱子（叠在一起），没有就放进装着同类东西的箱子；箱子按大类分工（矿石资源、作物、鱼和钓具、采集品、宝石矿物古物……），新种类先找装同一大类的箱子，再找空箱子，实在没地方才混放。", 120,
                 j => () => a.StoreItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y")),
-                P("items", "string", "要存的物品名，多个用逗号分隔；不传或 all 表示除工具外全部存", false),
+                P("items", "string", "要存的物品：逗号分隔字符串（如\"铁矿石,铜矿石\"或\"铁矿石x5\"）、数组（[\"铁矿石\",\"铜矿石\"]）或{\"名字\":数量}；不传或\"all\"表示除工具外全部存", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
 
             Add("festival", "参加节日：enter 走去节日地点并入场（节日开放时间内）；greet 和在场的村民挨个打招呼（节日上说话也加好感）；"
-                + "start 自动玩这个节日的小游戏（找彩蛋、夏威夷宴会放汤、花舞节邀舞伴、冬日星盛宴送神秘礼物、万灵节迷宫宝箱、冰钓比赛、展览会展示柜评比），再找刘易斯开始主活动并等它结束（结束后游戏把你送回农场）；leave 中途离开。节日当天先 get_guide 读“节日”专题。联机时只有主机能开始主活动：你是农场工人时 start 会先做好准备、说一声，等主机开始后自动参加（已经开始了就直接加入）；展览会的共用展示柜要问过主机再用 grange 摆。", 620,
-                j => () => a.Festival(Str(j, "action")),
-                P("action", "string", "enter / greet / start / leave / grange", true));
+                + "start 自动玩这个节日的小游戏（找彩蛋、夏威夷宴会放汤、花舞节邀舞伴需传 partner、冬日星盛宴送神秘礼物、万灵节迷宫宝箱、冰钓比赛、展览会展示柜评比），再找刘易斯开始主活动并等它结束（结束后游戏把你送回农场）；leave 中途离开。节日当天先 get_guide 读“节日”专题。联机时只有主机能开始主活动：你是农场工人时 start 会先做好准备、说一声，等主机开始后自动参加（已经开始了就直接加入）；展览会的共用展示柜要问过主机再用 grange 摆。", 620,
+                j => () => a.Festival(Str(j, "action"), OptStr(j, "partner")),
+                P("action", "string", "enter / greet / start / leave / grange", true),
+                P("partner", "string", "花舞节 start 时要邀请的舞伴名字（不传会列出可邀请的人；不邀传 none）", false));
 
             Add("tidy_backpack", "整理背包：每类工具只留最好的一把，用不上的东西存箱子，一个满了换下一个；这里没箱子会先回农场。出门前先想好今天要干的所有事，一起写进 purpose，只要有一件事用得上就留。今天会用到但规则不带的东西（比如去镇上也想带剑、要送的礼物）写进 keep。还会提醒这次该带却没带的东西。", 300,
                 j => () => a.TidyBackpack(OptStr(j, "keep"), OptStr(j, "purpose")),
@@ -193,7 +194,7 @@ namespace BlindWhaleFarmer
 
             Add("take_items", "从箱子里取东西回背包。指定了物品时会在所有地点的箱子里找，箱子在别的地图就自己走过去（不用先 travel_to）；不传坐标优先用这张地图里有这样东西的箱子。结果会列出箱子里还有什么。", 300,
                 j => () => a.TakeItems(OptStr(j, "items"), OptInt(j, "x"), OptInt(j, "y"), OptInt(j, "count")),
-                P("items", "string", "要取的物品名，多个用逗号分隔，可以带数量（比如“铁锭x5，煤炭x10”），不带数量就整摞拿；all 表示全部", false),
+                P("items", "string", "要取的物品：逗号分隔字符串（如\"铁锭x5,煤炭x10\"）、数组（[\"铁锭\",\"煤炭\"]）或{\"名字\":数量}；不带数量整摞拿，\"all\"表示全部", false),
                 P("count", "integer", "只取一样东西时可以用它写数量（items=干草 count=3 等于 items=干草x3）；items 里已经写了数量就以 items 为准", false),
                 P("x", "integer", "箱子 x", false), P("y", "integer", "箱子 y", false));
 
@@ -386,9 +387,19 @@ namespace BlindWhaleFarmer
                 j => () => a.FeedParrot(OptStr(j, "which")),
                 P("which", "string", "交给哪只：中文名或英文（Hut、Turtle、House、House_Mailbox、Obelisk、ParrotPlatforms、Bridge、Trader、Resort、VolcanoBridge、VolcanoShortcutOut），可省略=只列出来", false));
 
-            Add("collect_walnuts", "姜岛：在当前地图（或 where 指定的岛上地点）摇结着金核桃的灌木、用锄头挖地下埋着的金核桃，捡起来。解谜得的核桃（青蛙美食家、化石办公室、音乐石等）不在这里，见攻略“姜岛”。", 300,
+            Add("collect_walnuts", "姜岛：在当前地图（或 where 指定的岛上地点）摇结着金核桃的灌木、用锄头挖地下埋着的金核桃，捡起来。晶石洞解谜用 crystal_cave；其他解谜见攻略“姜岛”。", 300,
                 j => () => a.CollectWalnuts(OptStr(j, "where")),
                 P("where", "string", "岛上地点：IslandSouth、IslandEast、IslandWest、IslandNorth、IslandSouthEast 等，可省略=当前地图", false));
+
+            Add("crystal_cave", "姜岛晶石洞（IslandWestCave1，需先让乌龟让路进岛西）：自动去洞里启动狮子雕像并按每轮晶石闪光顺序完成全部 5 轮解谜，拿 3 颗金核桃。", 300,
+                j => () => a.CrystalCave());
+
+            Add("gem_shrine", "姜岛丛林宝石鸟祭坛（IslandShrine）：不传参数查看北(24,25)/南(24,28)/东(27,27)/西(21,27)四个基座放了什么及今天下雨天岛上出现的宝石鸟；传 north/south/east/west 把对应宝石（绿宝石/海蓝宝石/红宝石/紫水晶/黄水晶，或 take 取下）放上基座，放对全部 4 个拿 5 颗金核桃。", 300,
+                j => () => a.GemShrine(OptStr(j, "north"), OptStr(j, "south"), OptStr(j, "east"), OptStr(j, "west")),
+                P("north", "string", "北基座/岛北（IslandNorth）要放的宝石或 take", false),
+                P("south", "string", "南基座/岛南（IslandSouth）要放的宝石或 take", false),
+                P("east", "string", "东基座/岛东（IslandEast）要放的宝石或 take", false),
+                P("west", "string", "西基座/岛西（IslandWest）要放的宝石或 take", false));
 
             Add("repair_boat", "去威利鱼店后屋的船坞修去姜岛的船（社区中心修好或 Joja 路线走完后威利来信邀请才进得去）：把背包里够数的材料交上——硬木 200、铱锭 5、电池组 5，可以分几次交；全交齐的第二天船就能开，之后 travel_to IslandSouth 坐船去姜岛（船票 1000g，回来免费）。", 180,
                 j => () => a.RepairBoat());
@@ -405,6 +416,10 @@ namespace BlindWhaleFarmer
             Add("grandpa", "爷爷的评价（第三年春 1 日早上在农场神龛点蜡烛）：action=status（默认）看现在能得几分、每项差什么；diamond 往神龛放一颗钻石，第二天早上重新评（没满 4 根时用）；statue 4 根蜡烛都亮后去神龛领完美雕像（放下后每天出铱矿石）。", 120,
                 j => () => a.Grandpa(OptStr(j, "action")),
                 P("action", "string", "status（默认）/ diamond / statue", false));
+
+            Add("raccoon", "1.6 煤矿森林北边大树桩与浣熊家族任务（53,2 一带）：status（默认）查看大树桩状态或当前要交的 2 样物品（包括熏鱼/果酱/果干等）；fix 交 100 硬木修好树桩；donate 走去找浣熊交付所需物品并领奖；shop 打开浣熊太太商店。", 240,
+                j => () => a.RaccoonAction(OptStr(j, "action")),
+                P("action", "string", "status（默认）/ fix / donate / shop", false));
 
             Add("buy_animal", "去 Marnie 的牧场（AnimalShop）买动物，自动放进有空位的鸡舍/畜棚并起名。不传 type 会列出能买的动物和价格。", 240,
                 j => () => a.BuyAnimal(OptStr(j, "type"), OptStr(j, "name"), OptInt(j, "count") ?? 1),
@@ -865,6 +880,7 @@ namespace BlindWhaleFarmer
             ["dialogue"] = Aliases(("option", "choice"), ("answer", "choice"), ("response", "choice")),
             ["menu_click"] = Aliases(("button", "name"), ("label", "name")),
             ["choose_profession"] = Aliases(("choice", "side"), ("option", "side")),
+            ["festival"] = Aliases(("npc", "partner"), ("who", "partner"), ("name", "partner")),
         };
 
 
@@ -951,7 +967,170 @@ namespace BlindWhaleFarmer
             // map_info 的 section 只有三种：参数阶段就拦下，不用等进游戏
             if (spec.Name == "map_info" && MapInfo.ParseSections(OptStr(args, "section"), out string badSection) == null)
                 return $"map_info 不认识 section “{badSection}”。能写 exits（出口）、bridges（桥）、doors（门），可以用逗号写几类，不填给全部";
+            // store_items / take_items 的 items 支持字符串、数组、{名字: 数量} 对象
+            if (spec.Name is "store_items" or "take_items" && args["items"] is JsonNode itemsNode)
+            {
+                if (!NormalizeItemsArg(itemsNode, out string normItems, out string itemsErr))
+                    return $"{spec.Name} 的 {itemsErr}";
+                if (normItems == null)
+                    args.Remove("items");
+                else
+                    args["items"] = normItems;
+            }
             return null;
+        }
+
+        private static string ItemsFormatHint(JsonNode node) =>
+            $"items 格式不对（收到了 {ShowValue(node)}）：请传逗号分隔字符串（如 \"铁矿石, 铜矿石\" 或 \"铁矿石x5\"）、数组（[\"铁矿石\", \"铜矿石\"]）或对象（{{\"铁矿石\": 5, \"铜矿石\": 10}}），不传或 \"all\" 表示全部";
+
+        private static bool TryPositiveInt(JsonNode n, out int value)
+        {
+            value = 0;
+            if (n is not JsonValue v)
+                return false;
+            if (v.TryGetValue(out int i))
+                value = i;
+            else if (v.TryGetValue(out double d) && d == Math.Floor(d) && d >= 1 && d <= int.MaxValue)
+                value = (int)d;
+            else if (v.TryGetValue(out string s) && int.TryParse(s.Trim(), out int si))
+                value = si;
+            return value > 0;
+        }
+
+        private static bool ParseItemsObject(JsonObject obj, JsonNode rootNode, List<string> parts, out string error)
+        {
+            error = null;
+            if (obj.Count == 0)
+            {
+                error = ItemsFormatHint(rootNode);
+                return false;
+            }
+            // 兼容 {"name"/"item": "铁矿石", "count"/"quantity": 5} 单项对象写法
+            var singleNameKey = obj.ContainsKey("item") ? "item" : obj.ContainsKey("name") ? "name" : null;
+            if (singleNameKey != null && obj.All(kv => kv.Key is "item" or "name" or "count" or "quantity" or "amount")
+                && obj[singleNameKey] is JsonValue nv && nv.TryGetValue(out string itemName) && !string.IsNullOrWhiteSpace(itemName))
+            {
+                var cntKey = obj.ContainsKey("count") ? "count" : obj.ContainsKey("quantity") ? "quantity" : obj.ContainsKey("amount") ? "amount" : null;
+                if (cntKey == null || obj[cntKey] == null)
+                {
+                    parts.Add(itemName.Trim());
+                    return true;
+                }
+                if (TryPositiveInt(obj[cntKey], out int cnt))
+                {
+                    parts.Add($"{itemName.Trim()}x{cnt}");
+                    return true;
+                }
+                error = ItemsFormatHint(rootNode);
+                return false;
+            }
+            foreach (var kv in obj)
+            {
+                string key = kv.Key?.Trim();
+                if (string.IsNullOrEmpty(key))
+                {
+                    error = ItemsFormatHint(rootNode);
+                    return false;
+                }
+                if (kv.Value == null)
+                {
+                    parts.Add(key);
+                    continue;
+                }
+                if (kv.Value is JsonValue sv && sv.TryGetValue(out string s)
+                    && (s.Trim().Equals("all", StringComparison.OrdinalIgnoreCase) || s.Trim() is "全部" or ""))
+                {
+                    parts.Add(key);
+                    continue;
+                }
+                if (TryPositiveInt(kv.Value, out int qty))
+                {
+                    parts.Add($"{key}x{qty}");
+                    continue;
+                }
+                error = ItemsFormatHint(rootNode);
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>将 store_items / take_items 的 items（字符串、数组、{名字: 数量} 或它们的 JSON 字符串）统一转成逗号分隔规格。</summary>
+        internal static bool NormalizeItemsArg(JsonNode node, out string normalized, out string error)
+        {
+            normalized = null;
+            error = null;
+            if (node == null)
+                return true;
+            if (node is JsonValue v)
+            {
+                if (!v.TryGetValue(out string s))
+                {
+                    error = ItemsFormatHint(node);
+                    return false;
+                }
+                string t = s.Trim();
+                if (t.StartsWith('[') || t.StartsWith('{'))
+                {
+                    try
+                    {
+                        var parsed = JsonNode.Parse(t);
+                        return NormalizeItemsArg(parsed, out normalized, out error);
+                    }
+                    catch
+                    {
+                        error = ItemsFormatHint(node);
+                        return false;
+                    }
+                }
+                normalized = s;
+                return true;
+            }
+            var parts = new List<string>();
+            if (node is JsonArray arr)
+            {
+                if (arr.Count == 0)
+                {
+                    error = ItemsFormatHint(node);
+                    return false;
+                }
+                foreach (var el in arr)
+                {
+                    if (el is JsonValue ev && ev.TryGetValue(out string es) && !string.IsNullOrWhiteSpace(es))
+                    {
+                        string et = es.Trim();
+                        if ((et.StartsWith('[') || et.StartsWith('{')) && NormalizeItemsArg(ev, out string sub, out error))
+                        {
+                            if (!string.IsNullOrWhiteSpace(sub))
+                                parts.Add(sub);
+                            continue;
+                        }
+                        if (error != null)
+                            return false;
+                        parts.Add(et);
+                    }
+                    else if (el is JsonObject eo)
+                    {
+                        if (!ParseItemsObject(eo, node, parts, out error))
+                            return false;
+                    }
+                    else
+                    {
+                        error = ItemsFormatHint(node);
+                        return false;
+                    }
+                }
+                normalized = string.Join(",", parts);
+                return true;
+            }
+            if (node is JsonObject obj)
+            {
+                if (!ParseItemsObject(obj, node, parts, out error))
+                    return false;
+                normalized = string.Join(",", parts);
+                return true;
+            }
+            error = ItemsFormatHint(node);
+            return false;
         }
 
         /// <summary>要么都给、要么都不给的一对参数，和都不给时会怎样。</summary>

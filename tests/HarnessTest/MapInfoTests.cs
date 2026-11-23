@@ -574,6 +574,157 @@ partial class Program
                 && (t.line.Contains("TryOpenShopMenu(") || t.line.Contains("new GeodeMenu(") || t.line.Contains("new ShopMenu(")))
             .Select(t => $"{t.file}:{t.no}").ToList();
         Check(directOpen.Count == 0, "不再直接调 TryOpenShopMenu / new GeodeMenu / new ShopMenu 隔空开界面：" + (directOpen.Count == 0 ? "没有" : string.Join("、", directOpen)));
+
+        // 姜岛睡觉就近选岛上小屋
+        var preferIsland = tActions.GetMethod("ShouldPreferIslandHome", Any);
+        bool PreferIsland(bool inIsland, bool restored, bool hasBed) => (bool)preferIsland.Invoke(null, new object[] { inIsland, restored, hasBed });
+        Check(PreferIsland(true, true, true), "在姜岛、小屋修好且有床：睡岛上小屋");
+        Check(!PreferIsland(false, true, true) && !PreferIsland(true, false, true) && !PreferIsland(true, true, false), "不在姜岛、小屋没修好或没床：回原本的家");
+
+        // 铁匠铺取升级工具：只站在柜台南侧 Y > counter.Y，且 upgrade_tool 不传 tool 通过参数校验
+        string rUpgradeNoTool = Run0("upgrade_tool", "{}");
+        Check(rUpgradeNoTool.Contains("游戏世界未就绪"), "upgrade_tool 领取时不传 tool 通过参数校验");
+        var filterStands = tActions.GetMethod("FilterCounterStands", Any);
+        var bsStands = (List<Point>)filterStands.Invoke(null, new object[]
+        {
+            new Point(3, 14),
+            new[] { new Point(3, 13), new Point(3, 15) },
+            new[] { new Point(2, 13), new Point(4, 15) },
+            true
+        });
+        Check(bsStands.SequenceEqual(new[] { new Point(3, 15) }), "铁匠铺柜台 (3,14) 只选南侧 (3,15)，不站北侧 (3,13)");
+        var bsDiag = (List<Point>)filterStands.Invoke(null, new object[]
+        {
+            new Point(3, 14),
+            new[] { new Point(3, 13) },
+            new[] { new Point(2, 13), new Point(4, 15) },
+            true
+        });
+        Check(bsDiag.SequenceEqual(new[] { new Point(4, 15) }), "南侧正格不可站时退回南侧斜角 (4,15)");
+
+        // 花舞节舞伴：必须传 partner 或 none，不静默替玩家挑人
+        var festProps = schema.First(t => t["function"]["name"].GetValue<string>() == "festival")["function"]["parameters"]["properties"];
+        Check(festProps["partner"]?["type"]?.GetValue<string>() == "string", "festival schema 有 partner(string)");
+        Check(Run0("festival", "{\"action\":\"start\",\"partner\":\"海莉\"}").Contains("游戏世界未就绪"), "festival start 传 partner 通过参数校验");
+        var planDance = tActions.GetMethod("PlanDancePartnerChoice", Any);
+        var danceActors = new (string name, string displayName, bool canDance, bool willAccept, int hearts, bool isSpouse, string rejectReason)[]
+        {
+            ("Haley", "海莉", true, true, 5, false, ""),
+            ("Sebastian", "塞巴斯蒂安", true, true, 6, false, ""),
+            ("Shane", "谢恩", true, false, 2, false, "和 谢恩 好感只有 2 心，花舞节要 4 心以上才会答应"),
+        };
+        var rNoPartner = ((string action, int matchIndex, string message))planDance.Invoke(null, new object[] { null, false, danceActors });
+        Check(rNoPartner.action == "ask" && rNoPartner.message.Contains("海莉") && rNoPartner.message.Contains("塞巴斯蒂安") && !rNoPartner.message.Contains("谢恩"),
+            "花舞节不传 partner 时列出可邀请的人，不静默挑人：" + Shorten(rNoPartner.message));
+        var rPickHaley = ((string action, int matchIndex, string message))planDance.Invoke(null, new object[] { "海莉", false, danceActors });
+        Check(rPickHaley.action == "invite" && rPickHaley.matchIndex == 0, "花舞节传 partner=海莉 选中海莉");
+        var rRejectLow = ((string action, int matchIndex, string message))planDance.Invoke(null, new object[] { "谢恩", false, danceActors });
+        Check(rRejectLow.action == "fail" && rRejectLow.message.Contains("2 心") && rRejectLow.message.Contains("海莉"), "选好感不够的人报错并列出候选");
+        var rSkipNone = ((string action, int matchIndex, string message))planDance.Invoke(null, new object[] { "none", false, danceActors });
+        Check(rSkipNone.action == "skip", "花舞节传 partner=none 跳过邀请");
+
+        // till_area 规划与失败下一步提示
+        var clipRect = tActions.GetMethod("ClipRect", Any);
+        var clipped = ((int x1, int y1, int x2, int y2))clipRect.Invoke(null, new object[] { 90, 50, 10, -5, 80, 65 });
+        Check(clipped == (10, 0, 79, 50), "ClipRect 自动规范坐标并裁剪到地图内");
+        var orderTill = tActions.GetMethod("OrderTillTargets", Any);
+        var tillPool = Enumerable.Range(0, 10).SelectMany(y => Enumerable.Range(0, 10).Select(x => new Point(x, y))).ToList();
+        var sprCov = new HashSet<Point> { new(8, 8), new(8, 9), new(9, 8) };
+        var orderedTill = (List<Point>)orderTill.Invoke(null, new object[] { tillPool, new Point(0, 0), sprCov, 80 });
+        Check(orderedTill.Count == 80 && orderedTill.Take(3).All(sprCov.Contains), "till_area 尽量开满 80 格且优先洒水器覆盖格");
+        var fmtTillFail = tActions.GetMethod("FormatTillFailure", Any);
+        string failTilled = (string)fmtTillFail.Invoke(null, new object[] { 12, 0, 0, 0, 0, 0, 0 });
+        Check(failTilled.Contains("12 格已经耕过") && failTilled.Contains("plant_seeds"), "till_area 全是空耕地时引导去 plant_seeds");
+
+        // plant_seeds 不再把 <4 格零散地/异作物田当硬上限，顺延全放进 order，并汇报剩余种子与范围
+        var planPlant = tActions.GetMethod("PlanPlantOrder", Any);
+        var fieldType = tActions.GetNestedType("Field", Any);
+        var fCtor = fieldType.GetConstructor(Any, null, Type.EmptyTypes, null);
+        object MakeField(IEnumerable<Point> pts, int crops, params string[] seeds)
+        {
+            var f = fCtor.Invoke(null);
+            ((List<Point>)fieldType.GetField("Tiles", Any).GetValue(f)).AddRange(pts);
+            fieldType.GetField("Crops", Any).SetValue(f, crops);
+            var sset = (HashSet<string>)fieldType.GetField("SeedIds", Any).GetValue(f);
+            foreach (var sid in seeds) sset.Add(sid);
+            return f;
+        }
+        var fMainSame = MakeField(new[] { new Point(10, 10), new Point(11, 10), new Point(10, 11), new Point(11, 11) }, 1, "472");
+        var fMainEmpty = MakeField(new[] { new Point(20, 10), new Point(21, 10), new Point(20, 11), new Point(21, 11) }, 0);
+        var fMainOther = MakeField(new[] { new Point(30, 10), new Point(31, 10), new Point(30, 11), new Point(31, 11) }, 2, "473");
+        var fScattered = MakeField(new[] { new Point(40, 10), new Point(41, 10) }, 0);
+        var emptyOnly = new[] { new Point(10, 10), new Point(20, 10), new Point(30, 10), new Point(40, 10), new Point(41, 10) };
+        var arrFields = Array.CreateInstance(fieldType, 4);
+        arrFields.SetValue(fScattered, 0);
+        arrFields.SetValue(fMainOther, 1);
+        arrFields.SetValue(fMainEmpty, 2);
+        arrFields.SetValue(fMainSame, 3);
+        var plantPlan = ((List<Point> order, int otherCropCount, int scatteredCount))planPlant.Invoke(null,
+            new object[] { arrFields, emptyOnly.ToHashSet(), "472", new Point(0, 0) });
+        Check(plantPlan.order.Count == 5 && plantPlan.order[0] == new Point(10, 10) && plantPlan.order[1] == new Point(20, 10)
+            && plantPlan.order[2] == new Point(30, 10) && plantPlan.otherCropCount == 1 && plantPlan.scatteredCount == 2,
+            "PlanPlantOrder 把他作物田与零散地排在后面而不硬跳过");
+        var fmtPlant = tActions.GetMethod("FormatPlantSummary", Any);
+        string plantSum = (string)fmtPlant.Invoke(null, new object[]
+        {
+            7, "防风草种子", 303, new List<Point> { new(40, 10), new(41, 11) }, 1, 2, 3
+        });
+        Check(plantSum.Contains("剩余种子 303 颗") && plantSum.Contains("剩余空耕地 2 格")
+            && plantSum.Contains("x1=40,y1=10,x2=41,y2=11") && plantSum.Contains("clear_area"),
+            "plant_seeds 返回剩余种子、剩余空耕地、下次范围与枯死提示：" + Shorten(plantSum));
+
+        // clear_area 枯死作物与不伤活作物、till_area 枯死提示
+        string failDead = (string)fmtTillFail.Invoke(null, new object[] { 0, 9, 0, 0, 0, 0, 0 });
+        Check(failDead.Contains("9 格有枯死作物") && failDead.Contains("clear_area"), "till_area 遇到枯死作物明确提示先 clear_area：" + Shorten(failDead));
+        var targetedScythe = tActions.GetMethod("ShouldUseTargetedScythe", Any);
+        Check((bool)targetedScythe.Invoke(null, new object[] { 'd', false })
+            && (bool)targetedScythe.Invoke(null, new object[] { 'w', true })
+            && !(bool)targetedScythe.Invoke(null, new object[] { 'w', false }),
+            "枯死作物或靠近活作物的杂草走定点镰刀，绝不误伤活作物");
+
+        // crystal_cave 晶石洞谜题工具与顺序格式化
+        Check(schema.Any(t => t["function"]["name"].GetValue<string>() == "crystal_cave"), "schema 注册了 crystal_cave");
+        Check(Run0("crystal_cave", "{}").Contains("游戏世界未就绪"), "crystal_cave 通过参数校验");
+        var fmtSeq = tActions.GetMethod("FormatCrystalSequence", Any);
+        string seqFull = (string)fmtSeq.Invoke(null, new object[] { new[] { 0, 2, 4 }, 0 });
+        Check(seqFull.Contains("#1(3,4)紫") && seqFull.Contains("#3(6,7)红") && seqFull.Contains("#5(9,4)橙"), "晶石序列格式化出编号、坐标与颜色：" + seqFull);
+        string seqMid = (string)fmtSeq.Invoke(null, new object[] { new[] { 0, 2, 4 }, 1 });
+        Check(!seqMid.Contains("#1(3,4)") && seqMid.Contains("#3(6,7)") && seqMid.Contains("已按 1 颗"), "晶石序列支持从中断步继续：" + seqMid);
+
+        // gem_shrine 宝石鸟祭坛工具、宝石归一化与状态格式化
+        var gemProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "gem_shrine")?["function"]["parameters"]["properties"] as JsonObject;
+        Check(gemProps != null && gemProps["north"] != null && gemProps["south"] != null && gemProps["east"] != null && gemProps["west"] != null,
+            "schema 注册了 gem_shrine 且包含 north/south/east/west");
+        Check(Run0("gem_shrine", "{\"north\":\"绿宝石\"}").Contains("游戏世界未就绪"), "gem_shrine 通过参数校验");
+        var normGem = tActions.GetMethod("NormalizeGemBirdGem", Any);
+        Check((string)normGem.Invoke(null, new object[] { "Emerald" }) == "60"
+            && (string)normGem.Invoke(null, new object[] { "海蓝宝石" }) == "62"
+            && (string)normGem.Invoke(null, new object[] { "红宝石" }) == "64"
+            && (string)normGem.Invoke(null, new object[] { "Amethyst" }) == "66"
+            && (string)normGem.Invoke(null, new object[] { "黄水晶" }) == "68"
+            && (string)normGem.Invoke(null, new object[] { "take" }) == "take"
+            && normGem.Invoke(null, new object[] { "钻石" }) == null,
+            "NormalizeGemBirdGem 只接受 5 种宝石鸟宝石或 take");
+
+        // raccoon 大树桩浣熊任务工具、动作与各阶段状态格式
+        var racProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "raccoon")?["function"]["parameters"]["properties"] as JsonObject;
+        Check(racProps != null && racProps["action"] != null, "schema 注册了 raccoon(action)");
+        Check(Run0("raccoon", "{\"action\":\"status\"}").Contains("游戏世界未就绪"), "raccoon status 通过参数校验");
+        Check(Run0("raccoon", "{\"action\":\"unknown\"}").Contains("游戏世界未就绪"), "raccoon 未知 action 通过 schema 进入动作校验");
+        var normRac = tActions.GetMethod("NormalizeRaccoonAction", Any);
+        Check((string)normRac.Invoke(null, new object[] { null }) == "status"
+            && (string)normRac.Invoke(null, new object[] { "FIX" }) == "fix"
+            && (string)normRac.Invoke(null, new object[] { "交付" }) == "donate"
+            && (string)normRac.Invoke(null, new object[] { "shop" }) == "shop"
+            && normRac.Invoke(null, new object[] { "bad" }) == null,
+            "NormalizeRaccoonAction 识别 status/fix/donate/shop");
+        var fmtRac = tActions.GetMethod("FormatRaccoonState", Any);
+        string racNeedWood = (string)fmtRac.Invoke(null, new object[] { true, false, false, false, 0, 0, false, null, 45 });
+        Check(racNeedWood.Contains("45/100") && racNeedWood.Contains("action=fix"), "浣熊大树桩待修时给出硬木进度与 fix 指引：" + racNeedWood);
+        var racReqs = new[] { ("熏大海参", 1, 1, false), ("大蒜 x5", 2, 5, false) };
+        string racActive = (string)fmtRac.Invoke(null, new object[] { true, true, true, true, 1, 8, true, racReqs, 100 });
+        Check(racActive.Contains("熏大海参") && racActive.Contains("1/1") && racActive.Contains("大蒜 x5") && racActive.Contains("2/5") && racActive.Contains("donate"),
+            "浣熊活跃轮次列出所需风味物品与背包数量：" + racActive);
     }
 
     static System.IO.DirectoryInfo repo2()

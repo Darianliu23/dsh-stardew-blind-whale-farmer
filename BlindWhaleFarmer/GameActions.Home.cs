@@ -16,10 +16,51 @@ namespace BlindWhaleFarmer
         private static bool IsAiHomeAlias(string name) =>
             name?.Trim() is { } key && (key == "回家" || key.Equals("FarmHouse", StringComparison.OrdinalIgnoreCase));
 
-        private static (FarmHouse house, Point bed, bool configured, string note) ResolveAiHome()
+        private static bool IsIslandContext(GameLocation loc) =>
+            loc != null && (loc.InIslandContext() || loc is IslandLocation);
+
+        internal static bool ShouldPreferIslandHome(bool inIslandContext, bool farmhouseRestored, bool hasIslandBed) =>
+            inIslandContext && farmhouseRestored && hasIslandBed;
+
+        private static (GameLocation house, Point bed, bool configured, string note) ResolveSleepHome()
+        {
+            if (IsIslandContext(Loc) && ResolveIslandHome() is { } island)
+                return (island.house, island.bed, false, null);
+            return ResolveAiHome();
+        }
+
+        private static (IslandFarmHouse house, Point bed)? ResolveIslandHome()
+        {
+            if (Game1.getLocationFromName("IslandWest") is not IslandWest west || !west.farmhouseRestored.Value)
+                return null;
+            if (Game1.getLocationFromName("IslandFarmHouse") is not IslandFarmHouse house)
+                return null;
+            // 岛上小屋修好后，主机第一次进门才放床；之前（未 visited）只有主机进去才会立刻摆上 (22,3) 的床（睡点 (23,4)）。
+            var beds = house.furniture.OfType<BedFurniture>().Where(b => b.bedType != BedFurniture.BedType.Child).ToList();
+            bool hasBed = beds.Count > 0 || (!house.visited.Value && Game1.IsMasterGame);
+            if (!ShouldPreferIslandHome(IsIslandContext(Loc), west.farmhouseRestored.Value, hasBed))
+                return null;
+            var from = Loc is MineShaft mine
+                ? Game1.getLocationFromName(mine.getMineArea() == 121 ? "SkullCave" : "Mine")
+                : Loc;
+            if (from == null)
+                return null;
+            var route = from != house ? Exits.PlanRoute(from, house.NameOrUniqueName) : null;
+            if (from != house && route is not { Count: > 0 })
+                return null;
+            if (beds.Count == 0)
+                return (house, new Point(23, 4));
+            Point? entry = Loc == house ? Player.TilePoint : ExitArrivalTile(house, route[^1]);
+            if (entry is Point start && house.Map != null && house.isTileOnMap(start.X, start.Y)
+                && FindAiBedPath(house, start) is { } path)
+                return (house, path[^1]);
+            return null;
+        }
+
+        private static (GameLocation house, Point bed, bool configured, string note) ResolveAiHome()
         {
             var registered = Utility.getHomeOfFarmer(Player);
-            var fallback = (house: registered, bed: registered.GetPlayerBedSpot(), configured: false, note: (string)null);
+            var fallback = ((GameLocation)registered, bed: registered.GetPlayerBedSpot(), configured: false, note: (string)null);
             string name = AiHomeLocation?.Trim();
             if (!Context.IsMultiplayer || string.IsNullOrEmpty(name))
                 return fallback;
@@ -52,11 +93,11 @@ namespace BlindWhaleFarmer
             return fallback;
         }
 
-        private static List<Point> FindAiBedPath(FarmHouse house, Point start)
+        private static List<Point> FindAiBedPath(GameLocation house, Point start)
         {
             // 原版按房屋升级等级选主床。主床不可用时，也可以走到别的成人床。
             var beds = house.furniture.OfType<BedFurniture>().Where(b => b.bedType != BedFurniture.BedType.Child);
-            var primary = house.GetPlayerBed();
+            var primary = (house as FarmHouse)?.GetPlayerBed();
             foreach (var bed in beds.OrderBy(b => b == primary ? 0 : 1))
             {
                 var spot = bed.GetBedSpot();

@@ -140,23 +140,60 @@ namespace BlindWhaleFarmer
                 yield break;
             }
             var counter = counterAction != null ? FindTileAction(Loc, counterAction) : null;
-            if (counter.HasValue && !NextTo(counter.Value))
-            {
-                // 柜台是墙里的一格，上下左右常常站不了（铁匠铺柜台只能从斜下方点）：斜角也算
-                var stands = NpcStandTiles(counter.Value);
-                if (stands.Count == 0)
-                {
-                    o.Fail($"走不到柜台 ({counter.Value.X},{counter.Value.Y})：四周（含斜角）都没有能站的格子");
-                    yield break;
-                }
-                foreach (var s in GoToAny(stands, o, $"柜台 ({counter.Value.X},{counter.Value.Y})"))
-                    yield return s;
-                if (!o.Ok)
-                    yield break;
-            }
             if (counter.HasValue)
+            {
+                bool needSouth = counterAction == "Blacksmith";
+                var stands = CounterStandTiles(counter.Value, needSouth);
+                bool alreadyOk = NextTo(counter.Value) && (!needSouth || Player.TilePoint.Y > counter.Value.Y);
+                if (!alreadyOk)
+                {
+                    if (stands.Count == 0)
+                    {
+                        o.Fail($"走不到柜台 ({counter.Value.X},{counter.Value.Y})：四周（含斜角）都没有能站的格子");
+                        yield break;
+                    }
+                    foreach (var s in GoToAny(stands, o, $"柜台 ({counter.Value.X},{counter.Value.Y})"))
+                        yield return s;
+                    if (!o.Ok)
+                        yield break;
+                }
                 Face(counter.Value);
+            }
             o.Succeed();
+        }
+
+        private static List<Point> CounterStandTiles(Point counter, bool southOnly)
+        {
+            var orth = Pathfinder.AdjacentStandTiles(Loc, counter);
+            var diag = new[] { (dx: 1, dy: 1), (dx: 1, dy: -1), (dx: -1, dy: 1), (dx: -1, dy: -1) }
+                .Select(d => new Point(counter.X + d.dx, counter.Y + d.dy))
+                .Where(p => Pathfinder.IsPassable(Loc, p.X, p.Y));
+            return FilterCounterStands(counter, orth, diag, southOnly);
+        }
+
+        internal static List<Point> FilterCounterStands(Point counter, IEnumerable<Point> orth, IEnumerable<Point> diag, bool southOnly)
+        {
+            var o = (southOnly ? orth.Where(p => p.Y > counter.Y) : orth).ToList();
+            if (o.Count > 0)
+                return o;
+            return (southOnly ? diag.Where(p => p.Y > counter.Y) : diag).ToList();
+        }
+
+        /// <summary>铁匠铺领完工具后等大约 3 秒的举起动画结束、再把提示对话框关掉。</summary>
+        private IEnumerable<object> WaitBlacksmithPickup(Tool pending)
+        {
+            for (int t = 0; t < 120 && Player.toolBeingUpgraded.Value == pending && Player.toolBeingUpgraded.Value != null; t++)
+                yield return null;
+            if (Player.toolBeingUpgraded.Value != null)
+                yield break;
+            for (int t = 0; t < 240 && Game1.activeClickableMenu is not DialogueBox && (!Player.CanMove || Player.FarmerSprite.CurrentAnimation != null); t++)
+                yield return null;
+            foreach (var s in WaitTicks(10))
+                yield return s;
+            foreach (var s in CloseDialogues())
+                yield return s;
+            foreach (var s in WaitPlayerFree(180))
+                yield return s;
         }
 
         private IEnumerable<object> CloseDialogues()
@@ -316,6 +353,11 @@ namespace BlindWhaleFarmer
 
         public IEnumerable<object> UpgradeTool(string toolSpec)
         {
+            if (Blocked(out string blocked))
+            {
+                yield return ActionResult.Fail(blocked);
+                yield break;
+            }
             var o = new Outcome();
             var pending = Player.toolBeingUpgraded.Value;
             if (pending != null && Player.daysLeftForToolUpgrade.Value > 0)
@@ -323,11 +365,24 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(ToolUpgradeStatus() + "，同一时间只能升级一件");
                 yield break;
             }
-            // 不是来领工具的：出门前先查工具带没带、钱和锭够不够，免得走到铁匠铺才发现
-            if (pending == null && UpgradePrecheck(toolSpec) is string notReady)
+            if (pending != null && Player.freeSpotsInInventory() == 0 && pending is not GenericTool)
             {
-                yield return ActionResult.Fail(notReady + "（这次没有出门）");
+                yield return ActionResult.Fail($"背包满了，空出一格再来取回 {pending.DisplayName}");
                 yield break;
+            }
+            // 不是来领工具的：出门前先查工具带没带、钱和锭够不够，免得走到铁匠铺才发现
+            if (pending == null)
+            {
+                if (string.IsNullOrWhiteSpace(toolSpec))
+                {
+                    yield return ActionResult.Fail("现在没有升级完成待领取的工具；要升级请指定 tool（axe / pickaxe / hoe / watering_can）");
+                    yield break;
+                }
+                if (UpgradePrecheck(toolSpec) is string notReady)
+                {
+                    yield return ActionResult.Fail(notReady + "（这次没有出门）");
+                    yield break;
+                }
             }
 
             foreach (var s in GoToShopkeeper("Blacksmith", "Clint", "Blacksmith", o))
@@ -338,26 +393,17 @@ namespace BlindWhaleFarmer
                 yield break;
             }
 
-            // 领取升级好的工具：和走到柜台跟 Clint 说话一样
+            // 领取升级好的工具：和走到柜台跟 Clint 说话一样（站在柜台南侧 Y > counter.Y）
             if (pending != null)
             {
-                if (Player.freeSpotsInInventory() == 0)
-                {
-                    yield return ActionResult.Fail("背包满了，空出一格再来领工具");
-                    yield break;
-                }
                 var counter = FindTileAction(Loc, "Blacksmith");
                 if (counter.HasValue)
                     Loc.checkAction(new xLocation(counter.Value.X, counter.Value.Y), Game1.viewport, Player);
-                for (int t = 0; t < 120 && Player.toolBeingUpgraded.Value != null; t++)
-                    yield return null;
-                foreach (var s in WaitTicks(60))
-                    yield return s;
-                foreach (var s in CloseDialogues())
+                foreach (var s in WaitBlacksmithPickup(pending))
                     yield return s;
                 yield return Player.toolBeingUpgraded.Value == null
-                    ? ActionResult.Success($"领到了升级后的 {pending.DisplayName}")
-                    : ActionResult.Fail("没领到工具（Clint 可能不在柜台）");
+                    ? ActionResult.Success($"已取回 {pending.DisplayName}")
+                    : ActionResult.Fail($"没能取回 {pending.DisplayName}（Clint 可能不在柜台）");
                 yield break;
             }
 

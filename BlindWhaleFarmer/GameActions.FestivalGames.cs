@@ -55,44 +55,120 @@ namespace BlindWhaleFarmer
             notes.Add($"往汤里放了 {item.DisplayName}（{(best.tier == 4 ? "最好的一档，全镇好感 +120" : "好的一档，全镇好感 +60")}）");
         }
 
-        /// <summary>花舞节：邀请好感最高（≥4 心）的单身村民跳舞。和村民说话、回答“是”，最多试两次。</summary>
-        private IEnumerable<object> InviteDancePartner(Event ev, List<string> notes)
+        internal static bool IsSkipDancePartner(string partner) =>
+            partner?.Trim().ToLowerInvariant() is "none" or "skip" or "no" or "不邀" or "不选" or "无" or "自己看";
+
+        internal static (string action, int matchIndex, string message) PlanDancePartnerChoice(
+            string partner, bool alreadyHasPartner,
+            IReadOnlyList<(string name, string displayName, bool canDance, bool willAccept, int hearts, bool isSpouse, string rejectReason)> actors)
         {
-            if (Player.dancePartner.Value != null)
-                yield break;
-            var candidates = ev.actors
-                .Where(a => a.datable.Value && a.IsVillager && Player.getFriendshipHeartLevelForNPC(a.Name) >= 4)
-                .OrderByDescending(a => Player.getFriendshipHeartLevelForNPC(a.Name))
+            if (alreadyHasPartner)
+                return ("done", -1, null);
+            var acceptable = actors.Select((a, idx) => (a, idx))
+                .Where(x => x.a.willAccept)
+                .OrderByDescending(x => x.a.isSpouse ? int.MaxValue : x.a.hearts)
                 .ToList();
-            if (candidates.Count == 0)
+            string ListText() => acceptable.Count == 0
+                ? "目前没有好感 4 心以上（或已结婚）的可邀请对象。"
+                : string.Join("、", acceptable.Select(x =>
+                    $"{x.a.displayName}（{x.a.name}，{(x.a.isSpouse ? "配偶" : $"{x.a.hearts}心")}）"));
+            if (IsSkipDancePartner(partner))
+                return ("skip", -1, "跳过邀请舞伴");
+            if (string.IsNullOrWhiteSpace(partner))
             {
-                notes.Add("没有好感 4 心以上的单身村民，这次没有舞伴（看大家跳就好）");
-                yield break;
+                if (acceptable.Count == 0)
+                    return ("skip", -1, "没有好感 4 心以上的单身村民或配偶，这次没有舞伴（看大家跳就好）");
+                return ("ask", -1, $"花舞节还没选舞伴，请用 festival action=start partner=名字 选一位邀请（不想邀人传 partner=none）。可邀请的人：{ListText()}");
             }
-            var o = new Outcome();
-            foreach (var npc in candidates.Take(3))
+            string q = partner.Trim();
+            int hit = -1;
+            for (int i = 0; i < actors.Count; i++)
             {
-                for (int attempt = 0; attempt < 2 && Player.dancePartner.Value == null; attempt++)
+                if (actors[i].name.Equals(q, System.StringComparison.OrdinalIgnoreCase)
+                    || actors[i].displayName.Equals(q, System.StringComparison.OrdinalIgnoreCase))
                 {
-                    foreach (var s in GoAdjacent(npc.TilePoint, o))
-                        yield return s;
-                    if (!o.Ok)
+                    hit = i;
+                    break;
+                }
+            }
+            if (hit < 0)
+            {
+                for (int i = 0; i < actors.Count; i++)
+                {
+                    if (actors[i].name.Contains(q, System.StringComparison.OrdinalIgnoreCase)
+                        || actors[i].displayName.Contains(q, System.StringComparison.OrdinalIgnoreCase))
                     {
-                        o.Succeed();
+                        hit = i;
                         break;
                     }
-                    Face(npc.TilePoint);
-                    Loc.checkAction(new xLocation(npc.TilePoint.X, npc.TilePoint.Y), Game1.viewport, Player);
-                    foreach (var s in ClickThroughDialogue(YesChoice))
-                        yield return s;
-                }
-                if (Player.dancePartner.Value != null)
-                {
-                    notes.Add($"邀请 {npc.displayName} 跳舞成功（跳舞后好感 +250）");
-                    yield break;
                 }
             }
-            notes.Add($"邀请跳舞没成功（试了 {string.Join("、", candidates.Take(3).Select(c => c.displayName))}）");
+            if (hit < 0)
+                return ("fail", -1, $"花舞节上找不到叫“{partner}”的村民。可邀请的人：{ListText()}（不邀传 partner=none）");
+            if (!actors[hit].willAccept)
+                return ("fail", -1, $"{actors[hit].rejectReason}。可邀请的人：{ListText()}（不邀传 partner=none）");
+            return ("invite", hit, null);
+        }
+
+        /// <summary>花舞节：按 partner 邀请舞伴；没传 partner 且有可邀请人时列出名单让调用方选，不擅自决定。</summary>
+        private IEnumerable<object> InviteDancePartner(Event ev, string partner, Outcome result, List<string> notes)
+        {
+            var actors = ev.actors.Where(a => a != null && a.IsVillager).ToList();
+            var infos = actors.Select(a =>
+            {
+                bool isSpouse = Player.spouse != null && a.Name == Player.spouse;
+                bool canDance = a.GetData()?.FlowerDanceCanDance ?? (a.datable.Value || isSpouse);
+                int hearts = Player.getFriendshipHeartLevelForNPC(a.Name);
+                bool willAccept = canDance && (isSpouse || (!a.HasPartnerForDance && !a.isMarried() && Player.getFriendshipLevelForNPC(a.Name) >= 1000));
+                string reject = !canDance ? $"{a.displayName} 不能当舞伴"
+                    : a.HasPartnerForDance ? $"{a.displayName} 已经有舞伴了"
+                    : a.isMarried() ? $"{a.displayName} 已经结婚了"
+                    : $"和 {a.displayName} 好感只有 {hearts} 心，花舞节要 4 心以上才会答应";
+                return (a.Name, a.displayName ?? a.Name, canDance, willAccept, hearts, isSpouse, reject);
+            }).ToList();
+
+            var plan = PlanDancePartnerChoice(partner, Player.dancePartner.Value != null, infos);
+            if (plan.action == "done")
+            {
+                result.Succeed();
+                yield break;
+            }
+            if (plan.action == "skip")
+            {
+                notes.Add(plan.message);
+                result.Succeed();
+                yield break;
+            }
+            if (plan.action is "ask" or "fail")
+            {
+                result.Fail(plan.message);
+                yield break;
+            }
+
+            var npc = actors[plan.matchIndex];
+            var o = new Outcome();
+            for (int attempt = 0; attempt < 3 && Player.dancePartner.Value == null; attempt++)
+            {
+                foreach (var s in GoAdjacent(npc.TilePoint, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    result.Fail($"走不到 {npc.displayName} 旁边：{o.Message}");
+                    yield break;
+                }
+                Face(npc.TilePoint);
+                Loc.checkAction(new xLocation(npc.TilePoint.X, npc.TilePoint.Y), Game1.viewport, Player);
+                foreach (var s in ClickThroughDialogue(YesChoice))
+                    yield return s;
+            }
+            if (Player.dancePartner.Value != null)
+            {
+                bool spouse = Player.spouse != null && npc.Name == Player.spouse;
+                notes.Add($"邀请 {npc.displayName} 跳舞成功" + (spouse ? "（配偶）" : "（跳舞后好感 +250）"));
+                result.Succeed();
+                yield break;
+            }
+            result.Fail($"和 {npc.displayName} 对话后没能约成舞伴（可能好感不够、已拒或已有舞伴）");
         }
 
         /// <summary>

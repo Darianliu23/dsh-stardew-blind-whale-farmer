@@ -278,6 +278,33 @@ namespace BlindWhaleFarmer
             Safe(sb, () => AppendMine(sb, loc, pt));
             if (loc is MermaidHouse)
                 sb.AppendLine("美人鱼表演：进来几秒后自动开演，整场一分多钟（现实时间）。用 mermaid_show 等它演完并按顺序敲贝壳拿珍珠，别进来转一圈就出去（出去再进来要重新看）");
+            if (loc is StardewValley.Locations.IslandWestCave1 cave)
+            {
+                if (cave.completed.Value)
+                    sb.AppendLine("晶石洞谜题：已经解完（3 颗金核桃奖励已解锁）");
+                else if (cave.netPhase.Value == StardewValley.Locations.IslandWestCave1.PHASE_WAIT_FOR_PLAYER_INPUT)
+                    sb.AppendLine($"晶石洞谜题：第 {Math.Max(1, cave.currentDifficulty.Value - 2)} 轮等待点击，顺序 {GameActions.FormatCrystalSequence(cave.currentCrystalSequence.ToList(), cave.currentCrystalSequenceIndex.Value)}（也可直接用 crystal_cave 解完）");
+                else
+                    sb.AppendLine("晶石洞谜题：未完成（可用 crystal_cave 一键完成全部 5 轮，或 interact (6,2) 启动后按提示顺序点击晶石）");
+            }
+            Safe(sb, () =>
+            {
+                if (loc is StardewValley.Locations.IslandLocation il && il.locationGemBird.Value is { } bird && !bird.flying.Value)
+                {
+                    int bx = (int)(bird.position.X / 64f), by = (int)(bird.position.Y / 64f);
+                    string gemName = GameActions.GemBirdDisplayName(bird.itemIndex.Value);
+                    sb.AppendLine($"宝石鸟：今天姜岛下雨，({bx},{by}) 有一只掉【{gemName}】的宝石鸟（走过去会让它飞走并掉落{gemName}，对应 IslandShrine 的 {GameActions.GemBirdNameByLocation(loc.Name)} 基座）");
+                }
+                if (loc is StardewValley.Locations.IslandShrine shrine)
+                {
+                    var slots = GameActions.GemShrineSlots.Select(s =>
+                    {
+                        var ped = shrine.getObjectAtTile(s.tile.X, s.tile.Y) as StardewValley.Objects.ItemPedestal;
+                        return (s.label, s.islandLoc, s.tile, ped?.heldObject.Value?.ItemId);
+                    }).ToList();
+                    sb.AppendLine(GameActions.FormatGemShrineStatus(shrine.puzzleFinished.Value, slots));
+                }
+            });
 
             sb.AppendLine();
             sb.AppendLine("## 背包（序号: 物品）");
@@ -873,6 +900,11 @@ namespace BlindWhaleFarmer
                     return ('*', $"礼物箱（里面有：{string.Join("、", gift.Items.Where(i => i != null).Select(i => $"{i.DisplayName}x{i.Stack}"))}）", "interact 打开");
                 if (o is Chest)
                     return ('X', o.DisplayName, "箱子");
+                if (o is StardewValley.Objects.ItemPedestal ped)
+                {
+                    string held = ped.heldObject.Value != null ? ped.heldObject.Value.DisplayName : "空";
+                    return ('X', $"{o.DisplayName}（放着：{held}）", ped.locked.Value ? "已锁定" : "interact 传 item 放宝石，或用 gem_shrine");
+                }
                 if (o.heldObject.Value != null && o.MinutesUntilReady > 0)
                     return ('X', $"{o.DisplayName}（加工中：{o.heldObject.Value.DisplayName}，还需 {o.MinutesUntilReady} 分钟）", "");
                 if (o.heldObject.Value == null && o.bigCraftable.Value && o.GetMachineData() != null)
@@ -1240,6 +1272,10 @@ namespace BlindWhaleFarmer
 
                 case PrizeTicketMenu:
                     sb.AppendLine("奖券机的界面。用 close_menu 关掉，再用 prize_machine 换奖品。");
+                    break;
+
+                case JunimoNoteMenu:
+                    sb.AppendLine("收集包/浣熊需求界面。用 close_menu 关掉：社区中心用 bundle_info / donate_bundles，森林浣熊大树桩用 raccoon。");
                     break;
 
                 case ShippingMenu:
