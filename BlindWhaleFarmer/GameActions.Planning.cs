@@ -961,8 +961,8 @@ namespace BlindWhaleFarmer
             return null;
         }
 
-        /// <summary>农场上额外的规矩：别压田里、别堵建筑门口、箱子放一起。</summary>
-        private static string FarmPlacementProblem(Farm farm, SObject o, Point tile, bool checkChestDistance = true)
+        /// <summary>农场上额外的规矩：别压田里、别堵建筑门口。</summary>
+        private static string FarmPlacementProblem(Farm farm, SObject o, Point tile)
         {
             foreach (var f in Fields(farm).Where(f => f.Tiles.Count >= 4))
                 if (f.Box.Contains(tile))
@@ -973,18 +973,20 @@ namespace BlindWhaleFarmer
                 if (tile.Y >= by + b.tilesHigh.Value && tile.Y <= by + b.tilesHigh.Value + 1 && tile.X >= bx && tile.X < bx + b.tilesWide.Value)
                     return $"({tile.X},{tile.Y}) 堵在 {b.buildingType.Value}（左上角 ({bx},{by})）门口，门口 ({bx},{by + b.tilesHigh.Value})-({bx + b.tilesWide.Value - 1},{by + b.tilesHigh.Value + 1}) 要空着";
             }
-            // 箱子放一起：离已有的箱子太远就拦下，告诉她挨着哪个放
-            if (checkChestDistance && (o is Chest || ChestIds.Contains(o.QualifiedItemId)))
-            {
-                var others = PlayerChests(farm).Select(c => c.tile).ToList();
-                if (others.Count > 0)
-                {
-                    var near = others.OrderBy(c => Math.Max(Math.Abs(c.X - tile.X), Math.Abs(c.Y - tile.Y))).First();
-                    if (Math.Max(Math.Abs(near.X - tile.X), Math.Abs(near.Y - tile.Y)) > 3)
-                        return $"箱子要和农场上已有的箱子放在一起，({tile.X},{tile.Y}) 离最近的箱子 ({near.X},{near.Y}) 太远了，挨着它放（旁边留一格走路）";
-                }
-            }
             return null;
+        }
+
+        private static bool IsChestItem(Item item) => item is Chest || (item is SObject o && ChestIds.Contains(o.QualifiedItemId));
+
+        /// <summary>放箱子成功后，若离农场上最近的已有箱子超过 3 格，给一句软提醒（不拦）。</summary>
+        internal static string ChestDistanceHint(Point tile, IEnumerable<Point> otherChests)
+        {
+            var others = otherChests.Where(c => c != tile).ToList();
+            if (others.Count == 0)
+                return null;
+            var near = others.OrderBy(c => Math.Max(Math.Abs(c.X - tile.X), Math.Abs(c.Y - tile.Y))).First();
+            int dist = Math.Max(Math.Abs(near.X - tile.X), Math.Abs(near.Y - tile.Y));
+            return dist > 3 ? $"。离最近的已有箱子 ({near.X},{near.Y}) 有 {dist} 格，可以用 storage_info 看储藏区" : null;
         }
 
         /// <summary>从玩家现在的位置能走到的格子；block 那一格当成已经放了东西。passable 是缓存。</summary>

@@ -60,6 +60,8 @@ namespace BlindWhaleFarmer
         private Func<IEnumerable<object>> currentFactory;
         private volatile TaskCompletionSource<ActionCompletion> currentTcs;
         private Action currentAfterAction;
+        private IEnumerator<object> idleCurrent;
+        private DateTime lastIdleOrActionEndUtc = DateTime.UtcNow;
         private bool currentTrackInventory;
         private InventoryEntry[] actionInventoryStart;
         private InventoryEntry[] outsideInventoryBaseline;
@@ -91,6 +93,42 @@ namespace BlindWhaleFarmer
         }
 
         public bool IsBusy => currentTcs != null;
+        public bool IsIdleRunning => idleCurrent != null;
+        public DateTime LastActivityEndedUtc => lastIdleOrActionEndUtc;
+
+        /// <summary>在没有正式动作时启动一个随时可被打断的空闲协程（如联机空闲跟着玩家卖萌）。</summary>
+        public bool StartIdle(Func<IEnumerable<object>> factory)
+        {
+            if (IsBusy || IsIdleRunning || factory == null)
+                return false;
+            idleCurrent = factory().GetEnumerator();
+            return true;
+        }
+
+        /// <summary>立刻中止空闲协程（有新任务、有人说话、玩家接管、换图/回标题时调用），不报错、不阻塞正式动作。</summary>
+        public void CancelIdle(bool haltPlayer = true)
+        {
+            if (idleCurrent == null)
+                return;
+            try
+            {
+                idleCurrent.Dispose();
+            }
+            catch
+            {
+                // 忽略空闲行为清理异常
+            }
+            idleCurrent = null;
+            lastIdleOrActionEndUtc = DateTime.UtcNow;
+            if (haltPlayer)
+            {
+                Safe(() =>
+                {
+                    StardewValley.Game1.player?.Halt();
+                    return true;
+                });
+            }
+        }
 
         private static InventoryEntry[] CaptureLocalInventory() => Safe(() =>
         {
@@ -200,6 +238,8 @@ namespace BlindWhaleFarmer
             var tcs = new TaskCompletionSource<ActionCompletion>(TaskCreationOptions.RunContinuationsAsynchronously);
             queue.Enqueue(() =>
             {
+                if (IsIdleRunning)
+                    CancelIdle(haltPlayer: true);
                 if (IsBusy && preemptWhenStuck && Safe(() => Game1.eventUp || Game1.activeClickableMenu != null))
                     Finish("失败：被剧情/界面打断，已中止（先处理剧情或界面，再重新执行）");
                 // 同一步里连发两个 wait（MCP 客户端会并行调用）：第二个不报“还在执行”，并进正在跑的那个，一起返回
@@ -243,7 +283,27 @@ namespace BlindWhaleFarmer
                 action();
 
             if (!IsBusy)
+            {
+                if (idleCurrent != null)
+                {
+                    if (!worldReady)
+                    {
+                        CancelIdle(haltPlayer: false);
+                        return;
+                    }
+                    try
+                    {
+                        if (!idleCurrent.MoveNext() || idleCurrent.Current is ActionResult)
+                            CancelIdle(haltPlayer: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        monitor?.Log($"空闲互动出错，已停止：{ex.Message}", LogLevel.Trace);
+                        CancelIdle(haltPlayer: true);
+                    }
+                }
                 return;
+            }
 
             if (!worldReady)
             {
@@ -401,6 +461,7 @@ namespace BlindWhaleFarmer
             currentAfterAction = null;
             actionInventoryStart = null;
             currentTcs = null;
+            lastIdleOrActionEndUtc = DateTime.UtcNow;
             tcs?.TrySetResult(new ActionCompletion(message, inventoryNote));
             if (waitFollowers.Count > 0)
             {

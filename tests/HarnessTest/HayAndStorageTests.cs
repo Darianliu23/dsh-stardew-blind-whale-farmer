@@ -22,6 +22,17 @@ partial class Program
             "箱子聚类：两格斜角能连成一组，重复坐标只算一次，远处单独成组");
         Check(((List<List<Point>>)Call("ClusterChestTiles", Array.Empty<Point>())).Count == 0, "没有箱子时没有储藏区");
 
+        Check(Call("ChestDistanceHint", new Point(10, 10), new[] { new Point(10, 10) }) == null, "箱子距离提醒：只有自己时不提醒");
+        Check(Call("ChestDistanceHint", new Point(10, 10), new[] { new Point(10, 10), new Point(13, 12) }) == null, "箱子距离提醒：3 格内不提醒");
+        var farHint = (string)Call("ChestDistanceHint", new Point(10, 10), new[] { new Point(10, 10), new Point(15, 10), new Point(30, 30) });
+        Check(farHint != null && farHint.Contains("(15,10)") && farHint.Contains("5 格") && farHint.Contains("storage_info"),
+            "箱子距离提醒：超过 3 格时提醒最近箱子距离和 storage_info：" + farHint);
+
+        var nearOrder = ((IEnumerable<Point>)Call("OrderAutoPlaceCandidates", new Point(10, 10), new[] { new Point(12, 10) })).ToList();
+        Check(nearOrder[0] == new Point(11, 10), "自动找位：箱子在右侧时优先挑右侧紧邻已有箱子的格");
+        var farOrder = ((IEnumerable<Point>)Call("OrderAutoPlaceCandidates", new Point(10, 10), new[] { new Point(50, 50) })).ToList();
+        Check(farOrder[0] == new Point(10, 9), "自动找位：已有箱子很远时保持默认上下左右优先顺序");
+
         var allowed = new HashSet<Point> { new(8, 9), new(9, 9), new(8, 12), new(10, 11), new(7, 9), new(8, 10) };
         var edges = (Dictionary<string, List<Point>>)Call("StorageExpansionTiles", new Rectangle(8, 10, 2, 2),
             (Func<Point, bool>)allowed.Contains);

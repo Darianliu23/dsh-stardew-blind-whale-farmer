@@ -159,6 +159,42 @@ partial class Program
         Check(travelProps?["properties"]?["x"]?["type"]?.GetValue<string>() == "integer" && travelProps?["properties"]?["y"] != null
               && !((JsonArray)travelProps["required"]).Any(r => r.GetValue<string>() == "location"), "travel_to 的 schema 有 x/y，location 不再必填");
 
+        // build 支持 action=move：schema、成对 x/y、建筑坐标解析
+        var buildProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "build")?["function"]["parameters"]?["properties"] as JsonObject;
+        Check(buildProps != null && buildProps["action"]?["type"]?.GetValue<string>() == "string"
+              && buildProps["building"]?["type"]?.GetValue<string>() == "string"
+              && buildProps["x"]?["type"]?.GetValue<string>() == "integer" && buildProps["y"]?["type"]?.GetValue<string>() == "integer",
+            "build 的 schema 有 action/building/x/y");
+        string rBuildOnlyX = await Run("build", "{\"action\":\"move\",\"building\":\"Coop\",\"x\":40}");
+        Check(rBuildOnlyX.StartsWith("失败：build 的 x、y 要一起给，你只给了 x"), "build 只给 x 报要一起给：" + Shorten(rBuildOnlyX));
+        foreach (var json in new[] { "{\"action\":\"move\"}", "{\"action\":\"move\",\"building\":\"Coop\"}", "{\"action\":\"move\",\"building\":\"50,15\",\"x\":40,\"y\":20}" })
+        {
+            string rb = await Run("build", json);
+            Check(ArgsAccepted(rb) && !rb.Contains("要一起给"), $"build{json} 参数被接受：" + Shorten(rb));
+        }
+        var mParseCoord = tActions.GetMethod("TryParseBuildingCoord", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        Check(mParseCoord != null, "GameActions.TryParseBuildingCoord 存在");
+        if (mParseCoord != null)
+        {
+            foreach (var (input, wantOk, wx, wy) in new[]
+            {
+                ("50,15", true, 50, 15),
+                ("(50, 15)", true, 50, 15),
+                ("50，15", true, 50, 15),
+                ("Coop@50,15", true, 50, 15),
+                ("鸡舍(50,15)", true, 50, 15),
+                ("Coop", false, 0, 0),
+                ("鸡舍", false, 0, 0),
+                ("", false, 0, 0),
+            })
+            {
+                var pArgs = new object[] { input, null, null };
+                bool ok = (bool)mParseCoord.Invoke(null, pArgs);
+                var pt = (Microsoft.Xna.Framework.Point)pArgs[1];
+                Check(ok == wantOk && (!wantOk || (pt.X == wx && pt.Y == wy)), $"TryParseBuildingCoord(\"{input}\") => {ok} ({pt.X},{pt.Y})");
+            }
+        }
+
         // 结果拼接只砍真正的“成功：”“失败：”前缀（M3 修 Substring(3)）
         var strip = tActions.GetMethod("StripResultPrefix", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
         string Strip(string s) => (string)strip.Invoke(null, new object[] { s });

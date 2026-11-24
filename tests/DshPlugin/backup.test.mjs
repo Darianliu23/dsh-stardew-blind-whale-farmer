@@ -117,6 +117,8 @@ test('模组 config.json 的字段对应', () => {
   mkdirSync(join(dir2, 'Mods', 'BlindWhaleFarmer'), { recursive: true })
   writeFileSync(join(dir2, 'Mods', 'BlindWhaleFarmer', 'config.json'), '﻿' + JSON.stringify({
     SessionDays: 2, McpFreezeTime: false, McpIdleSeconds: 300, ForageRadius: 3, CompanionMode: 'solo',
+    CoSleepDefault: 'random', PassbyEmoteEnabled: false, PassbyEmoteChance: 0.5, PassbyEmoteCooldownMinutes: 10,
+    IdleFollowEnabled: false, IdleFollowIntervalSeconds: 240, IdleFollowDurationSeconds: 45,
     ExtraInstructions: '钓鱼', GuideFile: 'guide/攻略.md', McpPort: 18085, GuideOverrides: { 钓鱼: '我的钓鱼攻略' }, ApiKey: 'secret',
   }))
   const s = plugin.modConfigSettings(dir2)
@@ -125,6 +127,13 @@ test('模组 config.json 的字段对应', () => {
   assert.equal(s.idleSeconds, 300)
   assert.equal(s.forageRadius, 3)
   assert.equal(s.companionMode, 'solo')
+  assert.equal(s.coSleepDefault, 'random')
+  assert.equal(s.passbyEmoteEnabled, false)
+  assert.equal(s.passbyEmoteChance, 0.5)
+  assert.equal(s.passbyEmoteCooldownMinutes, 10)
+  assert.equal(s.idleFollowEnabled, false)
+  assert.equal(s.idleFollowIntervalSeconds, 240)
+  assert.equal(s.idleFollowDurationSeconds, 45)
   assert.equal(s.port, 18085)
   assert.equal(s.guideFishing, '我的钓鱼攻略')
   assert.equal(Object.values(s).includes('secret'), false)

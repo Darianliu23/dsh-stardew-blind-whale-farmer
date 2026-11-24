@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Buildings;
@@ -655,7 +656,9 @@ namespace BlindWhaleFarmer
             Player.questLog.Add(q);
             Player.acceptedDailyQuest.Set(newValue: true);
             Game1.playSound("newArtifact");
-            yield return ActionResult.Success("接受了委托（2 天内完成）。\n" + DescribeQuest());
+            bool miningQuest = q is StardewValley.Quests.SlayMonsterQuest or StardewValley.Quests.ResourceCollectionQuest;
+            yield return ActionResult.Success("接受了委托（2 天内完成）。\n" + DescribeQuest()
+                + MineQuestPackReminder(Player.freeSpotsInInventory(), miningQuest));
         }
 
         // ───────────────────────── 买动物 ─────────────────────────
@@ -806,8 +809,20 @@ namespace BlindWhaleFarmer
             return true;
         }
 
-        public IEnumerable<object> Build(string buildingSpec, int? x, int? y, bool force = false)
+        public IEnumerable<object> Build(string buildingSpec, int? x, int? y, bool force = false, string action = null)
         {
+            string act = (action ?? "build").Trim().ToLowerInvariant();
+            if (act is "move" or "移动" or "搬" or "搬迁")
+            {
+                foreach (var s in MoveBuilding(buildingSpec, x, y))
+                    yield return s;
+                yield break;
+            }
+            if (act is not ("build" or "建造" or "upgrade" or "升级" or ""))
+            {
+                yield return ActionResult.Fail($"build 不认识 action “{action}”，请传 build（默认，建造/升级）或 move（移动已有建筑）");
+                yield break;
+            }
             var o = new Outcome();
             var farm = Game1.getFarm();
             // 用木匠界面对象拿到可建列表、价格和扣材料的逻辑（不显示界面）。
@@ -986,6 +1001,413 @@ namespace BlindWhaleFarmer
                 ? $"{builderName} 开始在农场 ({spot.Value.X},{spot.Value.Y}) 建 {bp.DisplayName}（{data.Size.X}x{data.Size.Y}），{bp.BuildDays} 天后完工，花费 {BlueprintCost(bp)}"
                 : $"{builderName} 在农场 ({spot.Value.X},{spot.Value.Y}) 建好了 {bp.DisplayName}（{data.Size.X}x{data.Size.Y}），花费 {BlueprintCost(bp)}"
                   + (bp.Id.Contains("Obelisk") ? "。方尖碑 interact 一下就传送" : ""));
+        }
+
+        // ───────────────────────── 移动建筑（Robin） ─────────────────────────
+
+        private static readonly Regex BuildingCoordPattern = new(@"^(.*?)\s*[@(（\s]*(-?\d+)\s*[,，\s]\s*(-?\d+)\s*[)）]?\s*$", RegexOptions.Compiled);
+
+        /// <summary>解析建筑参数里的坐标（如 "50,15"、"(50,15)"、"50，15"、"Coop@50,15"、"鸡舍(50,15)"）。</summary>
+        internal static bool TryParseBuildingCoord(string spec, out Point coord, out string namePrefix)
+        {
+            coord = Point.Zero;
+            namePrefix = "";
+            if (string.IsNullOrWhiteSpace(spec))
+                return false;
+            var m = BuildingCoordPattern.Match(spec.Trim());
+            if (!m.Success)
+                return false;
+            if (!int.TryParse(m.Groups[2].Value, out int cx) || !int.TryParse(m.Groups[3].Value, out int cy))
+                return false;
+            coord = new Point(cx, cy);
+            namePrefix = m.Groups[1].Value.Trim();
+            return true;
+        }
+
+        private static string BuildingDisplayName(Building b)
+        {
+            string display = TokenParser.ParseText(b.GetData()?.Name);
+            return string.IsNullOrWhiteSpace(display) ? b.buildingType.Value : display;
+        }
+
+        private static string BuildingLabel(Building b)
+        {
+            string display = BuildingDisplayName(b);
+            string type = b.buildingType.Value;
+            return display.Equals(type, StringComparison.OrdinalIgnoreCase) ? type : $"{display}({type})";
+        }
+
+        /// <summary>照 CarpenterMenu 的规则判断建筑能不能搬；能搬返回 null，不能搬返回原因。</summary>
+        private static string BuildingMoveBlockedStatus(Farm farm, CarpenterMenu menu, Building b)
+        {
+            if (b.daysOfConstructionLeft.Value > 0)
+                return $"施工中（还剩 {b.daysOfConstructionLeft.Value} 天）不可搬";
+            if (!menu.hasPermissionsToMove(b))
+            {
+                if (!farm.greenhouseUnlocked.Value && b is GreenhouseBuilding)
+                    return "温室未修复解锁，不可搬";
+                return "无权限搬（联机需要主机在设置里开启农夫移动建筑权限）";
+            }
+            return null;
+        }
+
+        private static string FormatFarmBuildings(Farm farm, CarpenterMenu menu, IEnumerable<Building> buildings) =>
+            string.Join("\n", buildings.Select(b =>
+            {
+                string blocked = BuildingMoveBlockedStatus(farm, menu, b);
+                return $"- {BuildingLabel(b)} 在 ({b.tileX.Value},{b.tileY.Value})（{b.tilesWide.Value}x{b.tilesHigh.Value}）"
+                    + (blocked != null ? $"【{blocked}】" : "");
+            }));
+
+        /// <summary>
+        /// 和 GameLocation.isBuildable 一致的农场格子检查，但不依赖 Game1.currentLocation == farm，
+        /// 并且忽略正在移动的建筑自身原来占的格子（与 buildStructure 一致）。
+        /// </summary>
+        private static bool IsFarmTileBuildable(Farm farm, Vector2 v, Building moving, bool onlyNeedsToBePassable = false, bool checkPlayers = true)
+        {
+            if (farm.buildings.Contains(moving) && moving.occupiesTile(v))
+                return true;
+            Rectangle buildableRect = farm.GetBuildableRectangle();
+            if (buildableRect != Rectangle.Empty && !buildableRect.Contains((int)v.X, (int)v.Y))
+                return false;
+            if (!farm.isTileOnMap(v))
+                return false;
+            if (onlyNeedsToBePassable)
+                return farm.isTilePassable(v) && !farm.IsTileOccupiedBy(v, CollisionMask.All, CollisionMask.All);
+            Building buildingAt = farm.getBuildingAt(v);
+            if (buildingAt != null && buildingAt != moving && !buildingAt.isMoving)
+                return false;
+            bool canPlace = farm.CanItemBePlacedHere(v, itemIsPassable: false, CollisionMask.All, ~CollisionMask.Objects, useFarmerTile: checkPlayers)
+                || farm.getObjectAtTile((int)v.X, (int)v.Y)?.QualifiedItemId == "(O)590";
+            if (!canPlace)
+                return false;
+            string prop = farm.doesTileHavePropertyNoNull((int)v.X, (int)v.Y, "Buildable", "Back");
+            if (farm.HasMapPropertyWithValue("LooserBuildRestrictions"))
+                return !prop.Equals("f", StringComparison.OrdinalIgnoreCase);
+            if (prop.Equals("t", StringComparison.OrdinalIgnoreCase) || prop.Equals("true", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (farm.doesTileHaveProperty((int)v.X, (int)v.Y, "Diggable", "Back") != null && !prop.Equals("f", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return false;
+        }
+
+        private static string ExplainTileBlock(Farm farm, Vector2 v, Building moving, bool checkPlayers)
+        {
+            int tx = (int)v.X, ty = (int)v.Y;
+            Rectangle buildableRect = farm.GetBuildableRectangle();
+            if (!farm.isTileOnMap(v) || (buildableRect != Rectangle.Empty && !buildableRect.Contains(tx, ty)))
+                return $"({tx},{ty}) 超出农场可建造区域";
+            Building other = farm.getBuildingAt(v);
+            if (other != null && other != moving && !other.isMoving)
+                return $"({tx},{ty}) 压到已有建筑 {BuildingLabel(other)} ({other.tileX.Value},{other.tileY.Value})";
+            if (checkPlayers && farm.farmers.Any(f => f.Tile == v))
+                return $"({tx},{ty}) 有玩家站着，先走开一点";
+            if (farm.animals.Values.Any(a => a.Tile == v))
+                return $"({tx},{ty}) 有动物站着挡路";
+            if (farm.objects.TryGetValue(v, out var obj) && obj.QualifiedItemId != "(O)590")
+                return $"({tx},{ty}) 有物体挡路（{obj.DisplayName}）";
+            if (farm.terrainFeatures.TryGetValue(v, out var tf) && tf is not Grass)
+                return $"({tx},{ty}) 有树/耕地/地形挡路";
+            var tileRect = new Rectangle(tx * 64 + 1, ty * 64 + 1, 62, 62);
+            if (farm.resourceClumps.Any(rc => rc.getBoundingBox().Intersects(tileRect)))
+                return $"({tx},{ty}) 有大树桩或大石头挡路";
+            if (farm.largeTerrainFeatures.Any(ltf => ltf.getBoundingBox().Intersects(tileRect)))
+                return $"({tx},{ty}) 有灌木挡路";
+            return $"({tx},{ty}) 不是可建造地面（如水、悬崖、边缘或不可建区域）";
+        }
+
+        /// <summary>按游戏 buildStructure + ConfirmBuildingAccessibility 规则检查能否搬到 dest；能放返回 null，不能放返回具体原因。</summary>
+        private string ExplainMoveBlockReason(Farm farm, Building b, Point dest, CarpenterMenu menu, bool checkPlayers)
+        {
+            // 先记住“动物站着”这种临时阻挡，继续把全部静态障碍与农舍可达性查完，避免临时动物掩盖真正的硬阻挡导致白跑一趟 Robin
+            string animalBlock = null;
+            for (int dy = 0; dy < b.tilesHigh.Value; dy++)
+                for (int dx = 0; dx < b.tilesWide.Value; dx++)
+                {
+                    var v = new Vector2(dest.X + dx, dest.Y + dy);
+                    if (!IsFarmTileBuildable(farm, v, b, false, checkPlayers))
+                    {
+                        string why = ExplainTileBlock(farm, v, b, checkPlayers);
+                        if (why.Contains("动物站着"))
+                        {
+                            animalBlock ??= why;
+                            continue;
+                        }
+                        return why;
+                    }
+                }
+            foreach (var extra in b.GetAdditionalPlacementTiles())
+                foreach (var p in extra.TileArea.GetPoints())
+                {
+                    var v = new Vector2(dest.X + p.X, dest.Y + p.Y);
+                    if (!IsFarmTileBuildable(farm, v, b, extra.OnlyNeedsToBePassable, checkPlayers))
+                    {
+                        string why = $"附加占地/台阶格 {ExplainTileBlock(farm, v, b, checkPlayers)}";
+                        if (why.Contains("动物站着"))
+                        {
+                            animalBlock ??= why;
+                            continue;
+                        }
+                        return why;
+                    }
+                }
+            if (b.humanDoor.Value != new Point(-1, -1))
+            {
+                var doorFront = new Vector2(dest.X + b.humanDoor.X, dest.Y + b.humanDoor.Y + 1);
+                if (!(farm.buildings.Contains(b) && b.occupiesTile(doorFront))
+                    && !IsFarmTileBuildable(farm, doorFront, b, false, checkPlayers)
+                    && !farm.isPath(doorFront))
+                {
+                    string why = ExplainTileBlock(farm, doorFront, b, checkPlayers);
+                    if (why.Contains("动物站着"))
+                        animalBlock ??= $"门口前 {why}";
+                    else
+                        return $"门口前 ({(int)doorFront.X},{(int)doorFront.Y}) 被挡住（必须是空地或小路）";
+                }
+            }
+            string prevent = b.isThereAnythingtoPreventConstruction(farm, new Vector2(dest.X, dest.Y));
+            if (prevent != null)
+                return prevent;
+            if (b.buildingType.Value == "Farmhouse")
+            {
+                var movingField = reflection.GetField<bool>(b, "_isMoving");
+                bool prevMoving = movingField.GetValue();
+                Building prevTarget = menu.buildingToMove;
+                try
+                {
+                    movingField.SetValue(true);
+                    menu.buildingToMove = b;
+                    if (!menu.ConfirmBuildingAccessibility(new Vector2(dest.X, dest.Y)))
+                        return $"农舍放在 ({dest.X},{dest.Y}) 后门口走不到农场出口，游戏不允许这样放";
+                }
+                finally
+                {
+                    movingField.SetValue(prevMoving);
+                    menu.buildingToMove = prevTarget;
+                }
+            }
+            return animalBlock;
+        }
+
+        /// <summary>找出几个农场地图上可放下该建筑且分散开的合法空位供 AI 参考（不强制靠近同类，也不替 AI 决定）。</summary>
+        private List<Point> SuggestMoveSpots(Farm farm, Building target, CarpenterMenu menu, int maxCount = 5)
+        {
+            int w = Pathfinder.MapWidth(farm), h = Pathfinder.MapHeight(farm);
+            int bw = target.tilesWide.Value, bh = target.tilesHigh.Value;
+            var house = farm.GetMainFarmHouseEntry();
+            bool checkPlayers = Loc == farm;
+            var valid = new List<(Point p, int priority, int dist)>();
+            for (int cy = 1; cy < h - bh; cy++)
+                for (int cx = 1; cx < w - bw; cx++)
+                {
+                    if (cx == target.tileX.Value && cy == target.tileY.Value)
+                        continue;
+                    var p = new Point(cx, cy);
+                    if (ExplainMoveBlockReason(farm, target, p, menu, checkPlayers) != null)
+                        continue;
+                    // 优先把门口前方不是水、不挡其他建筑门口的位置排前面，但不做硬性限制
+                    bool doorClear = true;
+                    for (int dx = 0; dx < bw && doorClear; dx++)
+                        if (farm.isWaterTile(cx + dx, cy + bh))
+                            doorClear = false;
+                    var fp = new Rectangle(cx, cy, bw, bh);
+                    bool blocksOtherDoor = farm.buildings.Any(other => other != target
+                        && new Rectangle(other.tileX.Value, other.tileY.Value + other.tilesHigh.Value, other.tilesWide.Value, 2).Intersects(fp));
+                    int prio = (doorClear ? 0 : 2) + (blocksOtherDoor ? 1 : 0);
+                    valid.Add((p, prio, Util.Manhattan(p, house)));
+                }
+            int minSpread = Math.Max(8, bw + bh);
+            var picked = new List<Point>();
+            foreach (var (p, _, _) in valid.OrderBy(v => v.priority).ThenBy(v => v.dist))
+            {
+                if (picked.All(q => Util.Manhattan(p, q) >= minSpread))
+                {
+                    picked.Add(p);
+                    if (picked.Count >= maxCount)
+                        break;
+                }
+            }
+            if (picked.Count < maxCount)
+            {
+                foreach (var (p, _, _) in valid.OrderBy(v => v.priority).ThenBy(v => v.dist))
+                {
+                    if (!picked.Contains(p))
+                    {
+                        picked.Add(p);
+                        if (picked.Count >= maxCount)
+                            break;
+                    }
+                }
+            }
+            return picked;
+        }
+
+        public IEnumerable<object> MoveBuilding(string buildingSpec, int? x, int? y)
+        {
+            var o = new Outcome();
+            var farm = Game1.getFarm();
+            var menu = new CarpenterMenu("Robin", farm);
+            if (farm.buildings.Count == 0)
+            {
+                yield return ActionResult.Fail("农场上没有任何建筑");
+                yield break;
+            }
+            if (string.IsNullOrWhiteSpace(buildingSpec))
+            {
+                yield return ActionResult.Fail("请指定要移动的建筑（传类型名或坐标，如 \"Coop\" 或 \"50,15\"）和目标坐标 x,y。当前农场上的建筑：\n"
+                    + FormatFarmBuildings(farm, menu, farm.buildings));
+                yield break;
+            }
+
+            // 1. 查找目标建筑（支持坐标或中英文名；同类多个时要求用坐标区分）
+            Building target = null;
+            if (TryParseBuildingCoord(buildingSpec, out var coord, out _))
+            {
+                target = farm.buildings.FirstOrDefault(b => b.tileX.Value == coord.X && b.tileY.Value == coord.Y)
+                    ?? farm.buildings.FirstOrDefault(b => b.occupiesTile(new Vector2(coord.X, coord.Y)));
+                if (target == null)
+                {
+                    yield return ActionResult.Fail($"农场 ({coord.X},{coord.Y}) 处没有建筑。当前农场上的建筑：\n"
+                        + FormatFarmBuildings(farm, menu, farm.buildings));
+                    yield break;
+                }
+            }
+            else
+            {
+                string spec = buildingSpec.Trim();
+                var matches = farm.buildings.Where(b =>
+                    b.buildingType.Value.Equals(spec, StringComparison.OrdinalIgnoreCase)
+                    || BuildingDisplayName(b).Equals(spec, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (matches.Count == 0)
+                {
+                    matches = farm.buildings.Where(b =>
+                        b.buildingType.Value.Contains(spec, StringComparison.OrdinalIgnoreCase)
+                        || BuildingDisplayName(b).Contains(spec, StringComparison.OrdinalIgnoreCase)).ToList();
+                }
+                if (matches.Count == 0)
+                {
+                    yield return ActionResult.Fail($"农场上没有叫“{spec}”的建筑。当前农场上的建筑：\n"
+                        + FormatFarmBuildings(farm, menu, farm.buildings));
+                    yield break;
+                }
+                if (matches.Count > 1)
+                {
+                    yield return ActionResult.Fail($"农场上有多栋匹配“{spec}”的建筑，请用坐标区分（例如 building=\"{matches[0].tileX.Value},{matches[0].tileY.Value}\"）：\n"
+                        + FormatFarmBuildings(farm, menu, matches));
+                    yield break;
+                }
+                target = matches[0];
+            }
+
+            string label = BuildingLabel(target);
+            // 2. 出门前先检查游戏规则是否允许搬动
+            if (BuildingMoveBlockedStatus(farm, menu, target) is string blocked)
+            {
+                yield return ActionResult.Fail($"{label}（在 ({target.tileX.Value},{target.tileY.Value})）{blocked}。这次没有出门");
+                yield break;
+            }
+
+            // 3. 没传新位置：给出几个合法空位供 AI 自己选（不替 AI 决定、不强制靠近同类）
+            if (!x.HasValue || !y.HasValue)
+            {
+                var spots = SuggestMoveSpots(farm, target, menu, 5);
+                string spotHint = spots.Count > 0
+                    ? $"农场上有几个可放的空位供参考：{string.Join("、", spots.Select(p => $"({p.X},{p.Y})"))}（你也可以自己选农场地图上任意合规的空位）。"
+                    : "目前农场上找不到能放下它的空位，可能需要先 clear_area 清出一块。";
+                yield return ActionResult.Fail($"要移动 {label}（当前在 ({target.tileX.Value},{target.tileY.Value})，占地 {target.tilesWide.Value}x{target.tilesHigh.Value}），请传目标左上角坐标 x,y。{spotHint}这次没有出门");
+                yield break;
+            }
+
+            var dest = new Point(x.Value, y.Value);
+            if (dest.X == target.tileX.Value && dest.Y == target.tileY.Value)
+            {
+                yield return ActionResult.Fail($"{label} 已经在 ({dest.X},{dest.Y}) 了，不用搬。这次没有出门");
+                yield break;
+            }
+
+            // 出门前先检查目标位置静态条件，明显放不下就不用白跑一趟 Robin
+            string preBlock = ExplainMoveBlockReason(farm, target, dest, menu, checkPlayers: Loc == farm);
+            if (preBlock != null && !preBlock.Contains("动物站着"))
+            {
+                yield return ActionResult.Fail($"({dest.X},{dest.Y}) 放不下 {label}（{target.tilesWide.Value}x{target.tilesHigh.Value}，坐标是左上角）：{preBlock}。这次没有出门");
+                yield break;
+            }
+
+            // 4. 像玩家一样走去找 Robin（她在木匠铺柜台时才能搬）
+            foreach (var s in GoToShopkeeper("ScienceHouse", "Robin", "Carpenter", o))
+                yield return s;
+            if (!o.Ok)
+            {
+                yield return ActionResult.Fail(o.Message);
+                yield break;
+            }
+
+            // 路上可能发生状态变化（如联机权限或建筑变更），再核对一次
+            if (!farm.buildings.Contains(target))
+            {
+                yield return ActionResult.Fail($"{label} 已经不在农场上了");
+                yield break;
+            }
+            if (BuildingMoveBlockedStatus(farm, menu, target) is string blockedNow)
+            {
+                yield return ActionResult.Fail($"{label} {blockedNow}");
+                yield break;
+            }
+
+            // 5. 和游戏一样：确认之后回到农场地图执行放置（GameLocation.isBuildable 依赖 Game1.currentLocation == farm）
+            if (Loc != farm)
+            {
+                foreach (var s in TravelInner("Farm", o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail("去农场失败：" + o.Message);
+                    yield break;
+                }
+            }
+
+            // 6. 照 CarpenterMenu.receiveLeftClick(CarpentryAction.Move) 的流程执行移动
+            var oldPos = new Point(target.tileX.Value, target.tileY.Value);
+            var destVec = new Vector2(dest.X, dest.Y);
+            bool moved = false;
+            string failReason = null;
+            menu.buildingToMove = target;
+            target.isMoving = true;
+            try
+            {
+                if (!menu.ConfirmBuildingAccessibility(destVec))
+                    failReason = $"农舍放在 ({dest.X},{dest.Y}) 后门口走不到农场出口，游戏不允许这样放";
+                else if (farm.buildStructure(target, destVec, Player))
+                    moved = true;
+                else
+                    failReason = ExplainMoveBlockReason(farm, target, dest, menu, checkPlayers: true)
+                        ?? $"({dest.X},{dest.Y}) 放不下 {label}（{target.tilesWide.Value}x{target.tilesHigh.Value}，坐标是左上角）";
+            }
+            finally
+            {
+                if (moved)
+                {
+                    // 触发 Building.OnEndMove() -> SendBuildingMovedEvent -> Farm.OnBuildingMoved（含农舍/温室/鱼塘/出货箱/联机同步）
+                    target.isMoving = false;
+                }
+                else
+                {
+                    // 失败时不触发 OnEndMove()，避免误标 greenhouseMoved 等副作用
+                    reflection.GetField<bool>(target, "_isMoving").SetValue(false);
+                }
+                menu.buildingToMove = null;
+            }
+
+            if (!moved)
+            {
+                yield return ActionResult.Fail($"没能把 {label} 搬到 ({dest.X},{dest.Y})：{failReason}");
+                yield break;
+            }
+
+            Game1.playSound("axchop");
+            DelayedAction.playSoundAfterDelay("dirtyHit", 50);
+            DelayedAction.playSoundAfterDelay("dirtyHit", 150);
+            yield return ActionResult.Success($"Robin 把 {label} 从 ({oldPos.X},{oldPos.Y}) 搬到了 ({dest.X},{dest.Y})（免费，当场完成）");
         }
 
         public IEnumerable<object> UpgradeHouse()

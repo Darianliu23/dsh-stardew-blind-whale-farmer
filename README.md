@@ -142,11 +142,11 @@ SMAPI 控制台命令（调试用）：
 | 批量农活 | `till_area`（不给坐标只给格数就挨着田扩）、`plant_seeds`、`water_crops`（水壶空了自动去灌水）、`harvest_crops`、`clear_area`（不给坐标就清自己周围）、`forage`（把地图上的野生采集物挨个采了） |
 | 钓鱼 | `fish`（自动找岸边、按钓鱼等级算抛竿力度、等咬钩、提竿、自动玩钓鱼小游戏、收宝箱，一次最多连钓 20 竿） |
 | 动物 | `care_animals`（自动进每个鸡舍/畜棚：捡蛋和羊毛、清空自动采集器、食槽放干草、摸动物、挤奶/剪毛；可开关动物门） |
-| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地；方尖碑、黄金时钟、祝尼魔小屋这些魔法建筑会自己去法师塔建）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托）、`special_orders`（刘易斯家门口的特别订单、齐先生核桃房的齐挑战：看内容、接订单、查进度）、`special_order_dropbox`（把订单要的东西放进指定地点的投递箱）、`prize_machine`（领订单奖券、去刘易斯家的奖券机换奖品）、`repair_boat`（交材料修威利去姜岛的船；修好后 `travel_to` 会自己坐船来回）、`feed_parrot`（给姜岛的鹦鹉交金核桃解锁东西）、`collect_walnuts`（摇核桃灌木、挖地下埋着的金核桃）、`mastery`（五项技能满级后去精通洞穴领精通奖励）、`mermaid_show`（夜市看美人鱼表演、敲贝壳拿珍珠）、`joja`（Joja 路线：办会员、买社区发展项目和电影院）、`field_office`（姜岛考察站：交化石、答调查、领奖励）、`grandpa`（爷爷的评价：看分数、放钻石重新评价、领雕像） |
+| 经营 | `build`（找 Robin 建造/升级建筑，自动找空地；`action=move` 找 Robin 免费当场移动农场建筑；方尖碑、黄金时钟、祝尼魔小屋这些魔法建筑会自己去法师塔建）、`upgrade_house`、`buy_animal`（找 Marnie 买动物，自动入住、起名）、`crack_geodes`（找 Clint 砸晶球）、`upgrade_tool`（找 Clint 升级/领取工具）、`quest_board`（告示板委托）、`special_orders`（刘易斯家门口的特别订单、齐先生核桃房的齐挑战：看内容、接订单、查进度）、`special_order_dropbox`（把订单要的东西放进指定地点的投递箱）、`prize_machine`（领订单奖券、去刘易斯家的奖券机换奖品）、`repair_boat`（交材料修威利去姜岛的船；修好后 `travel_to` 会自己坐船来回）、`feed_parrot`（给姜岛的鹦鹉交金核桃解锁东西）、`collect_walnuts`（摇核桃灌木、挖地下埋着的金核桃）、`mastery`（五项技能满级后去精通洞穴领精通奖励）、`mermaid_show`（夜市看美人鱼表演、敲贝壳拿珍珠）、`joja`（Joja 路线：办会员、买社区发展项目和电影院）、`field_office`（姜岛考察站：交化石、答调查、领奖励）、`grandpa`（爷爷的评价：看分数、放钻石重新评价、领雕像） |
 | 进度 | `perfection`（完美度每一项还缺什么）、`monster_goals`（冒险家公会的怪物讨伐进度） |
 | 冒险 | `fight`（自动靠近打怪，血少自动吃回血食物）、`explore_mine`（自动打怪、敲石头找楼梯、往下走，附近有矿石宝石节点会先敲，可坐电梯直达；`where=volcano` 爬姜岛火山：浇冷岩浆、踩机关开关开门，一直到火山口）、`use_bomb`（放炸弹并跑出爆炸范围；打倒的木乃伊会自动用炸弹炸死） |
-| 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵）、`pan`（自己找淘盘点、走过去淘矿） |
-| 联机 | `say`（在游戏聊天里说话）、`set_mode`（换联机模式）、`wait_chat`（等别人说话）、`follow`（跟着别的玩家走）、`propose`（拿结婚戒指向别的玩家求婚） |
+| 生活 | `cook`（厨房做菜，冰箱材料也能用）、`check_crab_pots`（收蟹笼、补鱼饵）、`pan`（自己找淘盘点、走过去淘矿）、`furniture`（列出、拿起、放下、移动、旋转家具，严格遵守游戏权限与摆放规则） |
+| 联机 | `say`（在游戏聊天里说话）、`set_mode`（换联机模式）、`wait_chat`（等别人说话）、`follow`（跟着别的玩家走）、`propose`（拿结婚戒指向别的玩家求婚）、`sleep` 可传 `with`/`location` 跟指定玩家一起睡 |
 | 起名 | `set_name`（给孩子、刚出生的动物起名） |
 | 社交 | `gift_info`（查喜好/生日/本周送礼次数）、`give_gift`（自动找到村民送礼，先检查次数限制） |
 | 收集 | `bundle_info` / `donate_bundles`（社区中心收集包：看缺什么、自动去交，领奖励、触发修复过场）、`donate_museum`（捐矿物古物并领奖励） |
@@ -186,6 +186,13 @@ SMAPI 控制台命令（调试用）：
 | `McpIdleSeconds` | 120 | 多久没有 MCP 调用就视为客户端不玩了，恢复走时 |
 | `SessionDays` | 0 | 每次游玩最多玩几个游戏日（睡一觉算一天），到了 AI 停下汇报。0 = 不限，每次读档重新计 |
 | `SessionMinutes` | 0 | 每次游玩最多玩多少现实分钟，到了先回家睡觉存档再停下。0 = 不限 |
+| `CoSleepDefault` | 空 | 联机 `sleep` 未传 `with`/`location` 时的默认同睡对象：留空 = 按 `AiHomeLocation`/自己的家；填玩家名 = 默认去对方屋里一起睡；填 `random` = 随机挑在线玩家 |
+| `PassbyEmoteEnabled` | `true` | 联机走路途中经过其他真人玩家附近（4 格内、非战斗/节日/剧情/菜单/钓鱼）时，停下转身发个可爱表情；想关就设为 `false` |
+| `PassbyEmoteChance` | `0.35` | 路上遇到玩家时发表情的触发概率（`0`~`1`） |
+| `PassbyEmoteCooldownMinutes` | `5` | 路上遇到同一位玩家发表情的冷却间隔（现实分钟，范围 `1`~`120`） |
+| `IdleFollowEnabled` | `true` | 联机空闲（没有指派任务）时随机挑在线玩家跟一会儿并间或发表情卖萌（绝不捣乱，有任务或聊天立刻停下）；想关就设为 `false` |
+| `IdleFollowIntervalSeconds` | `180` | 联机空闲多久（现实秒，范围 `30`~`3600`）触发一次跟着玩家卖萌 |
+| `IdleFollowDurationSeconds` | `30` | 每次空闲跟着玩家卖萌持续多久（现实秒，范围 `10`~`180`） |
 
 以上 `SessionDays`、`SessionMinutes`、`McpFreezeTime`、`McpIdleSeconds`、`ExtraInstructions`、`GuideFile` 也可以在 DSH 里用 `dsh-stardew-blind-whale-farmer` 插件改，改完会写回这个文件。
 

@@ -410,5 +410,341 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success("已按指定方位放好宝石，但祭坛还没解开（可能还有方向没放对或没放满）。"
                 + FormatGemShrineStatus(shrine.puzzleFinished.Value, SnapshotSlots(), FindActiveGemBirdOnIsland()));
         }
+
+        // ───────────────────────── 姜岛：雨天美人鱼与长笛块（IslandSouthEast） ─────────────────────────
+
+        // 东南海滩左起 5 堆石头暗示 2、11、9、5、7（相对音差 +900, -200, -400, +200），对应音高 200/1100/900/500/700
+        internal static readonly int[] MermaidFlutePitches = { 200, 1100, 900, 500, 700 };
+
+        private static readonly Point[] DefaultMermaidFluteTiles =
+        {
+            new(16, 27),
+            new(18, 27),
+            new(20, 27),
+            new(22, 27),
+            new(24, 27),
+        };
+
+        /// <summary>读取长笛块（(O)464）当前音高（0~2400，每档 100）。</summary>
+        internal static int ParseFlutePitch(SObject obj) =>
+            obj != null && int.TryParse(obj.preservedParentSheetIndex.Value, out int p) ? p : 0;
+
+        /// <summary>读取鼓块（(O)463）当前音色编号（0~6）。</summary>
+        internal static int ParseDrumSound(SObject obj) =>
+            obj != null && int.TryParse(obj.preservedParentSheetIndex.Value, out int s) ? s : 0;
+
+        /// <summary>按原版 CheckForActionOnFluteBlock 的规则推算调音 1 下后的音高（0→100→…→2300→2400→0）。</summary>
+        internal static int NextFlutePitch(int pitch) => pitch switch
+        {
+            2300 => 2400,
+            2400 => 0,
+            _ => (pitch + 100) % 2400,
+        };
+
+        /// <summary>计算把长笛块从 currentPitch 调到 targetPitch（0~2400 整百）需要交互多少下。</summary>
+        internal static int FluteClicksNeeded(int currentPitch, int targetPitch)
+        {
+            int cur = currentPitch;
+            for (int clicks = 0; clicks < 25; clicks++)
+            {
+                if (cur == targetPitch)
+                    return clicks;
+                cur = NextFlutePitch(cur);
+            }
+            return 0;
+        }
+
+        internal static string FormatMermaidPuzzleStatus(bool finished, bool mermaidHere, IReadOnlyList<(Point tile, int pitch)> flutes)
+        {
+            if (finished)
+                return "美人鱼谜题：已完成（5 颗金核桃奖励已解锁）";
+            string head = mermaidHere
+                ? "美人鱼谜题：今天姜岛下雨，美人鱼就在东南海滩（未完成，可直接用 mermaid_puzzle 自动摆放/调音并走过吹响，拿 5 颗金核桃）"
+                : "美人鱼谜题：未完成（今天姜岛没下雨，美人鱼不在，需等姜岛下雨天再来用 mermaid_puzzle）";
+            if (flutes == null || flutes.Count == 0)
+                return head;
+            string list = string.Join("、", flutes.Select(f => $"({f.tile.X},{f.tile.Y})={f.pitch}[第{f.pitch / 100}档]"));
+            return $"{head}\n海滩上已放置 {flutes.Count} 个长笛块：{list}（目标从左到右音高：200/1100/900/500/700，即 2/11/9/5/7 档）";
+        }
+
+        private static bool TryFindExistingMermaidFluteRow(IslandSouthEast se, out Point[] tiles, out int walkY)
+        {
+            var byRow = se.Objects.Pairs
+                .Where(p => p.Value.QualifiedItemId == "(O)464")
+                .Select(p => new Point((int)p.Key.X, (int)p.Key.Y))
+                .GroupBy(p => p.Y)
+                .OrderBy(g => Math.Abs(g.Key - 27));
+
+            foreach (var group in byRow)
+            {
+                var ordered = group.OrderBy(p => p.X).ToList();
+                if (ordered.Count < 5)
+                    continue;
+                int y = group.Key;
+                for (int start = 0; start <= ordered.Count - 5; start++)
+                {
+                    var slice = ordered.GetRange(start, 5);
+                    foreach (int wy in new[] { y + 1, y - 1 })
+                    {
+                        if (IsClearMermaidWalkRow(se, slice, wy))
+                        {
+                            tiles = slice.ToArray();
+                            walkY = wy;
+                            return true;
+                        }
+                    }
+                }
+            }
+            tiles = null;
+            walkY = 0;
+            return false;
+        }
+
+        private static bool IsClearMermaidWalkRow(IslandSouthEast se, IReadOnlyList<Point> fluteTiles, int walkY)
+        {
+            int minX = fluteTiles[0].X;
+            int maxX = fluteTiles[fluteTiles.Count - 1].X;
+            int oppositeY = 2 * walkY - fluteTiles[0].Y;
+            for (int x = minX; x <= maxX; x++)
+            {
+                if (!Pathfinder.IsPassable(se, x, walkY))
+                    return false;
+                // 避免走过路径另一侧还有多余长笛块把旋律打乱
+                if (se.Objects.TryGetValue(new Vector2(x, oppositeY), out var opp) && opp.QualifiedItemId == "(O)464")
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool TryChooseMermaidFluteSlots(IslandSouthEast se, out Point[] tiles, out int walkY)
+        {
+            if (TryFindExistingMermaidFluteRow(se, out tiles, out walkY))
+                return true;
+
+            bool CanUseSlot(Point p) =>
+                (se.Objects.TryGetValue(new Vector2(p.X, p.Y), out var ex) && ex.QualifiedItemId == "(O)464")
+                || (!se.Objects.ContainsKey(new Vector2(p.X, p.Y)) && se.CanItemBePlacedHere(new Vector2(p.X, p.Y)));
+
+            if (DefaultMermaidFluteTiles.All(CanUseSlot) && IsClearMermaidWalkRow(se, DefaultMermaidFluteTiles, 28))
+            {
+                tiles = DefaultMermaidFluteTiles;
+                walkY = 28;
+                return true;
+            }
+
+            // 默认点位被占时，在沙滩附近挑一行 5 个可放（或已有长笛块）的格子
+            for (int y = 27; y <= 30; y++)
+            {
+                foreach (int wy in new[] { y + 1, y - 1 })
+                {
+                    var found = new List<Point>();
+                    for (int x = 15; x <= 26 && found.Count < 5; x++)
+                    {
+                        var p = new Point(x, y);
+                        if (CanUseSlot(p))
+                            found.Add(p);
+                    }
+                    if (found.Count == 5 && IsClearMermaidWalkRow(se, found, wy))
+                    {
+                        tiles = found.ToArray();
+                        walkY = wy;
+                        return true;
+                    }
+                }
+            }
+
+            tiles = null;
+            walkY = 0;
+            return false;
+        }
+
+        /// <summary>去姜岛东南海滩（IslandSouthEast），在雨天摆放（或复用）5 个长笛块、按 2/11/9/5/7 档调音后从左向右走过吹响，捡走 5 颗金核桃。</summary>
+        public IEnumerable<object> MermaidPuzzle()
+        {
+            var o = new Outcome();
+            if (Loc is not IslandSouthEast)
+            {
+                foreach (var s in TravelInner("IslandSouthEast", o))
+                    yield return s;
+                if (!o.Ok || Loc is not IslandSouthEast)
+                {
+                    yield return ActionResult.Fail($"走不到姜岛东南海滩（IslandSouthEast）：{o.Message}（需要先在姜岛南边喂 20 颗金核桃解锁度假村）");
+                    yield break;
+                }
+            }
+
+            var se = (IslandSouthEast)Loc;
+            int walnutsBefore = Game1.netWorldState.Value.GoldenWalnuts;
+            var pickupNotes = new List<string>();
+            if (se.mermaidPuzzleFinished.Value)
+            {
+                foreach (var s in CollectDebris(new Rectangle(24, 24, 14, 14), pickupNotes, 45))
+                    yield return s;
+                int extra = Game1.netWorldState.Value.GoldenWalnuts - walnutsBefore;
+                yield return ActionResult.Success(extra > 0
+                    ? $"美人鱼谜题早已解开，顺手捡起地上剩下的 {extra} 颗金核桃（现有 {Game1.netWorldState.Value.GoldenWalnuts} 个）"
+                    : "美人鱼谜题已经解开了（5 颗金核桃已拿到）");
+                yield break;
+            }
+
+            if (!se.MermaidIsHere())
+            {
+                yield return ActionResult.Fail("今天姜岛没有下雨，美人鱼不在东南海滩（需等姜岛下雨天再来调用 mermaid_puzzle）");
+                yield break;
+            }
+
+            if (!TryChooseMermaidFluteSlots(se, out var slots, out int walkY))
+            {
+                yield return ActionResult.Fail("东南海滩 (15,27)~(26,30) 找不到能排下 5 个长笛块并从旁边走过的空行，先清理一下沙滩上的杂物再试");
+                yield break;
+            }
+
+            int alreadyPlaced = slots.Count(p => se.Objects.TryGetValue(new Vector2(p.X, p.Y), out var ex) && ex.QualifiedItemId == "(O)464");
+            int needPlace = 5 - alreadyPlaced;
+            int bagFlutes = Player.Items.CountId("(O)464");
+            if (bagFlutes < needPlace)
+            {
+                yield return ActionResult.Fail($"长笛块不够：还需要放 {needPlace} 个，但背包里只有 {bagFlutes} 个（沙滩上已就位 {alreadyPlaced} 个）。长笛块配方（罗宾 6 心事件解锁）：木头×2 + 铜矿石×1 + 纤维×20");
+                yield break;
+            }
+
+            // 1. 补齐还没放的长笛块
+            int placedNow = 0;
+            foreach (var tile in slots)
+            {
+                if (se.Objects.TryGetValue(new Vector2(tile.X, tile.Y), out var ex) && ex.QualifiedItemId == "(O)464")
+                    continue;
+                int idx = -1;
+                for (int i = 0; i < Player.Items.Count; i++)
+                    if (Player.Items[i] is SObject it && it.QualifiedItemId == "(O)464")
+                    {
+                        idx = i;
+                        break;
+                    }
+                if (idx < 0)
+                {
+                    yield return ActionResult.Fail("背包里的长笛块数量不足，无法放齐 5 个");
+                    yield break;
+                }
+                foreach (var s in GoAdjacent(tile, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail($"走不到放置点 ({tile.X},{tile.Y})：{o.Message}");
+                    yield break;
+                }
+                Player.CurrentToolIndex = idx;
+                var item = (SObject)Player.Items[idx];
+                bool placed = Utility.tryToPlaceItem(se, item, tile.X * 64 + 32, tile.Y * 64 + 32);
+                foreach (var s in WaitTicks(8))
+                    yield return s;
+                if (!placed || !se.Objects.TryGetValue(new Vector2(tile.X, tile.Y), out var check) || check.QualifiedItemId != "(O)464")
+                {
+                    yield return ActionResult.Fail($"在 ({tile.X},{tile.Y}) 放置长笛块失败");
+                    yield break;
+                }
+                placedNow++;
+            }
+
+            // 2. 逐个调音到目标音高 200 / 1100 / 900 / 500 / 700（2 / 11 / 9 / 5 / 7 档）
+            PutAwayHeldItem();
+            int totalClicks = 0;
+            for (int i = 0; i < slots.Length; i++)
+            {
+                var tile = slots[i];
+                int targetPitch = MermaidFlutePitches[i];
+                if (!se.Objects.TryGetValue(new Vector2(tile.X, tile.Y), out var flute) || flute.QualifiedItemId != "(O)464")
+                {
+                    yield return ActionResult.Fail($"({tile.X},{tile.Y}) 上的长笛块不见了");
+                    yield break;
+                }
+                int clicks = FluteClicksNeeded(ParseFlutePitch(flute), targetPitch);
+                if (clicks <= 0)
+                    continue;
+                foreach (var s in GoAdjacent(tile, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail($"走不到长笛块 ({tile.X},{tile.Y}) 旁边调音：{o.Message}");
+                    yield break;
+                }
+                PutAwayHeldItem();
+                Face(tile);
+                for (int c = 0; c < clicks; c++)
+                {
+                    if (Blocked(out string why))
+                    {
+                        yield return ActionResult.Fail($"给长笛块调音时被打断：{why}");
+                        yield break;
+                    }
+                    flute.checkForAction(Player);
+                    totalClicks++;
+                    foreach (var s in WaitTicks(2))
+                        yield return s;
+                }
+                int after = ParseFlutePitch(flute);
+                if (after != targetPitch)
+                {
+                    yield return ActionResult.Fail($"({tile.X},{tile.Y}) 的长笛块调音后音高为 {after}，未能调到目标 {targetPitch}");
+                    yield break;
+                }
+            }
+
+            // 3. 从左向右依次走过 5 个长笛块吹响（若此前误触残留 songIndex，最多走两遍）
+            for (int pass = 0; pass < 2 && !se.mermaidPuzzleFinished.Value; pass++)
+            {
+                if (Blocked(out string why))
+                {
+                    yield return ActionResult.Fail($"走向长笛块时被打断：{why}");
+                    yield break;
+                }
+                // 先退到最左长笛块斜角（不触发正交相邻吹响），等所有长笛块的 1 秒冷却结束
+                var stagingCandidates = new[]
+                {
+                    new Point(slots[0].X - 1, walkY),
+                    new Point(slots[0].X, walkY + (walkY > slots[0].Y ? 1 : -1)),
+                    new Point(slots[0].X - 2, walkY),
+                };
+                Point? staging = stagingCandidates.FirstOrDefault(p => Pathfinder.IsPassable(se, p.X, p.Y));
+                if (staging is { X: > 0, Y: > 0 } st)
+                {
+                    foreach (var s in GoToAny(new[] { st }, o, "长笛块起点"))
+                        yield return s;
+                }
+                foreach (var s in WaitTicks(70))
+                    yield return s;
+
+                for (int i = 0; i < slots.Length && !se.mermaidPuzzleFinished.Value; i++)
+                {
+                    var stepTile = new Point(slots[i].X, walkY);
+                    foreach (var s in GoToAny(new[] { stepTile }, o, $"第 {i + 1} 个长笛块前 ({stepTile.X},{stepTile.Y})"))
+                        yield return s;
+                    if (!o.Ok)
+                    {
+                        yield return ActionResult.Fail($"走过第 {i + 1} 个长笛块 ({stepTile.X},{stepTile.Y}) 失败：{o.Message}");
+                        yield break;
+                    }
+                    foreach (var s in WaitTicks(5))
+                        yield return s;
+                }
+
+                for (int w = 0; w < 60 && Loc == se && !se.mermaidPuzzleFinished.Value; w++)
+                    yield return null;
+            }
+
+            if (!se.mermaidPuzzleFinished.Value)
+            {
+                yield return ActionResult.Fail("5 个长笛块已调到 200/1100/900/500/700 并从左到右走过，但美人鱼谜题尚未判定完成，可以再调用一次 mermaid_puzzle");
+                yield break;
+            }
+
+            foreach (var s in WaitTicks(45))
+                yield return s;
+            foreach (var s in CollectDebris(new Rectangle(24, 24, 14, 14), pickupNotes, 90))
+                yield return s;
+            int got = Game1.netWorldState.Value.GoldenWalnuts - walnutsBefore;
+            string detail = (placedNow > 0 ? $"放了 {placedNow} 个长笛块、" : "") + (totalClicks > 0 ? $"调音 {totalClicks} 下、" : "");
+            yield return ActionResult.Success($"解开了姜岛美人鱼谜题（{detail}从左到右吹响 2/11/9/5/7 档）！拿到 {Math.Max(got, 5)} 颗金核桃（现有 {Game1.netWorldState.Value.GoldenWalnuts} 个，一共找到 {Game1.netWorldState.Value.GoldenWalnutsFound} 个）");
+        }
     }
 }

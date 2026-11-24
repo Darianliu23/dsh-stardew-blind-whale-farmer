@@ -78,7 +78,11 @@ test('第一次推送设置，之后版本号一样就不重复推', async () =>
   await wait(300)
   assert.equal(state.posts.length, 1)
   assert.deepEqual(state.posts[0].settings, {
-    sessionDays: 2, sessionMinutes: 30, freezeTime: true, idleSeconds: 120, forageRadius: 1, companionMode: 'hybrid', extraInstructions: '专心钓鱼', reservedItems: '', guideFile: 'guide/攻略.md',
+    sessionDays: 2, sessionMinutes: 30, freezeTime: true, idleSeconds: 120, forageRadius: 1, companionMode: 'hybrid',
+    allowSpendSharedMoney: false, aiHomeLocation: '', coSleepDefault: '',
+    passbyEmoteEnabled: true, passbyEmoteChance: 0.35, passbyEmoteCooldownMinutes: 5,
+    idleFollowEnabled: true, idleFollowIntervalSeconds: 180, idleFollowDurationSeconds: 30,
+    extraInstructions: '专心钓鱼', reservedItems: '', guideFile: 'guide/攻略.md',
     guides: {},
   })
   dispose()
@@ -387,6 +391,13 @@ test('配置结构和默认值（需要能找到 schemastery）', { skip: !plugi
   assert.equal(resolved.presetEnabled, false, '会话预设默认关闭')
   assert.equal(resolved.gatewayEnabled, false, '入口工具默认关闭')
   assert.equal(resolved.autoContinue, true, '自动续玩默认开启')
+  assert.equal(resolved.coSleepDefault, '')
+  assert.equal(resolved.passbyEmoteEnabled, true)
+  assert.equal(resolved.passbyEmoteChance, 0.35)
+  assert.equal(resolved.passbyEmoteCooldownMinutes, 5)
+  assert.equal(resolved.idleFollowEnabled, true)
+  assert.equal(resolved.idleFollowIntervalSeconds, 180)
+  assert.equal(resolved.idleFollowDurationSeconds, 30)
   assert.throws(() => plugin.Config({ sessionDays: -1 }))
 })
 

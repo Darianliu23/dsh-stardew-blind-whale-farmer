@@ -81,13 +81,14 @@ namespace BlindWhaleFarmer
                 P("tool", "string", "工具"), P("x", "integer", "目标 x"), P("y", "integer", "目标 y"),
                 P("times", "integer", "最多使用几次（砍大树约需10次），默认1", false));
 
-            Add("interact", "走到目标旁边并按“动作键”：和村民聊天、开门、捡采集品、收获作物、收取机器产物、读邮箱、看告示板。传 npc 名字可以自动追着村民走。传 item 可以送礼或投料；只给 item 会在当前地点和农场找空闲的普通机器投料。", 120,
-                j => () => a.Interact(OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "npc"), OptStr(j, "item")),
+            Add("interact", "走到目标旁边并按“动作键”：和村民聊天、开门、捡采集品、收获作物、收取机器产物、调节长笛块/鼓块音高、读邮箱、看告示板。传 npc 名字可以自动追着村民走。传 item 可以送礼或投料；只给 item 会在当前地点和农场找空闲的普通机器投料。", 120,
+                j => () => a.Interact(OptInt(j, "x"), OptInt(j, "y"), OptStr(j, "npc"), OptStr(j, "item"), OptInt(j, "times") ?? 1),
                 P("x", "integer", "目标 x", false), P("y", "integer", "目标 y", false),
                 P("npc", "string", "村民名字（英文或中文），与 x,y 二选一", false),
-                P("item", "string", "手里拿的物品（名称或背包序号）；只传 item 自动找机器投料", false));
+                P("item", "string", "手里拿的物品（名称或背包序号）；只传 item 自动找机器投料", false),
+                P("times", "integer", "连续交互次数（调长笛块 1~25、鼓块 1~7 用，默认 1）", false));
 
-            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子要集中放在一片（挨着已有的机器），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。放箱子时也可以先用 storage_info 查储藏区，然后用 near=\"x,y\" 选定箱子群或新锚点，在它旁边挑一个合规空位。near 和直接放置的 x,y 二选一。", 60,
+            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子建议集中放在一片（挨着已有的），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。放箱子时也可以先用 storage_info 查储藏区，然后用 near=\"x,y\" 选定箱子群或新锚点，在它旁边挑一个合规空位。near 和直接放置的 x,y 二选一。", 60,
                 j => () => a.PlaceItem(Str(j, "item"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false, OptStr(j, "near")),
                 P("item", "string", "物品名称或背包序号"),
                 P("x", "integer", "放在哪格 x（和 y 一起给；都不给就在你身边自动找一格）", false), P("y", "integer", "放在哪格 y", false),
@@ -365,6 +366,16 @@ namespace BlindWhaleFarmer
                 j => () => a.Emote(OptStr(j, "emote")),
                 P("emote", "string", "表情名（英文或中文），可省略=列出全部", false));
 
+            Add("furniture", "查看或整理当前屋里的家具：list（默认）列出当前屋里与背包里的家具、坐标、尺寸和可否搬动；pickup 拿起家具进背包；place 把背包里的家具摆到 (x,y)；move 把家具从 (x,y) 移到 (to_x,to_y)；rotate 旋转家具。严格走游戏自己的放置与权限检查（别人屋里的床只有屋主或配偶能动）。", 90,
+                j => () => a.ManageFurniture(OptStr(j, "action"), OptStr(j, "name"), OptInt(j, "x"), OptInt(j, "y"), OptInt(j, "to_x"), OptInt(j, "to_y"), OptInt(j, "times")),
+                P("action", "string", "list（默认）/ pickup / place / move / rotate", false),
+                P("name", "string", "家具名（place 必填；pickup/move/rotate 可与 x,y 二选一或同传）", false),
+                P("x", "integer", "家具所在格 x（place 时为目标摆放左上角 x）", false),
+                P("y", "integer", "家具所在格 y（place 时为目标摆放左上角 y）", false),
+                P("to_x", "integer", "move 时的目标左上角 x", false),
+                P("to_y", "integer", "move 时的目标左上角 y", false),
+                P("times", "integer", "旋转次数（1~3，rotate 默认 1，place/move 可选顺便旋转）", false));
+
             Add("perfection", "查完美度（通关目标）：总百分比和每一项（出货、方尖碑、黄金时钟、怪物讨伐、好感、技能、星之果实、烹饪、制作、钓鱼、金色核桃）还缺什么。不花游戏时间。", 10,
                 j => () => a.Perfection(OptStr(j, "detail")),
                 P("detail", "string", "想看某一项的完整清单：ship / friends / cooking / crafting / fish", false));
@@ -401,6 +412,9 @@ namespace BlindWhaleFarmer
                 P("east", "string", "东基座/岛东（IslandEast）要放的宝石或 take", false),
                 P("west", "string", "西基座/岛西（IslandWest）要放的宝石或 take", false));
 
+            Add("mermaid_puzzle", "姜岛雨天美人鱼谜题（IslandSouthEast 东南海滩，需先喂 20 核桃解锁度假村且姜岛下雨天、凑齐 5 个长笛块）：自动摆放/复用 5 个长笛块、按 2/11/9/5/7 档（音高 200/1100/900/500/700）调音并从左向右走过吹响，拿 5 颗金核桃。", 300,
+                j => () => a.MermaidPuzzle());
+
             Add("repair_boat", "去威利鱼店后屋的船坞修去姜岛的船（社区中心修好或 Joja 路线走完后威利来信邀请才进得去）：把背包里够数的材料交上——硬木 200、铱锭 5、电池组 5，可以分几次交；全交齐的第二天船就能开，之后 travel_to IslandSouth 坐船去姜岛（船票 1000g，回来免费）。", 180,
                 j => () => a.RepairBoat());
 
@@ -426,19 +440,21 @@ namespace BlindWhaleFarmer
                 P("type", "string", "动物种类，如 Chicken、Cow、Goat、Duck、Pig（中英文都可以）", false),
                 P("name", "string", "名字（可省略，自动起名）", false), P("count", "integer", "买几只，默认 1", false));
 
-            Add("build", "在农场建造或升级建筑：普通建筑找木匠 Robin（鸡舍 Coop、畜棚 Barn、筒仓 Silo 等；Big Coop 等是升级），魔法建筑找法师（方尖碑 Earth/Water/Desert/Island Obelisk、黄金时钟 Gold Clock、祝尼魔小屋 Junimo Hut；要先拿回魔法墨水，当场建好），会自己判断找谁、自己走过去。不传 building 会列出能建的和价格。"
-                + "推荐不传 x,y：会自动规划位置（同类建筑排成一排、四周留一格路、门口下方空两格、不贴着田）。自己给坐标时也按这些规则检查，不合适会拒绝并给出建议位置。", 300,
-                j => () => a.Build(OptStr(j, "building"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false),
-                P("building", "string", "建筑名（中英文都可以），可省略", false),
-                P("x", "integer", "建筑左上角 x（可省略）", false), P("y", "integer", "建筑左上角 y（可省略）", false),
-                P("force", "boolean", "坐标不符合规划规则也照样建（一般不要用）", false));
+            Add("build", "在农场建造、升级或移动建筑：action=build（默认）建造/升级（普通建筑找木匠 Robin，魔法建筑如方尖碑/黄金时钟/祝尼魔小屋找法师；不传 building 列图纸和价格，不传 x,y 自动规划位置）；action=move 找 Robin 免费当场移动已有建筑（不传 building 列农场建筑和坐标，不传 x,y 给几个可放空位供你选）。", 300,
+                j => () => a.Build(OptStr(j, "building"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false, OptStr(j, "action")),
+                P("action", "string", "build（默认：建造/升级）/ move（移动已有建筑）", false),
+                P("building", "string", "建筑名（中英文），move 时也可写坐标如 50,15（同类多个用坐标区分），可省略", false),
+                P("x", "integer", "目标左上角 x（可省略）", false), P("y", "integer", "目标左上角 y（可省略）", false),
+                P("force", "boolean", "建造时忽略规划规则（一般不要用）", false));
 
             Add("upgrade_house", "找 Robin 升级农舍：第一次 10000g+450木材，升级后有厨房（可以 cook）和冰箱。", 240,
                 j => () => a.UpgradeHouse());
 
-            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。18:00 前睡会被拦一下，提醒你一天还长（浇完水就睡等于白白浪费一天）；确实要睡传 force=true。联机时如果设置了 AiHomeLocation，会优先走到那栋房子的床上。", 420,
-                j => () => a.Sleep(OptBool(j, "force") ?? false),
-                P("force", "boolean", "18:00 前想睡也要传 true（确认今天真的没别的事可做、或者想跳过今天）", false));
+            Add("sleep", "回家上床睡觉，结束这一天（会自动走回农舍）。体力恢复，作物生长。必须在凌晨2点前睡觉，否则会晕倒并损失金钱。会等到第二天早上（结算界面确认完）才返回。18:00 前睡会被拦一下，提醒你一天还长（浇完水就睡等于白白浪费一天）；确实要睡传 force=true。联机时可传 with 指定跟某位玩家一起睡（或 random 随机挑在线玩家），也可传 location 指定房子；都不传时按 CoSleepDefault / AiHomeLocation / 自己的家。", 420,
+                j => () => a.Sleep(OptBool(j, "force") ?? false, OptStr(j, "with"), OptStr(j, "location")),
+                P("force", "boolean", "18:00 前想睡也要传 true（确认今天真的没别的事可做、或者想跳过今天）", false),
+                P("with", "string", "联机时指定跟哪位玩家一起睡（玩家名，或 random 随机挑在线玩家）；省略则按默认", false),
+                P("location", "string", "指定去哪栋房子睡（如 FarmHouse、IslandFarmHouse 或小屋唯一地图名）；省略则按默认", false));
 
             Add("wait", "原地等待（一次最多两小时，要等更久就分几次），比如等商店开门、等节日开始。要等到某个钟点就传 until（比如 18:00），按游戏里的真实时间算，已经过了就不等、直接告诉你现在几点；别用记忆里的时间自己算 minutes。节日当天不会把入场时间等过去。", 300,
                 j => () => a.Wait(OptInt(j, "minutes"), OptStr(j, "until")),
@@ -881,6 +897,8 @@ namespace BlindWhaleFarmer
             ["menu_click"] = Aliases(("button", "name"), ("label", "name")),
             ["choose_profession"] = Aliases(("choice", "side"), ("option", "side")),
             ["festival"] = Aliases(("npc", "partner"), ("who", "partner"), ("name", "partner")),
+            ["sleep"] = Aliases(("player", "with"), ("who", "with"), ("house", "location"), ("place", "location")),
+            ["furniture"] = Aliases(("item", "name"), ("furniture", "name"), ("count", "times"), ("rotate", "times")),
         };
 
 
@@ -1138,6 +1156,7 @@ namespace BlindWhaleFarmer
         {
             ["place_item"] = ("x", "y", "都不给就在你身边 8 格内自动找一格空位放"),
             ["travel_to"] = ("x", "y", "只是去那个地点就都不给；要到地点里的某一格就两个都给"),
+            ["build"] = ("x", "y", "都不给时：建造会自动找位置，移动会列出几个可放空位供选择"),
         };
 
         /// <summary>

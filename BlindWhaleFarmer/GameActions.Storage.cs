@@ -89,7 +89,7 @@ namespace BlindWhaleFarmer
                 && !Pathfinder.Dirs.Any(d => Pathfinder.InteriorDoor(loc, tile + d) != null)
                 && (!loc.terrainFeatures.TryGetValue(new Vector2(tile.X, tile.Y), out var feature) || feature is not HoeDirt)
                 && PlaceableProblem(loc, item, tile) == null
-                && (loc is not Farm farm || FarmPlacementProblem(farm, (SObject)item, tile, checkChestDistance: false) == null)
+                && (loc is not Farm farm || FarmPlacementProblem(farm, (SObject)item, tile) == null)
                 && BlockageProblem(loc, tile, cache, reachable, start) == null
                 && Pathfinder.FindPath(loc, start, Pathfinder.AdjacentStandTiles(loc, tile)
                     .Where(p => !Pathfinder.IsTouchWarp(loc, p.X, p.Y)).ToList()) != null;

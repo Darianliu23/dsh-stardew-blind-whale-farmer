@@ -23,6 +23,13 @@ const LABELS = {
   companionMode: ['play', '联机时怎么安排自己'],
   allowSpendSharedMoney: ['play', '允许 AI 直接花共用金币'],
   aiHomeLocation: ['play', '联机时 AI 的家'],
+  coSleepDefault: ['play', '联机默认同睡对象'],
+  passbyEmoteEnabled: ['play', '路上遇到玩家发表情'],
+  passbyEmoteChance: ['play', '路过发表情概率'],
+  passbyEmoteCooldownMinutes: ['play', '路过发表情冷却（分钟）'],
+  idleFollowEnabled: ['play', '空闲跟着玩家'],
+  idleFollowIntervalSeconds: ['play', '空闲多久开始跟玩家（秒）'],
+  idleFollowDurationSeconds: ['play', '每次跟玩家持续多久（秒）'],
   extraInstructions: ['play', '额外要求'],
   reservedItems: ['play', '保留物品'],
   guideFile: ['guide', '攻略文件'],
@@ -64,6 +71,7 @@ export function buildFields() {
       kind,
       ...meta.min !== undefined ? { min: meta.min } : {},
       ...meta.max !== undefined ? { max: meta.max } : {},
+      ...meta.step !== undefined && meta.step !== 1 ? { step: meta.step } : {},
       ...kind === 'select' ? { options: schema.list.map((o) => ({ value: o.value, label: o.meta?.description ?? o.value })) } : {},
       description: String(meta.description ?? ''),
     }
@@ -112,7 +120,7 @@ window.__ModuleLoader__.load({
 \t\t\t}
 \t\t\tif (field.kind === "number") {
 \t\t\t\treturn h("input", {
-\t\t\t\t\ttype: "number", step: 1, min: field.min, max: field.max, disabled,
+\t\t\t\t\ttype: "number", step: field.step ?? 1, min: field.min, max: field.max, disabled,
 \t\t\t\t\tstyle: { ...input, width: 110 },
 \t\t\t\t\tvalue: value === undefined || value === null ? "" : String(value),
 \t\t\t\t\tonChange: (e) => onChange(e.target.value === "" ? undefined : Number(e.target.value)),
@@ -134,10 +142,12 @@ window.__ModuleLoader__.load({
 \t\t\treturn h("input", { type: "text", disabled, value: typeof value === "string" ? value : "", style: { ...input, width: 280 }, onChange: (e) => onChange(e.target.value) });
 \t\t}
 
-\t\t/** 数字超出范围、不是整数时不让保存，返回错误说明。 */
+\t\t/** 数字超出范围、类型不对时不让保存，返回错误说明。 */
 \t\tfunction invalid(field, value) {
 \t\t\tif (field.kind !== "number") return null;
-\t\t\tif (typeof value !== "number" || !Number.isInteger(value)) return "要填整数";
+\t\t\tconst isFloat = typeof field.step === "number" && !Number.isInteger(field.step);
+\t\t\tif (typeof value !== "number" || !Number.isFinite(value)) return isFloat ? "要填数字" : "要填整数";
+\t\t\tif (!isFloat && !Number.isInteger(value)) return "要填整数";
 \t\t\tif (field.min !== undefined && value < field.min) return "不能小于 " + field.min;
 \t\t\tif (field.max !== undefined && value > field.max) return "不能大于 " + field.max;
 \t\t\treturn null;

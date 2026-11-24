@@ -304,6 +304,15 @@ namespace BlindWhaleFarmer
                     }).ToList();
                     sb.AppendLine(GameActions.FormatGemShrineStatus(shrine.puzzleFinished.Value, slots));
                 }
+                if (loc is StardewValley.Locations.IslandSouthEast se)
+                {
+                    var flutes = se.Objects.Pairs
+                        .Where(p => p.Value.QualifiedItemId == "(O)464")
+                        .OrderBy(p => (int)p.Key.Y).ThenBy(p => (int)p.Key.X)
+                        .Select(p => (new Point((int)p.Key.X, (int)p.Key.Y), GameActions.ParseFlutePitch(p.Value)))
+                        .ToList();
+                    sb.AppendLine(GameActions.FormatMermaidPuzzleStatus(se.mermaidPuzzleFinished.Value, se.MermaidIsHere(), flutes));
+                }
             });
 
             sb.AppendLine();
@@ -381,7 +390,7 @@ namespace BlindWhaleFarmer
             });
 
             sb.AppendLine();
-            sb.AppendLine($"## 附近物体（半径 {config.ScanRadius} 格内，按距离排序）");
+            sb.AppendLine($"## 附近物体（半径 {config.ScanRadius} 格内；建筑与大树桩/大原木/大石头等大型障碍物全图列出，按距离排序）");
             Safe(sb, () => AppendNearby(sb, loc, pt));
 
             sb.AppendLine();
@@ -737,7 +746,7 @@ namespace BlindWhaleFarmer
         }
 
         public static bool NeedsWater(HoeDirt hd)
-            => hd.crop != null && !hd.crop.dead.Value && !hd.isWatered() && hd.needsWatering() && !hd.readyForHarvest() && !DiesAtSeasonChange(hd);
+            => hd.crop != null && !hd.crop.dead.Value && !hd.crop.forageCrop.Value && !hd.isWatered() && hd.needsWatering() && !hd.readyForHarvest() && !DiesAtSeasonChange(hd);
 
         /// <summary>
         /// 季末最后一天、明天换季就会枯死的作物（和 Crop.newDay 一样：室外、不是四季都能种的地方、下个季节不在作物的季节里）。
@@ -905,6 +914,16 @@ namespace BlindWhaleFarmer
                     string held = ped.heldObject.Value != null ? ped.heldObject.Value.DisplayName : "空";
                     return ('X', $"{o.DisplayName}（放着：{held}）", ped.locked.Value ? "已锁定" : "interact 传 item 放宝石，或用 gem_shrine");
                 }
+                if (o.QualifiedItemId == "(O)464")
+                {
+                    int pitch = GameActions.ParseFlutePitch(o);
+                    return ('X', $"{o.DisplayName}（音高 {pitch}，第 {pitch / 100} 档）", "interact 调音（可传 times=N 连调 N 下）");
+                }
+                if (o.QualifiedItemId == "(O)463")
+                {
+                    int sound = GameActions.ParseDrumSound(o);
+                    return ('X', $"{o.DisplayName}（音色 {sound}）", "interact 调音（可传 times=N 连调 N 下）");
+                }
                 if (o.heldObject.Value != null && o.MinutesUntilReady > 0)
                     return ('X', $"{o.DisplayName}（加工中：{o.heldObject.Value.DisplayName}，还需 {o.MinutesUntilReady} 分钟）", "");
                 if (o.heldObject.Value == null && o.bigCraftable.Value && o.GetMachineData() != null)
@@ -1009,11 +1028,11 @@ namespace BlindWhaleFarmer
                 if (name != null)
                     Add(name, hint, p);
             }
+            // 大型障碍物（大树桩、大原木、大石头、陨石等）整张图列出，不按 ScanRadius 截断：
+            // 比如秘密森林 60x32，入口 (58,15) 半径 16 格内只有 (46,6) 一个大树桩，砍完站在旁边其余 5 个依然超出 16 格。
             foreach (var rc in loc.resourceClumps)
             {
                 var p = new Point((int)rc.Tile.X, (int)rc.Tile.Y);
-                if (Math.Abs(p.X - pt.X) > r || Math.Abs(p.Y - pt.Y) > r)
-                    continue;
                 Add(ClumpName(rc) + $"（{rc.width.Value}x{rc.height.Value}，坐标是左上角）", "", p);
             }
             foreach (var b in loc.buildings)

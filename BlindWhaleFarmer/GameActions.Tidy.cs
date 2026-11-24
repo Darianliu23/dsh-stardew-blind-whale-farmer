@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xna.Framework;
 using StardewValley;
+using StardewValley.Locations;
 using StardewValley.Objects;
 using StardewValley.Tools;
 using SObject = StardewValley.Object;
@@ -126,6 +127,9 @@ namespace BlindWhaleFarmer
         /// 低级的鱼竿、多余的武器等重复工具也存起来，每类只留最好的一把。
         /// </summary>
         public IEnumerable<object> TidyBackpack(string keep, string purposeSpec = null)
+            => TidyBackpack(keep, purposeSpec, null);
+
+        internal IEnumerable<object> TidyBackpack(string keep, string purposeSpec, Func<Item, bool> keepExtra)
         {
             if (Blocked(out string why))
             {
@@ -137,7 +141,10 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(error);
                 yield break;
             }
-            var keepFilter = string.IsNullOrWhiteSpace(keep) ? (_ => false) : ItemFilter(keep);
+            var nameFilter = string.IsNullOrWhiteSpace(keep) ? null : ItemFilter(keep);
+            Func<Item, bool> keepFilter = nameFilter == null
+                ? (keepExtra ?? (_ => false))
+                : (keepExtra == null ? nameFilter : i => nameFilter(i) || keepExtra(i));
             var keepSet = ItemsToKeep(keepFilter, purposes);
             var toStore = Player.Items.Where(i => i != null && !keepSet.Contains(i)).ToList();
             // 这次要用、但现在在箱子里的东西（比如下矿要的炸弹、回血料理），整理完顺手提醒
@@ -521,5 +528,81 @@ namespace BlindWhaleFarmer
         /// <summary>坐标在这张地图外面（没有地图时不判断，当在图内）。</summary>
         internal static bool IsOffMapTile(GameLocation loc, Vector2 tile) =>
             loc.Map != null && !loc.isTileOnMap((int)tile.X, (int)tile.Y);
+
+        /// <summary>
+        /// 从当前地点出发下矿前，是否应该先自动检查并整理背包。
+        /// 已经在矿洞/火山里、已经在目的地入口（普通矿洞在 Mine、骷髅洞穴在 Desert/SkullCave、火山已在姜岛）时不折返；
+        /// 从农场、农舍、镇上（刚接任务）、巴士站等地出发前往矿洞/沙漠/火山时，允许先回农场整理再出发。
+        /// </summary>
+        internal static bool ShouldAutoTidyBeforeMineLocation(string locName, bool isMineShaft, bool isVolcanoOrCaldera,
+            bool isDesertLocation, bool isInIslandContext, bool skull, bool volcano)
+        {
+            if (isMineShaft || isVolcanoOrCaldera)
+                return false;
+            if (skull)
+                return !isDesertLocation
+                    && !string.Equals(locName, "Desert", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(locName, "SkullCave", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(locName, "DesertFestival", StringComparison.OrdinalIgnoreCase);
+            if (volcano)
+                return !isInIslandContext;
+            return !string.Equals(locName, "Mine", StringComparison.OrdinalIgnoreCase)
+                && !isDesertLocation
+                && !isInIslandContext;
+        }
+
+        /// <summary>
+        /// 下矿出发前是否需要自动整理背包：必须有可存物品且目标箱子有空位，避免无箱子或满箱白跑一趟；
+        /// 空位 ≤ 4 时只要有可存物品就整理，空位 5~6 时有 ≥ 4 样可存杂物也整理。
+        /// </summary>
+        internal static bool NeedsMinePreTidy(int freeSlots, int storableCount, bool hasChestRoom)
+        {
+            if (!hasChestRoom || storableCount <= 0)
+                return false;
+            return freeSlots <= 4 || (freeSlots <= 6 && storableCount >= 4);
+        }
+
+        /// <summary>接取下矿/打怪类任务时，如果背包空位偏少，当场提醒先整理背包再出发。</summary>
+        internal static string MineQuestPackReminder(int freeSlots, bool isMiningTask)
+        {
+            if (!isMiningTask || freeSlots > 6)
+                return "";
+            return $"\n⚠ 背包现在只剩 {freeSlots} 个空位，出发下矿前请先 tidy_backpack purpose=mine 整理背包（或直接用 explore_mine，出发前会自动先回农场整理）";
+        }
+
+        /// <summary>
+        /// 下矿（含骷髅洞穴、火山）或前往 SkullCave 出发前，检查背包空位与可存物品：
+        /// 需要整理且当前地点或农场有空位箱子时，先自动执行一次 tidy_backpack purpose=mine 再出发，避免到了沙漠/矿洞才发现装不下折返。
+        /// </summary>
+        private IEnumerable<object> TryAutoTidyBeforeMine(bool skull, bool volcano, Action<string> onTidied)
+        {
+            if (Loc == null)
+                yield break;
+            bool inDesert = Loc is Desert or DesertFestival;
+            if (!ShouldAutoTidyBeforeMineLocation(Loc.Name, Loc is MineShaft, Loc is VolcanoDungeon or Caldera,
+                    inDesert, Loc.InIslandContext(), skull, volcano))
+                yield break;
+            Func<Item, bool> keepExtra = volcano ? (i => i is WateringCan) : null;
+            var keepSet = ItemsToKeep(keepExtra ?? (_ => false), new[] { "mine" });
+            var toStore = Player.Items.Where(i => i != null && !keepSet.Contains(i)).ToList();
+            if (toStore.Count == 0)
+                yield break;
+            var chestLoc = PlayerChests(Loc).Any() ? Loc : Game1.getFarm();
+            bool hasChestRoom = chestLoc != null
+                && PlayerChests(chestLoc).Any(c => toStore.Any(item => ChestHasRoomFor(c.chest, item)));
+            if (!NeedsMinePreTidy(Player.freeSpotsInInventory(), toStore.Count, hasChestRoom))
+                yield break;
+
+            ActionResult tidied = null;
+            foreach (var s in TidyBackpack("", "mine", keepExtra))
+            {
+                if (s is ActionResult r)
+                    tidied = r;
+                else
+                    yield return s;
+            }
+            if (tidied != null)
+                onTidied?.Invoke("出发前自动整理了背包：" + tidied.Message);
+        }
     }
 }

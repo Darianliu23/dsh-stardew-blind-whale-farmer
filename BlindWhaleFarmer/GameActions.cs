@@ -276,6 +276,8 @@ namespace BlindWhaleFarmer
                 foreach (var w in PickUpForageNearby(loc, dir, path, rejoin))
                     yield return w;
                 i = rejoin[0];
+                foreach (var w in MaybeGreetNearbyPlayer(loc))
+                    yield return w;
             }
             Player.Halt();
             Player.FarmerSprite.StopAnimation();
@@ -961,6 +963,17 @@ namespace BlindWhaleFarmer
 
         public IEnumerable<object> TravelTo(string name, bool detour = false)
         {
+            string tidyNote = null;
+            if (!Blocked(out _) && ResolveLocation(name)?.NameOrUniqueName == "SkullCave")
+            {
+                foreach (var s in TryAutoTidyBeforeMine(skull: true, volcano: false, msg => tidyNote = msg))
+                    yield return s;
+                if (Blocked(out string afterTidyWhy))
+                {
+                    yield return ActionResult.Fail(afterTidyWhy);
+                    yield break;
+                }
+            }
             var o = new Outcome();
             foreach (var s in TravelInner(name, o, askBeforeDetour: !detour))
                 yield return s;
@@ -968,7 +981,10 @@ namespace BlindWhaleFarmer
             if (o.Ok)
                 foreach (var s in StoreLootHere(storedLootNotes))
                     yield return s;
-            yield return o.Ok ? ActionResult.Success(o.Message) : ActionResult.Fail(o.Message);
+            string msg = o.Message;
+            if (tidyNote != null)
+                msg = string.IsNullOrEmpty(msg) ? tidyNote : msg + "。" + tidyNote;
+            yield return o.Ok ? ActionResult.Success(msg) : ActionResult.Fail(msg);
         }
 
         /// <param name="askBeforeDetour">近路被挡时停下来让 AI 选开路还是绕路（travel_to 用）。默认直接绕：回家睡觉、去节日这些顺路的走法没工夫停下来选。</param>
@@ -1481,6 +1497,17 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 工具和交互 ─────────────────────────
 
+        private static List<Point> ClumpTiles(ResourceClump clump)
+        {
+            int x0 = (int)clump.Tile.X, y0 = (int)clump.Tile.Y;
+            int w = Math.Max(1, clump.width.Value), h = Math.Max(1, clump.height.Value);
+            var tiles = new List<Point>(w * h);
+            for (int dx = 0; dx < w; dx++)
+                for (int dy = 0; dy < h; dy++)
+                    tiles.Add(new Point(x0 + dx, y0 + dy));
+            return tiles;
+        }
+
         /// <summary>这把工具对这一格的东西完全没用时返回原因（只管斧头/镐子，拿不准的不拦）。</summary>
         private static string WrongTool(Tool tool, Point p)
         {
@@ -1552,8 +1579,25 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(wrong);
                 yield break;
             }
-            foreach (var s in GoAdjacent(target, o))
-                yield return s;
+            // 大树桩、大原木、大石头等占多格（2x2）：走到任意一格旁边都能砍/敲，避免只认左上角导致绕远或贴墙够不着
+            var targetClump = Loc.resourceClumps.FirstOrDefault(c => (c.width.Value > 1 || c.height.Value > 1)
+                && c.getBoundingBox().Contains(target.X * 64 + 32, target.Y * 64 + 32));
+            if (targetClump != null)
+            {
+                var clumpTiles = ClumpTiles(targetClump);
+                foreach (var s in GoAdjacentToAny(clumpTiles, o, $"({x},{y}) 旁边"))
+                    yield return s;
+                if (o.Ok)
+                {
+                    target = clumpTiles.OrderBy(p => Util.Manhattan(p, Player.TilePoint)).First();
+                    Face(target);
+                }
+            }
+            else
+            {
+                foreach (var s in GoAdjacent(target, o))
+                    yield return s;
+            }
             if (!o.Ok)
             {
                 yield return ActionResult.Fail(o.Message);
@@ -1597,7 +1641,7 @@ namespace BlindWhaleFarmer
             yield return o.Ok ? ActionResult.Success(msg) : ActionResult.Fail(msg + "；" + o.Message);
         }
 
-        public IEnumerable<object> Interact(int? x, int? y, string npcName, string itemSpec)
+        public IEnumerable<object> Interact(int? x, int? y, string npcName, string itemSpec, int times = 1)
         {
             // 冒险家公会的 Gil 不在人物列表里，要点他坐的那几格
             if (IsGilName(npcName) && string.IsNullOrWhiteSpace(itemSpec))
@@ -1972,6 +2016,34 @@ namespace BlindWhaleFarmer
                 yield break;
             }
 
+            if (npc == null && ok && Game1.currentLocation == fromLoc && fromLoc.Objects.TryGetValue(v, out var noteObj)
+                && noteObj.QualifiedItemId is "(O)464" or "(O)463")
+            {
+                bool isFlute = noteObj.QualifiedItemId == "(O)464";
+                int wanted = Math.Clamp(times, 1, isFlute ? 25 : 7);
+                int done = 1;
+                for (int c = 1; c < wanted; c++)
+                {
+                    if (Blocked(out _))
+                        break;
+                    noteObj.checkForAction(Player);
+                    done++;
+                    foreach (var s in WaitTicks(2))
+                        yield return s;
+                }
+                if (isFlute)
+                {
+                    int pitch = ParseFlutePitch(noteObj);
+                    yield return ActionResult.Success($"已调节 ({target.X},{target.Y}) 的长笛块（调了 {done} 下）：当前音高 {pitch}（第 {pitch / 100} 档，范围 0~24 档 / 0~2400；可传 times=N 连调 N 下）");
+                }
+                else
+                {
+                    int sound = ParseDrumSound(noteObj);
+                    yield return ActionResult.Success($"已调节 ({target.X},{target.Y}) 的鼓块（调了 {done} 下）：当前音色 {sound}（0~6；可传 times=N 连调 N 下）");
+                }
+                yield break;
+            }
+
             if (machine != null && Game1.activeClickableMenu == before && machine.heldObject.Value == heldBefore
                 && Player.ActiveObject == handBefore && (handBefore?.Stack ?? 0) == handStackBefore)
             {
@@ -2096,6 +2168,24 @@ namespace BlindWhaleFarmer
             msg != null && (msg.StartsWith("成功：") || msg.StartsWith("失败：")) ? msg.Substring(3) : msg ?? "";
 
         /// <summary>
+        /// 身边 8 格的候选顺序：默认先上下左右（走一步就到、放完不用绕），再四个斜角；
+        /// 放箱子且周围 3 格内已有箱子时，优先挑离已有箱子更近的格子（同距离仍先上下左右）。
+        /// </summary>
+        internal static IEnumerable<Point> OrderAutoPlaceCandidates(Point me, IEnumerable<Point> existingChests = null)
+        {
+            var offsets = Pathfinder.Dirs.Concat(new[] { new Point(1, -1), new Point(1, 1), new Point(-1, 1), new Point(-1, -1) });
+            var tiles = offsets.Select(d => new Point(me.X + d.X, me.Y + d.Y)).ToList();
+            var chests = existingChests?.ToList();
+            if (chests is not { Count: > 0 })
+                return tiles;
+            return tiles.Select((t, i) =>
+            {
+                int dist = chests.Min(c => Math.Max(Math.Abs(c.X - t.X), Math.Abs(c.Y - t.Y)));
+                return (t, priority: dist <= 3 ? dist : int.MaxValue, i);
+            }).OrderBy(x => x.priority).ThenBy(x => x.i).Select(x => x.t);
+        }
+
+        /// <summary>
         /// 身边 8 格里离玩家最近、能放、不违反摆放规矩（force 时不管规矩）的格子；没有就返回 null，why 说一句原因。
         /// 判断和给了坐标时一样：先 PlaceableProblem（放不放得下），再 PlacementRuleProblem（合不合规矩）。
         /// </summary>
@@ -2103,11 +2193,9 @@ namespace BlindWhaleFarmer
         {
             int occupied = 0, rejected = 0;
             string firstOccupied = null, firstProblem = null;
-            // 先试上下左右（走一步就到、放完不用绕），再试四个斜角
-            var order = Pathfinder.Dirs.Concat(new[] { new Point(1, -1), new Point(1, 1), new Point(-1, 1), new Point(-1, -1) });
-            foreach (var d in order)
+            var candidates = OrderAutoPlaceCandidates(me, IsChestItem(item) ? PlayerChests(loc).Select(c => c.tile) : null);
+            foreach (var t in candidates)
             {
-                var t = new Point(me.X + d.X, me.Y + d.Y);
                 // 放不下的先跳过：规矩那一步要算可达范围，比较慢
                 if (PlaceableProblem(loc, item, t) is string full)
                 {
@@ -2236,13 +2324,15 @@ namespace BlindWhaleFarmer
             var item = (SObject)Player.Items[idx];
             string name = item.DisplayName;
             bool isSprinkler = item.IsSprinkler();
+            bool isChest = IsChestItem(item);
             bool placed = Utility.tryToPlaceItem(Loc, item, x * 64 + 32, y * 64 + 32);
             if (placed && nearStorage)
                 placed = loc.objects.TryGetValue(new Vector2(x, y), out var chest) && IsStorageChest(chest);
+            string chestHint = placed && loc is Farm farm && isChest ? ChestDistanceHint(target, PlayerChests(farm).Select(c => c.tile)) : null;
             foreach (var s in WaitTicks(10))
                 yield return s;
             yield return placed
-                ? ActionResult.Success($"已在 ({x},{y}) 放置/种下 {name}" + (isSprinkler ? $"，能浇到 {sprinklerGain} 格耕地" : ""))
+                ? ActionResult.Success($"已在 ({x},{y}) 放置/种下 {name}" + (isSprinkler ? $"，能浇到 {sprinklerGain} 格耕地" : "") + (chestHint ?? ""))
                 : ActionResult.Fail($"不能在 ({x},{y}) 放置 {name}（种子需要空耕地且当季可种；物品需要空地）");
         }
 
@@ -2826,16 +2916,20 @@ namespace BlindWhaleFarmer
             var list = new List<(GameLocation, int, int)>();
             foreach (string name in new[] { "Farm", "Greenhouse", "IslandWest" })
             {
+                if (name == "Greenhouse" && !Game1.MasterPlayer.mailReceived.Contains("ccPantry"))
+                    continue;
+                if (name == "IslandWest" && (!Exits.BoatRepaired || Game1.getLocationFromName("IslandSouth") is not IslandSouth south || !south.westernTurtleMoved.Value))
+                    continue;
                 var l = Game1.getLocationFromName(name);
                 if (l == null || l == Loc)
                     continue;
                 int thirsty = 0, ripe = 0;
                 foreach (var tf in l.terrainFeatures.Values)
-                    if (tf is HoeDirt hd)
+                    if (tf is HoeDirt hd && hd.crop != null && !hd.crop.forageCrop.Value)
                     {
                         if (Observer.NeedsWater(hd) && !(l.IsOutdoors && l.IsRainingHere()))
                             thirsty++;
-                        if (hd.crop != null && hd.readyForHarvest())
+                        if (hd.readyForHarvest())
                             ripe++;
                     }
                 if (thirsty > 0 || ripe > 0)
@@ -3051,6 +3145,9 @@ namespace BlindWhaleFarmer
                             break;
                         continue;
                     }
+                    if (Player.isRidingHorse())
+                        foreach (var s in Dismount())
+                            yield return s;
                     Player.Halt();
                     Face(p);
                     loc.checkAction(new xLocation(p.X, p.Y), Game1.viewport, Player);
@@ -3083,14 +3180,23 @@ namespace BlindWhaleFarmer
                 }
                 else
                 {
-                    if (Player.ActiveObject != null)
+                    if (Player.isRidingHorse())
+                        foreach (var s in Dismount())
+                            yield return s;
+                    // 收普通作物直接调 HoeDirt.performUseAction（与 GameLocation.checkAction 里收作物是同一条路径），
+                    // 避免 loc.checkAction 优先触发 CheckPetAnimal / NPC.checkAction，把站在作物格上的动物摸了却没收到作物。
+                    // 铱镰刀（ItemId == "66"）拿在手里会让 HoeDirt.performUseAction 转去挥镰刀，先切到其它工具或空位。
+                    if (Player.ActiveObject != null || (Player.CurrentTool != null && Player.CurrentTool.isScythe() && Player.CurrentTool.ItemId == "66"))
                     {
-                        int safe = Util.FindTool<Tool>();
+                        int safe = Util.FindTool<Tool>(t => !(t.isScythe() && t.ItemId == "66"));
+                        if (safe < 0)
+                            safe = Player.Items.IndexOf(null);
                         if (safe >= 0)
                             Player.CurrentToolIndex = safe;
                     }
-                    if (!loc.checkAction(new xLocation(p.X, p.Y), Game1.viewport, Player))
-                        hd.performUseAction(v);
+                    Player.Halt();
+                    Face(p);
+                    hd.performUseAction(v);
                     foreach (var s in WaitTicks(15))
                         yield return s;
                     foreach (var s in WaitPlayerFree())
@@ -3258,13 +3364,18 @@ namespace BlindWhaleFarmer
             jobs.RemoveAll(j => j.tool < 0);
             if (jobs.Count == 0)
             {
-                // 只说区域里真有的：大型障碍物（树桩、原木、大石头）要升级的斧头/镐子，树要 include_trees
+                // 只说区域里真有的：大型障碍物（大树桩、大原木、大石头）存放在 resourceClumps 里，ClassifyFeature 不会返回 'R'
                 var left = RectTiles(cx1, cy1, cx2, cy2, 20000).Select(p => Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).Item1).ToList();
                 var notes = new List<string>();
                 if (left.Contains('d'))
                     notes.Add("有枯死作物需要用镰刀（或斧头/镐子）清除");
-                if (left.Contains('R'))
-                    notes.Add("大型障碍物 R（树桩、原木、大石头）要升级过的斧头或镐子");
+                var clumps = loc.resourceClumps
+                    .Where(c => c is not GiantCrop && ClumpTiles(c).Any(p => p.X >= cx1 && p.X <= cx2 && p.Y >= cy1 && p.Y <= cy2 && (onlyTiles == null || onlyTiles.Contains(p))))
+                    .Select(c => new Point((int)c.Tile.X, (int)c.Tile.Y))
+                    .OrderBy(p => Util.Manhattan(p, Player.TilePoint))
+                    .ToList();
+                if (clumps.Count > 0)
+                    notes.Add($"有 {clumps.Count} 处大型障碍物 R（大树桩/大原木/大石头等，需升级斧头或镐子用 use_tool 逐个清理）：{Util.Coords(clumps, 8)}");
                 if (left.Contains('T') && !includeTrees)
                     notes.Add("有树，要砍就加 include_trees");
                 yield return ActionResult.Success("区域内没有可以清理的东西" + (notes.Count > 0 ? "（" + string.Join("；", notes) + "）" : ""));
@@ -4748,7 +4859,7 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 时间 ─────────────────────────
 
-        public IEnumerable<object> Sleep(bool force = false)
+        public IEnumerable<object> Sleep(bool force = false, string with = null, string location = null)
         {
             var o = new Outcome();
             if (!force && Game1.timeOfDay < 1800 && Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" })
@@ -4762,18 +4873,23 @@ namespace BlindWhaleFarmer
             // 联机时已经躺下在等别人的话，接着等就行
             if (Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" })
             {
+                var home = ResolveSleepTarget(with, location);
+                if (home.error != null)
+                {
+                    yield return ActionResult.Fail(home.error);
+                    yield break;
+                }
                 // 睡前在农场（或农舍里）有箱子的话，把今天攒的战利品收进去
                 foreach (var s in StoreLootHere(storedLootNotes))
                     yield return s;
-                var home = ResolveSleepHome();
                 homeNote = home.note;
                 foreach (var s in GetIntoBed(o, home.house, home.configured))
                     yield return s;
                 if (home.configured)
                 {
                     if (o.Ok)
-                        homeNote = $"在 {home.house.NameOrUniqueName} 按原版流程上床。床还有效时可以在这栋房子醒来，床位失效时会回登记的家";
-                    else if (Game1.activeClickableMenu == null && !Game1.eventUp && !Game1.fadeToBlack && !Game1.isWarping)
+                        homeNote = (homeNote != null ? homeNote + "；" : "") + $"已在 {home.house.NameOrUniqueName} 按原版流程上床，床还有效时明天会在这栋房子醒来";
+                    else if (!home.explicitTarget && Game1.activeClickableMenu == null && !Game1.eventUp && !Game1.fadeToBlack && !Game1.isWarping)
                     {
                         homeNote = $"设置的家 {home.house.NameOrUniqueName} 没能上床（{o.Message}），改回游戏登记的家";
                         foreach (var s in GetIntoBed(o, Utility.getHomeOfFarmer(Player), configured: false))
@@ -4868,7 +4984,11 @@ namespace BlindWhaleFarmer
                 if (path != null)
                     foreach (var s in WalkPath(path, o))
                         yield return s;
-                if (path == null || !o.Ok)
+                bool sleepPromptOpen = (Game1.activeClickableMenu is DialogueBox { isQuestion: true } && house.lastQuestionKey == "Sleep")
+                    || Game1.activeClickableMenu is ReadyCheckDialog { checkName: "sleep" };
+                if (sleepPromptOpen)
+                    o.Succeed();
+                else if (path == null || !o.Ok)
                 {
                     if (touchBed)
                     {

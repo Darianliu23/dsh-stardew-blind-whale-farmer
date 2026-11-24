@@ -706,6 +706,38 @@ partial class Program
             && normGem.Invoke(null, new object[] { "钻石" }) == null,
             "NormalizeGemBirdGem 只接受 5 种宝石鸟宝石或 take");
 
+        // mermaid_puzzle 姜岛雨天美人鱼谜题、长笛块音高推算与 interact times 参数
+        Check(schema.Any(t => t["function"]["name"].GetValue<string>() == "mermaid_puzzle"), "schema 注册了 mermaid_puzzle");
+        Check(Run0("mermaid_puzzle", "{}").Contains("游戏世界未就绪"), "mermaid_puzzle 通过参数校验");
+        var interactProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "interact")?["function"]["parameters"]["properties"] as JsonObject;
+        Check(interactProps != null && interactProps["times"] != null, "interact 注册了 times 参数支持长笛块/鼓块连调");
+        Check(Run0("interact", "{\"x\":16,\"y\":27,\"times\":11}").Contains("游戏世界未就绪"), "interact 带 times 通过参数校验");
+        var nextPitch = tActions.GetMethod("NextFlutePitch", Any);
+        Check((int)nextPitch.Invoke(null, new object[] { 0 }) == 100
+            && (int)nextPitch.Invoke(null, new object[] { 2300 }) == 2400
+            && (int)nextPitch.Invoke(null, new object[] { 2400 }) == 0,
+            "NextFlutePitch 与原版 CheckForActionOnFluteBlock 25 档循环一致");
+        var clicksNeeded = tActions.GetMethod("FluteClicksNeeded", Any);
+        Check((int)clicksNeeded.Invoke(null, new object[] { 0, 200 }) == 2
+            && (int)clicksNeeded.Invoke(null, new object[] { 200, 200 }) == 0
+            && (int)clicksNeeded.Invoke(null, new object[] { 2300, 0 }) == 2
+            && (int)clicksNeeded.Invoke(null, new object[] { 2400, 200 }) == 3
+            && (int)clicksNeeded.Invoke(null, new object[] { 1100, 900 }) == 23,
+            "FluteClicksNeeded 正确计算绕回 0~2400 所需点击数");
+        var mermaidPitches = (int[])tActions.GetField("MermaidFlutePitches", Any).GetValue(null);
+        Check(mermaidPitches.Length == 5
+            && mermaidPitches[1] - mermaidPitches[0] == 900
+            && mermaidPitches[2] - mermaidPitches[1] == -200
+            && mermaidPitches[3] - mermaidPitches[2] == -400
+            && mermaidPitches[4] - mermaidPitches[3] == 200,
+            "MermaidFlutePitches 相对音差匹配 IslandSouthEast.OnFlutePlayed (+900,-200,-400,+200)");
+        var fmtMermaid = tActions.GetMethod("FormatMermaidPuzzleStatus", Any);
+        string mDone = (string)fmtMermaid.Invoke(null, new object[] { true, true, null });
+        string mRain = (string)fmtMermaid.Invoke(null, new object[] { false, true, new[] { (new Microsoft.Xna.Framework.Point(16, 27), 200), (new Microsoft.Xna.Framework.Point(18, 27), 1100) } });
+        string mDry = (string)fmtMermaid.Invoke(null, new object[] { false, false, null });
+        Check(mDone.Contains("已完成") && mRain.Contains("mermaid_puzzle") && mRain.Contains("(16,27)=200[第2档]") && mDry.Contains("没下雨"),
+            "FormatMermaidPuzzleStatus 准确反映完成/雨天已有长笛块/晴天状态：" + mRain);
+
         // raccoon 大树桩浣熊任务工具、动作与各阶段状态格式
         var racProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "raccoon")?["function"]["parameters"]["properties"] as JsonObject;
         Check(racProps != null && racProps["action"] != null, "schema 注册了 raccoon(action)");
@@ -725,6 +757,173 @@ partial class Program
         string racActive = (string)fmtRac.Invoke(null, new object[] { true, true, true, true, 1, 8, true, racReqs, 100 });
         Check(racActive.Contains("熏大海参") && racActive.Contains("1/1") && racActive.Contains("大蒜 x5") && racActive.Contains("2/5") && racActive.Contains("donate"),
             "浣熊活跃轮次列出所需风味物品与背包数量：" + racActive);
+
+        // 一起睡：sleep 参数、别名、双人床空位避让
+        var sleepProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "sleep")?["function"]["parameters"]["properties"] as JsonObject;
+        Check(sleepProps != null && sleepProps["with"] != null && sleepProps["location"] != null, "sleep schema 注册了 with 和 location 参数");
+        Check(Run0("sleep", "{\"with\":\"小明\"}").Contains("游戏世界未就绪"), "sleep 传 with 通过参数校验");
+        Check(Run0("sleep", "{\"player\":\"random\"}").Contains("游戏世界未就绪"), "sleep 别名 player=random 通过参数校验");
+        Check(Run0("sleep", "{\"house\":\"FarmHouse\"}").Contains("游戏世界未就绪"), "sleep 别名 house=FarmHouse 通过参数校验");
+        var orderBeds = tActions.GetMethod("OrderBedSpots", Any);
+        var dblLeftBusy = (List<Point>)orderBeds.Invoke(null, new object[] { new Point(10, 5), 3, true, new[] { new Point(10, 6) } });
+        Check(dblLeftBusy[0] == new Point(12, 6), "双人床左侧有人躺着时优先选右侧空位 (12,6)");
+        var dblRightBusy = (List<Point>)orderBeds.Invoke(null, new object[] { new Point(10, 5), 3, true, new[] { new Point(12, 6) } });
+        Check(dblRightBusy[0] == new Point(10, 6), "双人床右侧有人躺着时优先选左侧空位 (10,6)");
+        var dblEmpty = (List<Point>)orderBeds.Invoke(null, new object[] { new Point(10, 5), 3, true, Array.Empty<Point>() });
+        Check(dblEmpty[0] == new Point(11, 6), "双人床没人时默认选中间睡点 (11,6)");
+        var sglBusy = (List<Point>)orderBeds.Invoke(null, new object[] { new Point(10, 5), 2, false, new[] { new Point(11, 6) } });
+        Check(sglBusy[0] == new Point(10, 6), "单人床主睡点有人时优先避开选另一格 (10,6)");
+
+        // 搬家具：furniture 工具注册、动作归一与状态码说明
+        var furnProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "furniture")?["function"]["parameters"]["properties"] as JsonObject;
+        Check(furnProps != null && furnProps["action"] != null && furnProps["to_x"] != null && furnProps["times"] != null, "schema 注册了 furniture 工具与参数");
+        Check(Run0("furniture", "{\"action\":\"list\"}").Contains("游戏世界未就绪"), "furniture list 通过参数校验");
+        Check(Run0("furniture", "{\"action\":\"place\",\"item\":\"单人床\",\"x\":5,\"y\":5}").Contains("游戏世界未就绪"), "furniture place 与别名 item 通过参数校验");
+        var normFurn = tActions.GetMethod("NormalizeFurnitureAction", Any);
+        Check((string)normFurn.Invoke(null, new object[] { null }) == "list"
+            && (string)normFurn.Invoke(null, new object[] { "拿起" }) == "pickup"
+            && (string)normFurn.Invoke(null, new object[] { "place" }) == "place"
+            && (string)normFurn.Invoke(null, new object[] { "移动" }) == "move"
+            && (string)normFurn.Invoke(null, new object[] { "rotate" }) == "rotate"
+            && normFurn.Invoke(null, new object[] { "destroy" }) == null,
+            "NormalizeFurnitureAction 识别 list/pickup/place/move/rotate");
+        var descFurnStatus = tActions.GetMethod("DescribeFurniturePlacementStatus", Any);
+        Check(descFurnStatus.Invoke(null, new object[] { 0 }) == null
+            && ((string)descFurnStatus.Invoke(null, new object[] { 1 })).Contains("墙面")
+            && ((string)descFurnStatus.Invoke(null, new object[] { 2 })).Contains("NoFurniture")
+            && ((string)descFurnStatus.Invoke(null, new object[] { 3 })).Contains("地面家具")
+            && ((string)descFurnStatus.Invoke(null, new object[] { -1 })).Contains("床旁"),
+            "DescribeFurniturePlacementStatus 准确解释游戏放置错误码");
+
+        // 路上遇到玩家发表情：开关、概率、冷却与防抖
+        var passbyTrigger = tActions.GetMethod("ShouldTriggerPassbyEmote", Any);
+        var nowUtc = new DateTime(2026, 11, 23, 12, 0, 0, DateTimeKind.Utc);
+        bool TryPassby(bool en, float ch, int cd, DateTime? lastG, DateTime? lastM, double roll) =>
+            (bool)passbyTrigger.Invoke(null, new object[] { en, ch, cd, nowUtc, lastG, lastM, roll });
+        Check(!TryPassby(false, 1.0f, 5, null, null, 0.0), "PassbyEmoteEnabled=false 时不触发");
+        Check(TryPassby(true, 0.35f, 5, null, null, 0.2), "概率命中且无冷却时触发");
+        Check(!TryPassby(true, 0.35f, 5, null, null, 0.5), "概率未命中时不触发");
+        Check(!TryPassby(true, 1.0f, 5, nowUtc.AddMinutes(-3), null, 0.0), "同一玩家冷却 5 分钟内不重复触发");
+        Check(TryPassby(true, 1.0f, 5, nowUtc.AddMinutes(-6), null, 0.0), "冷却过后允许再次触发");
+        Check(!TryPassby(true, 1.0f, 5, null, nowUtc.AddSeconds(-5), 0.0), "同一次路过未命中后 15 秒防抖不重复抽签");
+
+        // 没事时跟着玩家卖萌：触发条件与 MainThread 抢占中止
+        var idleTrigger = tActions.GetMethod("ShouldStartIdleFollow", Any);
+        bool TryIdle(bool en = true, bool mp = true, bool takeOver = false, bool aiActive = true,
+            bool busy = false, bool idleRun = false, bool thinking = false, bool chat = false, bool safe = true,
+            int interval = 180, int idleSec = 200) =>
+            (bool)idleTrigger.Invoke(null, new object[]
+            {
+                en, mp, takeOver, aiActive, busy, idleRun, thinking, chat, safe,
+                interval, nowUtc, nowUtc.AddSeconds(-idleSec)
+            });
+        Check(TryIdle(), "联机空闲且满足间隔与安全条件时允许触发跟着玩家卖萌");
+        Check(!TryIdle(en: false), "IdleFollowEnabled=false 时不触发");
+        Check(!TryIdle(mp: false), "非联机时不触发");
+        Check(!TryIdle(takeOver: true), "玩家接管时不触发");
+        Check(!TryIdle(aiActive: false), "AI 未启用/未连接时不触发");
+        Check(!TryIdle(busy: true), "有正式任务执行时不触发");
+        Check(!TryIdle(thinking: true), "内置 AI 正在思考时不触发");
+        Check(!TryIdle(chat: true), "有人在聊天说话时不触发");
+        Check(!TryIdle(safe: false), "节日/剧情/菜单/钓鱼/战斗等不安全时机不触发");
+        Check(!TryIdle(idleSec: 60), "空闲时间未达到触发间隔时不触发");
+
+        // 换图途中（allowWarping=true）不算不安全，非换图时 freezeControls/warping 仍拦截
+        var transitionSafe = tActions.GetMethod("IsSocialTransitionStateSafe", Any);
+        bool TryTrans(bool allowWarping, bool locValid, bool warping, bool freeze) =>
+            (bool)transitionSafe.Invoke(null, new object[] { allowWarping, locValid, warping, freeze });
+        Check(!TryTrans(false, true, true, false), "默认不允许换图途中触发社交动作");
+        Check(TryTrans(true, true, true, false), "空闲跟随允许换图途中继续");
+        Check(TryTrans(true, false, true, true), "换图途中短暂 freezeControls/切图不中断空闲跟随");
+        Check(!TryTrans(true, true, false, true), "非换图时 freezeControls 仍视为不安全");
+
+        // MainThread 空闲协程被正式任务立刻抢占中止
+        var mt = Activator.CreateInstance(asm.GetType("BlindWhaleFarmer.MainThread"), new object[] { null });
+        var tMt = mt.GetType();
+        bool idleDisposed = false;
+        IEnumerable<object> DummyIdle()
+        {
+            try
+            {
+                while (true)
+                    yield return null;
+            }
+            finally
+            {
+                idleDisposed = true;
+            }
+        }
+        bool startedIdle = (bool)tMt.GetMethod("StartIdle", Any).Invoke(mt, new object[] { (Func<IEnumerable<object>>)DummyIdle });
+        Check(startedIdle && (bool)tMt.GetProperty("IsIdleRunning", Any).GetValue(mt), "MainThread.StartIdle 启动空闲协程");
+        tMt.GetMethod("Tick", Any).Invoke(mt, new object[] { true });
+        Check((bool)tMt.GetProperty("IsIdleRunning", Any).GetValue(mt) && !(bool)tMt.GetProperty("IsBusy", Any).GetValue(mt), "空闲协程运行中不占用 IsBusy");
+        IEnumerable<object> DummyReal() { yield break; }
+        var realTask = (System.Threading.Tasks.Task)tMt.GetMethod("RunAction", Any).Invoke(mt, new object[]
+        {
+            (Func<IEnumerable<object>>)DummyReal, 5, false, false, "dummy", false, false, false, null
+        });
+        tMt.GetMethod("Tick", Any).Invoke(mt, new object[] { true });
+        Check(idleDisposed && !(bool)tMt.GetProperty("IsIdleRunning", Any).GetValue(mt) && realTask.IsCompleted,
+            "新任务到来时立刻中止空闲协程并顺利执行正式任务");
+
+        // 秘密森林大树桩：全图 6 个大树桩（含超出 ScanRadius=16 的 5 个）在 AppendNearby 中全部列出，不会只看到入口最近的那 1 个
+        if (town != null)
+        {
+            var woods = MakeLocation("Woods", true, 60, 32);
+            var stumpCoords = new[] { new Point(46, 6), new Point(29, 7), new Point(26, 10), new Point(24, 6), new Point(34, 26), new Point(41, 26) };
+            foreach (var p in stumpCoords)
+                woods.resourceClumps.Add(new StardewValley.TerrainFeatures.ResourceClump(600, 2, 2, new Vector2(p.X, p.Y)));
+            var obs = Activator.CreateInstance(tObserver, new object[] { Activator.CreateInstance(tConfig2), null, null });
+            var appendNearby = tObserver.GetMethod("AppendNearby", Any);
+            var sb = new System.Text.StringBuilder();
+            appendNearby.Invoke(obs, new object[] { sb, woods, new Point(58, 15) });
+            string nearby = sb.ToString();
+            foreach (var p in stumpCoords)
+                Check(nearby.Contains($"({p.X},{p.Y})"), $"秘密森林入口 (58,15) 也能看到大树桩 ({p.X},{p.Y})：" + Shorten(nearby));
+
+            // 砍掉入口最近的 (46,6) 后站在 (46,5)，其余 5 个依然全部可见
+            woods.resourceClumps.RemoveAt(0);
+            sb.Clear();
+            appendNearby.Invoke(obs, new object[] { sb, woods, new Point(46, 5) });
+            string afterFirst = sb.ToString();
+            Check(!afterFirst.Contains("(46,6)"), "砍掉的大树桩不再列出");
+            foreach (var p in stumpCoords.Skip(1))
+                Check(afterFirst.Contains($"({p.X},{p.Y})"), $"砍掉第一个后仍能看到其余大树桩 ({p.X},{p.Y})：" + Shorten(afterFirst));
+        }
+
+        // 下矿出发前背包检查与自动整理：地点判定、空位/可存物品/箱子空位阈值与接任务提醒
+        var shouldTidyLoc = tActions.GetMethod("ShouldAutoTidyBeforeMineLocation", Any);
+        bool TryTidyLoc(string locName, bool mineShaft = false, bool volcanoLoc = false, bool desertLoc = false, bool island = false, bool skull = false, bool volcano = false) =>
+            (bool)shouldTidyLoc.Invoke(null, new object[] { locName, mineShaft, volcanoLoc, desertLoc, island, skull, volcano });
+        Check(TryTidyLoc("Town", skull: true), "镇上接完任务去骷髅洞穴时允许出发前自动整理");
+        Check(TryTidyLoc("FarmHouse", skull: true), "农舍出发去骷髅洞穴时允许出发前自动整理");
+        Check(TryTidyLoc("BusStop", skull: true), "巴士站出发去骷髅洞穴时允许出发前自动整理");
+        Check(TryTidyLoc("QiNutRoom", island: true, skull: true), "姜岛齐核桃房接完任务回主大陆去骷髅洞穴时允许出发前自动整理");
+        Check(!TryTidyLoc("Desert", desertLoc: true, skull: true), "人已在沙漠时不折返整理");
+        Check(!TryTidyLoc("SkullCave", skull: true), "人已在骷髅洞穴入口时不折返整理");
+        Check(!TryTidyLoc("DesertFestival", desertLoc: true, skull: true), "人已在沙漠节时不折返整理");
+        Check(!TryTidyLoc("UndergroundMine121", mineShaft: true, skull: true), "人已在矿洞内时不折返整理");
+        Check(TryTidyLoc("Town", volcano: true), "主大陆出发去姜岛火山时允许出发前自动整理");
+        Check(!TryTidyLoc("IslandNorth", island: true, volcano: true), "人已在姜岛去火山时不跨海折返整理");
+        Check(TryTidyLoc("Town"), "镇上出发去普通矿洞时允许出发前自动整理");
+        Check(!TryTidyLoc("Mine"), "人已在普通矿洞入口时不折返整理");
+
+        var needsPreTidy = tActions.GetMethod("NeedsMinePreTidy", Any);
+        bool TryNeedsTidy(int free, int storable, bool hasChest) =>
+            (bool)needsPreTidy.Invoke(null, new object[] { free, storable, hasChest });
+        Check(TryNeedsTidy(2, 1, true), "空位≤4且有可存物品和空箱时触发出发前自动整理");
+        Check(TryNeedsTidy(4, 1, true), "空位=4且有1样可存物品时触发出发前自动整理");
+        Check(TryNeedsTidy(6, 4, true), "空位=6且有≥4样可存杂物时触发出发前自动整理");
+        Check(!TryNeedsTidy(5, 3, true), "空位=5且仅有3样可存杂物时不触发");
+        Check(!TryNeedsTidy(8, 10, true), "空位充足(>6)时不触发");
+        Check(!TryNeedsTidy(0, 0, true), "没有可存物品时不白跑农场");
+        Check(!TryNeedsTidy(0, 10, false), "农场无箱子或箱子全满时不白跑农场");
+
+        var questPackHint = tActions.GetMethod("MineQuestPackReminder", Any);
+        string HintFor(int free, bool mining) => (string)questPackHint.Invoke(null, new object[] { free, mining });
+        Check(HintFor(4, true).Contains("tidy_backpack"), "接下矿任务且背包空位≤6时提醒先整理背包");
+        Check(HintFor(7, true) == "", "接下矿任务且背包空位>6时不啰嗦");
+        Check(HintFor(2, false) == "", "非下矿任务不触发下矿背包提醒");
     }
 
     static System.IO.DirectoryInfo repo2()

@@ -836,28 +836,29 @@ namespace BlindWhaleFarmer
         private static IEnumerable<Point> BoulderTiles(Point corner) =>
             new[] { corner, new Point(corner.X + 1, corner.Y), new Point(corner.X, corner.Y + 1), new Point(corner.X + 1, corner.Y + 1) };
 
-        /// <summary>走到这几格中任意一格的旁边（巨石占 2x2，哪一面能站就从哪一面敲）。</summary>
-        private IEnumerable<object> GoAdjacentToAny(IEnumerable<Point> tiles, Outcome o)
+        /// <summary>走到这几格中任意一格的旁边（大树桩/巨石等占多格，哪一面能站就从哪一面操作）。</summary>
+        private IEnumerable<object> GoAdjacentToAny(IEnumerable<Point> tiles, Outcome o, string label = "巨石旁边")
         {
             var set = tiles.ToHashSet();
             var me = Player.TilePoint;
             if (set.Any(t => Util.Manhattan(t, me) == 1))
             {
+                SnapToTile(me);
                 o.Succeed();
                 yield break;
             }
             var stands = set.SelectMany(t => Pathfinder.AdjacentStandTiles(Loc, t)).Where(p => !set.Contains(p)).Distinct().ToList();
-            var path = stands.Count > 0 ? Pathfinder.FindPath(Loc, me, stands, 8000) : null;
+            var path = stands.Count > 0 ? Pathfinder.FindPath(Loc, me, stands, InDungeon ? 8000 : 60000) : null;
             if (path == null && InDungeon)
             {
                 var around = set.SelectMany(StandOrClearTiles).Where(p => !set.Contains(p)).Distinct().ToList();
-                foreach (var s in GoToAnyClearing(around, o, "巨石旁边"))
+                foreach (var s in GoToAnyClearing(around, o, label))
                     yield return s;
                 yield break;
             }
             if (path == null)
             {
-                o.Fail("走不到巨石旁边");
+                o.Fail($"走不到{label}");
                 yield break;
             }
             foreach (var s in WalkPath(path, o))
@@ -1168,21 +1169,45 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(blockedWhy);
                 yield break;
             }
-            // 在农场出发、背包杂或空位少：先自动整理一次（purpose=mine）。人工整理过的话杂物少，这里就不会触发；
-            // 只在农场做（箱子在那儿），进出矿洞来回不重复跑
-            string tidyNote = null;
-            if (Loc is Farm && TripClutterHint("mine") != null)
+            // 先确定要去哪个矿：明说 skull，或者人已经在沙漠 / 骷髅洞穴入口，就是骷髅洞穴；姜岛火山单独处理
+            whichMine = whichMine?.Trim().ToLowerInvariant();
+            bool volcano = whichMine is "volcano" or "火山" or "火山地牢"
+                || (string.IsNullOrEmpty(whichMine) && Loc is VolcanoDungeon or Caldera or IslandNorth);
+            // 去掉空格、下划线、连字符再比，大小写不分："Skull Cavern"、skull_cavern、skullcavern 都算
+            string whereKey = (whichMine ?? "").Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
+            bool skull = !volcano && (whereKey is "skull" or "skullcave" or "skullcavern" or "desert" or "骷髅" or "骷髅洞" or "骷髅洞穴" or "沙漠"
+                || (string.IsNullOrEmpty(whichMine) && Loc.Name is "SkullCave" or "Desert"));
+
+            // 出发前先拦明显进不去的条件，免得白回农场整理
+            if (skull && Loc is not MineShaft && !Player.hasSkullKey)
             {
-                ActionResult tidied = null;
-                foreach (var s in TidyBackpack("", "mine"))
-                {
-                    if (s is ActionResult r)
-                        tidied = r;
-                    else
-                        yield return s;
-                }
-                tidyNote = tidied == null ? null : "出发前自动整理了背包：" + tidied.Message;
+                yield return ActionResult.Fail("没有骷髅钥匙，进不了骷髅洞穴（普通矿洞下到 120 层会拿到）");
+                yield break;
             }
+            if (volcano && Loc is not VolcanoDungeon and not Caldera && !Exits.BoatRepaired && Loc?.InIslandContext() != true)
+            {
+                yield return ActionResult.Fail("火山在姜岛北边，要先修好威利的船（repair_boat）坐船去姜岛");
+                yield break;
+            }
+
+            // 出发前（无论在农场、农舍还是刚在镇上接完任务）背包空间不足或杂物多且箱子有空位：先自动整理一次再出发，避免到了沙漠/矿洞才折返
+            string tidyNote = null;
+            foreach (var s in TryAutoTidyBeforeMine(skull, volcano, msg => tidyNote = msg))
+                yield return s;
+            if (Blocked(out string afterTidyWhy))
+            {
+                yield return ActionResult.Fail(afterTidyWhy);
+                yield break;
+            }
+
+            // 姜岛火山：地图和走法都不一样（岩浆、机关门、往上走），单独处理
+            if (volcano)
+            {
+                foreach (var s in ExploreVolcano(levels, maxBombs, miningGoal, tidyNote))
+                    yield return s;
+                yield break;
+            }
+
             // 出门带了下矿用不上的东西，结束时提醒一句（下次出门前整理）
             string clutter = TripClutterHint("mine");
             if (tidyNote != null)
@@ -1190,26 +1215,8 @@ namespace BlindWhaleFarmer
             // 刚下矿时背包几乎满了：照样下，结束时说清楚（上面的杂物提醒已经说了空位的话就不重复）
             if (clutter == null && Loc is not MineShaft and not VolcanoDungeon && Player.freeSpotsInInventory() < 3)
                 clutter = $"⚠ 下矿时背包只剩 {Player.freeSpotsInInventory()} 个空位，敲出来的矿石宝石很快就装不下（掉在地上）。下次先 tidy_backpack purpose=mine 再来";
-            // 去哪个矿：明说 skull，或者人已经在沙漠 / 骷髅洞穴入口，就是骷髅洞穴
-            whichMine = whichMine?.Trim().ToLowerInvariant();
-            // 姜岛火山：地图和走法都不一样（岩浆、机关门、往上走），单独处理
-            if (whichMine is "volcano" or "火山" or "火山地牢" || (string.IsNullOrEmpty(whichMine) && Loc is VolcanoDungeon or Caldera or IslandNorth))
-            {
-                foreach (var s in ExploreVolcano(levels, maxBombs, miningGoal))
-                    yield return s;
-                yield break;
-            }
-            // 去掉空格、下划线、连字符再比，大小写不分："Skull Cavern"、skull_cavern、skullcavern 都算
-            string whereKey = (whichMine ?? "").Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
-            bool skull = whereKey is "skull" or "skullcave" or "skullcavern" or "desert" or "骷髅" or "骷髅洞" or "骷髅洞穴" or "沙漠"
-                || (string.IsNullOrEmpty(whichMine) && Loc.Name is "SkullCave" or "Desert");
             if (Loc is not MineShaft && skull)
             {
-                if (!Player.hasSkullKey)
-                {
-                    yield return ActionResult.Fail("没有骷髅钥匙，进不了骷髅洞穴（普通矿洞下到 120 层会拿到）");
-                    yield break;
-                }
                 if (Loc.Name != "SkullCave")
                 {
                     foreach (var s in TravelInner("SkullCave", o))

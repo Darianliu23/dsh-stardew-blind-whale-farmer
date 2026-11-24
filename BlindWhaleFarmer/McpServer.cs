@@ -58,6 +58,17 @@ namespace BlindWhaleFarmer
             Port = port;
         }
 
+        public bool EverActive => Interlocked.Read(ref lastActivityTicks) > 0;
+
+        public DateTime LastActivityUtc
+        {
+            get
+            {
+                long ticks = Interlocked.Read(ref lastActivityTicks);
+                return ticks > 0 ? new DateTime(ticks, DateTimeKind.Utc) : DateTime.MinValue;
+            }
+        }
+
         public bool IsActive(int idleSeconds)
         {
             long last = Interlocked.Read(ref lastActivityTicks);
@@ -644,6 +655,13 @@ namespace BlindWhaleFarmer
                     ["allowChat"] = c.AllowChat,
                     ["allowSpendSharedMoney"] = c.AllowSpendSharedMoney,
                     ["aiHomeLocation"] = c.AiHomeLocation,
+                    ["coSleepDefault"] = c.CoSleepDefault,
+                    ["passbyEmoteEnabled"] = c.PassbyEmoteEnabled,
+                    ["passbyEmoteChance"] = c.PassbyEmoteChance,
+                    ["passbyEmoteCooldownMinutes"] = c.PassbyEmoteCooldownMinutes,
+                    ["idleFollowEnabled"] = c.IdleFollowEnabled,
+                    ["idleFollowIntervalSeconds"] = c.IdleFollowIntervalSeconds,
+                    ["idleFollowDurationSeconds"] = c.IdleFollowDurationSeconds,
                     ["extraInstructions"] = c.ExtraInstructions,
                     ["reservedItems"] = c.ReservedItems,
                     ["guideFile"] = c.GuideFile

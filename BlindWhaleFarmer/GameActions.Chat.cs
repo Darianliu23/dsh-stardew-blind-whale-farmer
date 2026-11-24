@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using StardewModdingAPI;
 using StardewValley;
+using StardewValley.Locations;
 using StardewValley.Menus;
 
 namespace BlindWhaleFarmer
@@ -433,6 +434,113 @@ namespace BlindWhaleFarmer
             }
             var last = OtherPlayer();
             yield return ActionResult.Success($"跟了 {seconds} 秒" + (last != null ? $"，{last.Name} 在 {last.currentLocation?.NameOrUniqueName} ({last.TilePoint.X},{last.TilePoint.Y})" : ""));
+        }
+
+        private static readonly Random IdleFollowRng = new();
+
+        internal static bool ShouldStartIdleFollow(
+            bool enabled, bool isMultiplayer, bool playerInControl, bool aiActive,
+            bool mainBusy, bool idleRunning, bool agentThinking, bool hasChat, bool safe,
+            int intervalSeconds, DateTime nowUtc, DateTime lastActivityEndedUtc)
+        {
+            if (!enabled || !isMultiplayer || playerInControl || !aiActive)
+                return false;
+            if (mainBusy || idleRunning || agentThinking || hasChat || !safe)
+                return false;
+            int interval = Math.Clamp(intervalSeconds, 30, 3600);
+            return (nowUtc - lastActivityEndedUtc).TotalSeconds >= interval;
+        }
+
+        /// <summary>
+        /// 联机空闲（没有指派任务）时随机挑一位安全地图上的在线真人玩家跟一会儿，间或发表情卖萌。
+        /// 复用 follow 跟随逻辑；绝不砍东西、不拿箱子、不进矿洞/火山；有新任务、有人说话或进入节日/剧情/菜单/战斗立刻停下。
+        /// </summary>
+        public IEnumerable<object> IdleFollow(int durationSeconds)
+        {
+            if (!IsSafeForSocialBehavior(Loc) || Blocked(out _))
+                yield break;
+
+            var candidates = Game1.getOnlineFarmers()
+                .Where(f => f != null && f != Player
+                    && f.currentLocation != null
+                    && !f.currentLocation.IsTemporary
+                    && f.currentLocation is not MineShaft
+                    && f.currentLocation is not VolcanoDungeon)
+                .ToList();
+            if (candidates.Count == 0)
+                yield break;
+
+            var chosen = candidates[IdleFollowRng.Next(candidates.Count)];
+            long targetId = chosen.UniqueMultiplayerID;
+            int seconds = Math.Clamp(durationSeconds, 10, 180);
+            int startTick = Game1.ticks;
+            int nextEmoteTick = startTick + IdleFollowRng.Next(3 * 60, 7 * 60);
+            var o = new Outcome();
+
+            while (Game1.ticks - startTick < seconds * 60)
+            {
+                if (incomingChat.Count > 0 || !IsSafeForSocialBehavior(Loc) || Blocked(out _))
+                    yield break;
+
+                var target = Game1.getOnlineFarmers().FirstOrDefault(f => f != null && f.UniqueMultiplayerID == targetId);
+                if (target == null)
+                    yield break;
+
+                var where = target.currentLocation;
+                string name = where?.NameOrUniqueName;
+                if (name == null || where.IsTemporary || where is MineShaft || where is VolcanoDungeon || Game1.isFestival())
+                    yield break;
+
+                if (name != Loc.NameOrUniqueName)
+                {
+                    foreach (var s in TravelInner(name, o, exactName: true))
+                    {
+                        if (incomingChat.Count > 0 || !IsSafeForSocialBehavior(Loc, allowWarping: true))
+                            yield break;
+                        yield return s;
+                    }
+                    if (!o.Ok)
+                        yield break;
+                    o.Succeed();
+                    yield return null;
+                    continue;
+                }
+
+                var me = Player.TilePoint;
+                var there = target.TilePoint;
+                int dist = Util.Manhattan(me, there);
+                if (dist > 2)
+                {
+                    var goals = Pathfinder.AdjacentStandTiles(Loc, there);
+                    var path = goals.Count > 0 ? Pathfinder.FindPath(Loc, me, goals, 6000) : null;
+                    if (path != null && path.Count >= 2)
+                    {
+                        foreach (var s in WalkPath(path.Take(5).ToList(), o))
+                        {
+                            if (incomingChat.Count > 0 || !IsSafeForSocialBehavior(Loc))
+                                yield break;
+                            yield return s;
+                        }
+                        o.Succeed();
+                        continue;
+                    }
+                }
+                else if (Game1.ticks >= nextEmoteTick && Player.CanEmote())
+                {
+                    Player.Halt();
+                    Player.faceGeneralDirection(target.getStandingPosition(), 0, opposite: false, useTileCalculations: false);
+                    TryPlayCuteEmote(IdleFollowRng);
+                    nextEmoteTick = Game1.ticks + IdleFollowRng.Next(8 * 60, 14 * 60);
+                }
+
+                foreach (var s in WaitTicks(15))
+                {
+                    if (incomingChat.Count > 0 || !IsSafeForSocialBehavior(Loc))
+                        yield break;
+                    yield return s;
+                }
+            }
+            Player.Halt();
         }
     }
 }

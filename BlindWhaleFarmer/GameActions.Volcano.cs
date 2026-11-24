@@ -79,11 +79,13 @@ namespace BlindWhaleFarmer
         /// 下火山：打附近的怪、开宝箱、捡东西，找路去这一层的出口（路上的石头敲掉、岩浆用水壶浇冷），
         /// 出口被机关门挡着就先去踩开关。下够 levels 层、到了火山口、或者体力/生命/时间不够时停下。
         /// </summary>
-        private IEnumerable<object> ExploreVolcano(int levels, int? maxBombs, MineGoal goal)
+        private IEnumerable<object> ExploreVolcano(int levels, int? maxBombs, MineGoal goal, string tidyNote = null)
         {
             var o = new Outcome();
             var minedNodes = new MineNodeTally();
             string clutter = TripClutterHint("mine", i => i is WateringCan); // 火山里水壶要用来浇岩浆
+            if (tidyNote != null)
+                clutter = clutter == null ? tidyNote : tidyNote + "；" + clutter;
             if (Loc is not VolcanoDungeon && Loc is not Caldera)
             {
                 // 人已经在姜岛上就不用管船（联机农场帮手、或者别的办法上的岛，船的标记不一定在这个存档的 mailReceived 里）

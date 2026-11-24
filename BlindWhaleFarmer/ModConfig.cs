@@ -40,6 +40,30 @@ namespace BlindWhaleFarmer
         /// </summary>
         public string AiHomeLocation { get; set; } = "";
 
+        /// <summary>
+        /// 联机时 sleep 未指定对象或房子时的默认同睡设置：留空 = 按 AiHomeLocation / 自己的家；
+        /// 填玩家名 = 默认去该玩家屋里一起睡；填 random = 随机选一位在线玩家一起睡（无其他在线玩家则回自己的家）。
+        /// </summary>
+        public string CoSleepDefault { get; set; } = "";
+
+        /// <summary>联机走路途中经过其他真人玩家附近时，停下转身发一个可爱表情。默认开，温和不打断任务。</summary>
+        public bool PassbyEmoteEnabled { get; set; } = true;
+
+        /// <summary>路上遇到其他玩家时发表情的触发概率（0~1，默认 0.35）。</summary>
+        public float PassbyEmoteChance { get; set; } = 0.35f;
+
+        /// <summary>路上遇到同一位玩家发表情的冷却间隔（现实分钟，默认 5 分钟）。</summary>
+        public int PassbyEmoteCooldownMinutes { get; set; } = 5;
+
+        /// <summary>联机空闲（没有任务）时，偶尔随机挑一位在线真人玩家跟一会儿并发表情卖萌（绝不捣乱，有新任务或聊天立刻停下）。默认开。</summary>
+        public bool IdleFollowEnabled { get; set; } = true;
+
+        /// <summary>联机空闲多久（现实秒）后触发一次跟着玩家卖萌（默认 180 秒，即 3 分钟；范围 30~3600）。</summary>
+        public int IdleFollowIntervalSeconds { get; set; } = 180;
+
+        /// <summary>每次空闲跟着玩家卖萌持续多久（现实秒，默认 30 秒；范围 10~180）。</summary>
+        public int IdleFollowDurationSeconds { get; set; } = 30;
+
         /// <summary>联机时 AI 怎么安排自己：solo 自己玩、command 主要听指令、hybrid 指令做完接着自己玩。</summary>
         public string CompanionMode { get; set; } = GameActions.ModeHybrid;
 

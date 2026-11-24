@@ -222,9 +222,14 @@ namespace BlindWhaleFarmer
             team.AddSpecialOrder(chosen.questKey.Value, chosen.generationSeed.Value);
             Game1.playSound("newArtifact");
             var added = team.specialOrders.LastOrDefault(s => s.questKey.Value == chosen.questKey.Value) ?? chosen;
+            string packReminder = MineQuestPackReminder(Player.freeSpotsInInventory(), IsMiningSpecialOrder(added));
             yield return ActionResult.Success("接下了订单：" + DescribeSpecialOrder(added, true)
-                + $"\n（任务日志里能看到进度；special_orders{boardArg} 不带参数可以再查）");
+                + $"\n（任务日志里能看到进度；special_orders{boardArg} 不带参数可以再查）" + packReminder);
         }
+
+        internal static bool IsMiningSpecialOrder(SpecialOrder order) =>
+            order != null && (order.objectives.Any(obj => obj is ReachMineFloorObjective or SlayObjective)
+                || order.questKey.Value is "Wizard" or "Wizard2" or "Clint" or "QiChallenge5" or "QiChallenge6" or "QiChallenge7");
 
         private static bool QiBoardUnlocked(out string why)
         {

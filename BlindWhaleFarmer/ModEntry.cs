@@ -76,6 +76,10 @@ namespace BlindWhaleFarmer
             GameActions.AllowChat = Config.AllowChat;
             GameActions.AllowSpendSharedMoney = Config.AllowSpendSharedMoney;
             GameActions.AiHomeLocation = Config.AiHomeLocation;
+            GameActions.CoSleepDefault = Config.CoSleepDefault;
+            GameActions.PassbyEmoteEnabled = Config.PassbyEmoteEnabled;
+            GameActions.PassbyEmoteChance = Math.Clamp(Config.PassbyEmoteChance, 0f, 1f);
+            GameActions.PassbyEmoteCooldownMinutes = Math.Clamp(Config.PassbyEmoteCooldownMinutes, 1, 120);
             GameActions.ModeChanged = mode =>
             {
                 Config.CompanionMode = mode;
@@ -86,13 +90,19 @@ namespace BlindWhaleFarmer
             helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
             helper.Events.GameLoop.DayStarted += (_, _) =>
             {
+                if (Context.ScreenId != 0)
+                    return;
                 Exits.ClearCache();
                 Session.OnDayStarted();
             };
             helper.Events.GameLoop.ReturnedToTitle += (_, _) =>
             {
+                if (Context.ScreenId != 0)
+                    return;
+                MainThread.CancelIdle(haltPlayer: false);
                 MainThread.ResetInventory();
                 Observer.ResetScreenHistory();
+                GameActions.ResetSocialState();
                 Actions.LoadFields(null);
                 Agent.Stop("回到了标题画面");
             };
@@ -161,8 +171,12 @@ namespace BlindWhaleFarmer
 
         private void OnSaveLoaded(object sender, SaveLoadedEventArgs e)
         {
+            if (Context.ScreenId != 0)
+                return;
+            MainThread.CancelIdle(haltPlayer: false);
             MainThread.ResetInventory(worldReady: true);
             Observer.ResetScreenHistory();
+            GameActions.ResetSocialState();
             var data = Helper.Data.ReadJsonFile<SaveData>(NotesFile) ?? new SaveData();
             Agent.Notes = data.Notes ?? "";
             GameActions.LoadSaveReserved(data.Reserved);
@@ -207,6 +221,20 @@ namespace BlindWhaleFarmer
                 GameActions.AllowSpendSharedMoney = Config.AllowSpendSharedMoney = sharedMoney.GetValue<bool>();
             if (s["aiHomeLocation"] is { } home)
                 GameActions.AiHomeLocation = Config.AiHomeLocation = home.GetValue<string>().Trim();
+            if (s["coSleepDefault"] is { } coSleep)
+                GameActions.CoSleepDefault = Config.CoSleepDefault = coSleep.GetValue<string>().Trim();
+            if (s["passbyEmoteEnabled"] is { } passbyEn)
+                GameActions.PassbyEmoteEnabled = Config.PassbyEmoteEnabled = passbyEn.GetValue<bool>();
+            if (s["passbyEmoteChance"] is { } passbyChance)
+                GameActions.PassbyEmoteChance = Config.PassbyEmoteChance = Math.Clamp((float)passbyChance.GetValue<double>(), 0f, 1f);
+            if (s["passbyEmoteCooldownMinutes"] is { } passbyCd)
+                GameActions.PassbyEmoteCooldownMinutes = Config.PassbyEmoteCooldownMinutes = Math.Clamp(passbyCd.GetValue<int>(), 1, 120);
+            if (s["idleFollowEnabled"] is { } idleFollowEn)
+                Config.IdleFollowEnabled = idleFollowEn.GetValue<bool>();
+            if (s["idleFollowIntervalSeconds"] is { } idleFollowInt)
+                Config.IdleFollowIntervalSeconds = Math.Clamp(idleFollowInt.GetValue<int>(), 30, 3600);
+            if (s["idleFollowDurationSeconds"] is { } idleFollowDur)
+                Config.IdleFollowDurationSeconds = Math.Clamp(idleFollowDur.GetValue<int>(), 10, 180);
             if (s["companionMode"] is { } mode)
             {
                 string newMode = GameActions.NormalizeMode(mode.GetValue<string>());
@@ -275,6 +303,10 @@ namespace BlindWhaleFarmer
 
         private void OnButtonPressed(object sender, ButtonPressedEventArgs e)
         {
+            if (Context.ScreenId != 0)
+                return;
+            if (MainThread.IsIdleRunning)
+                MainThread.CancelIdle(haltPlayer: false);
             // AI 停下后暂停的游戏：玩家按任意键接手
             if (pausedByUs)
                 SetIdlePaused(false);
@@ -359,6 +391,9 @@ namespace BlindWhaleFarmer
 
         private void OnUpdateTicked(object sender, UpdateTickedEventArgs e)
         {
+            // 本地分屏时 SMAPI 会为每个分屏触发 UpdateTicked，模组只驱动主屏幕（ScreenId == 0），避免与副屏玩家状态串帧。
+            if (Context.ScreenId != 0)
+                return;
             bool ready = Context.IsWorldReady;
             if (ready)
                 CurrentStamp = Util.Stamp();
@@ -378,7 +413,28 @@ namespace BlindWhaleFarmer
 
             if (ready)
                 Observer.SampleScreen();
+            if (MainThread.IsIdleRunning && (!ready || PlayerInControl || Agent.IsThinking || mcpPlaying || GameActions.ChatWantsAttention() || !GameActions.IsSafeForSocialBehavior(Game1.currentLocation, allowWarping: true)))
+                MainThread.CancelIdle(haltPlayer: ready);
             MainThread.Tick(ready);
+            DateTime lastActivityUtc = MainThread.LastActivityEndedUtc;
+            if (Mcp != null && Mcp.LastActivityUtc > lastActivityUtc)
+                lastActivityUtc = Mcp.LastActivityUtc;
+            if (ready && e.IsMultipleOf(60) && GameActions.ShouldStartIdleFollow(
+                Config.IdleFollowEnabled,
+                Context.IsMultiplayer,
+                PlayerInControl,
+                Agent.Running || (Mcp != null && Mcp.EverActive),
+                MainThread.IsBusy,
+                MainThread.IsIdleRunning,
+                Agent.IsThinking || mcpPlaying,
+                GameActions.ChatWantsAttention(),
+                GameActions.IsSafeForSocialBehavior(Game1.currentLocation),
+                Config.IdleFollowIntervalSeconds,
+                DateTime.UtcNow,
+                lastActivityUtc))
+            {
+                MainThread.StartIdle(() => Actions.IdleFollow(Config.IdleFollowDurationSeconds));
+            }
             if (ready)
             {
                 FishingAssist.ChaseTreasure = Config.FishTreasure;
@@ -390,7 +446,7 @@ namespace BlindWhaleFarmer
                 Agent.Stop("本次游玩时间到了", onItsOwn: true);
 
             // 用 MCP 客户端玩时游戏窗口通常在后台；默认的“失去焦点时暂停”会让 Game1.Update 直接返回，人物走不动
-            KeepRunningInBackground(ready && (Agent.Running || mcpPlaying || MainThread.IsBusy));
+            KeepRunningInBackground(ready && (Agent.Running || mcpPlaying || MainThread.IsBusy || MainThread.IsIdleRunning));
             // 剧情标记卡住（eventUp 还开着、却没有剧情/界面/切场景）时自己解开；只在 AI 玩的时候管，不碰玩家自己玩
             if (ready && (Agent.Running || mcpPlaying || MainThread.IsBusy))
             {
@@ -450,6 +506,7 @@ namespace BlindWhaleFarmer
             mcpWasPlaying = false;
             if (inControl)
             {
+                MainThread.CancelIdle(haltPlayer: true);
                 MainThread.CancelCurrent($"玩家按 {Config.TakeOverKey} 接管了游戏，动作已中止");
                 if (Agent.Running)
                     Agent.Stop($"玩家按 {Config.TakeOverKey} 接管了游戏");
@@ -492,7 +549,7 @@ namespace BlindWhaleFarmer
 
         private void DrawHud(SpriteBatch b)
         {
-            if (!Config.ShowHud || !Context.IsWorldReady)
+            if (Context.ScreenId != 0 || !Config.ShowHud || !Context.IsWorldReady)
                 return;
             try
             {
@@ -505,6 +562,8 @@ namespace BlindWhaleFarmer
                 Monitor.LogOnce("HUD 绘制失败：" + ex.Message, LogLevel.Warn);
             }
         }
+
+
     }
 
     /// <summary>屏幕左上角的小面板：显示 AI 状态、想法和当前动作。</summary>
