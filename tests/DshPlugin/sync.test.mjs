@@ -16,18 +16,29 @@ process.env.DSH_STARDEW_BACKUP = (await import('node:path')).join(tmpdir(), `bwf
 const plugin = await import('../../lib/index.js')
 
 function fakeGame() {
-  const state = { revision: '', posts: [] }
+  const state = { revision: '', posts: [], thoughts: [] }
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
     req.on('end', () => {
-      if (req.method === 'POST') {
+      if (req.url === '/thought' && req.method === 'POST') {
+        state.thoughts.push(JSON.parse(body))
+        res.end(JSON.stringify({ ok: true }))
+      } else if (req.method === 'POST') {
         const msg = JSON.parse(body)
         state.revision = msg.revision
         state.posts.push(msg)
         res.end(JSON.stringify({ message: '已应用', revision: state.revision }))
       } else {
-        res.end(JSON.stringify({ instance: 'x', revision: state.revision, goal: state.goal ?? null }))
+        res.end(JSON.stringify({
+          instance: 'x',
+          revision: state.revision,
+          session: state.session ?? '不限时长',
+          sessionEnded: state.sessionEnded ?? false,
+          playerInControl: state.playerInControl ?? false,
+          agentRunning: state.agentRunning ?? false,
+          goal: state.goal ?? null,
+        }))
       }
     })
   })
@@ -82,6 +93,7 @@ test('第一次推送设置，之后版本号一样就不重复推', async () =>
     allowSpendSharedMoney: false, aiHomeLocation: '', coSleepDefault: '',
     passbyEmoteEnabled: true, passbyEmoteChance: 0.35, passbyEmoteCooldownMinutes: 5,
     idleFollowEnabled: true, idleFollowIntervalSeconds: 180, idleFollowDurationSeconds: 30,
+    proactiveGiftEnabled: true, proactiveGiftChance: 0.5, proactiveGiftCooldownDays: 1,
     extraInstructions: '专心钓鱼', reservedItems: '', guideFile: 'guide/攻略.md',
     guides: {},
   })
@@ -305,12 +317,12 @@ function fakeAgents() {
 }
 
 /** 按 DSH 会话日志里的真实事件顺序回放一轮：调游戏工具 → 结果 → 最后一条回复 → 回合结束。 */
-function playTurn(emit, { tool = 'mcp__stardew__water_crops', ok = true, last, reason = 'completed' }) {
+function playTurn(emit, { tool = 'mcp__stardew__water_crops', args = '{}', ok = true, resultContent = [], last, reason = 'completed' }) {
   const session = { id: 's1' }
   const ev = (type, data) => emit('session/event', session, { type, data })
   ev('turn/start', { turn: 1 })
-  ev('tool/call', { callId: 'c1', name: tool, arguments: '{}' })
-  ev('tool/result', { message: { role: 'tool', toolCallId: 'c1', isError: !ok, content: [] } })
+  ev('tool/call', { callId: 'c1', name: tool, arguments: args })
+  ev('tool/result', { message: { role: 'tool', toolCallId: 'c1', isError: !ok, content: resultContent } })
   ev('assistant/message', { message: { role: 'assistant', content: last } })
   ev('turn/end', { reason: { kind: reason } })
 }
@@ -383,14 +395,16 @@ test('自动续玩：连续坏掉超过上限就停；中间有一次游戏动�
 test('配置结构和默认值（需要能找到 schemastery）', { skip: !plugin.Config && '没找到 schemastery（设置 DSH_HOME 再测）' }, () => {
   // 字段是 volatile 的活引用，用 currentConfig 取值
   const resolved = plugin.currentConfig(plugin.Config({}))
-  assert.equal(resolved.sessionDays, 0)
-  assert.equal(resolved.sessionMinutes, 0)
+  assert.equal(resolved.sessionDays, 3)
+  assert.equal(resolved.sessionMinutes, 60)
   assert.equal(resolved.freezeTime, true)
   assert.equal(resolved.port, 18080)
   assert.equal(resolved.guideFile, 'guide/攻略.md')
   assert.equal(resolved.presetEnabled, false, '会话预设默认关闭')
   assert.equal(resolved.gatewayEnabled, false, '入口工具默认关闭')
   assert.equal(resolved.autoContinue, true, '自动续玩默认开启')
+  assert.equal(resolved.keepAwake, true, '保持唤醒默认开启')
+  assert.equal(resolved.autoContinueDays, 3, '睡醒自动续玩默认 3 天')
   assert.equal(resolved.coSleepDefault, '')
   assert.equal(resolved.passbyEmoteEnabled, true)
   assert.equal(resolved.passbyEmoteChance, 0.35)
@@ -398,7 +412,15 @@ test('配置结构和默认值（需要能找到 schemastery）', { skip: !plugi
   assert.equal(resolved.idleFollowEnabled, true)
   assert.equal(resolved.idleFollowIntervalSeconds, 180)
   assert.equal(resolved.idleFollowDurationSeconds, 30)
+  assert.equal(resolved.proactiveGiftEnabled, true)
+  assert.equal(resolved.proactiveGiftChance, 0.5)
+  assert.equal(resolved.proactiveGiftCooldownDays, 1)
   assert.throws(() => plugin.Config({ sessionDays: -1 }))
+  assert.throws(() => plugin.Config({ proactiveGiftChance: 1.5 }))
+  assert.throws(() => plugin.Config({ proactiveGiftCooldownDays: 0 }))
+  assert.throws(() => plugin.Config({ proactiveGiftCooldownDays: 29 }))
+  assert.throws(() => plugin.Config({ autoContinueDays: -1 }))
+  assert.throws(() => plugin.Config({ autoContinueDays: 31 }))
 })
 
 test('设置是 volatile：DSH 交来的是活引用，配置卡片改了值不重启插件，下一轮同步就推新值', { timeout: 40000 }, async () => {
@@ -461,8 +483,8 @@ test('按时长续玩：玩家要的时长没玩够、AI 正常说完就停了�
       }
     }
     const cases = [
-      { goal: { minutes: 30, played: 31, pending: false }, turn: {} },
-      { goal: null, turn: {} },
+      { goal: { minutes: 30, played: 31, pending: false }, turn: {}, config: { keepAwake: false } },
+      { goal: null, turn: {}, config: { keepAwake: false } },
       { goal: { minutes: 30, played: 2, pending: true }, turn: { reason: 'aborted' } },
       { goal: { minutes: 30, played: 2, pending: true }, turn: { tool: 'bash' } },
       { goal: { minutes: 30, played: 2, pending: true }, turn: {}, config: { autoContinue: false } },
@@ -524,6 +546,569 @@ test('按时长续玩：会话里有 DSH 的 /目标 在跑时交给它续，不
       }
     }
   } finally {
+    server.close()
+  }
+})
+
+const SLEEP_WOKE = [{ type: 'text', text: '成功：睡醒了，春 2 日 06:00，可以开始新的一天' }]
+const SLEEP_ENTERING = [{ type: 'text', text: '成功：上床睡觉了，正在进入新的一天（结算界面会自动确认）' }]
+
+test('睡醒自动续玩（关闭保持唤醒）：睡过觉会续，而且到上限就停；支持入口工具 stardew 和“正在进入新的一天”', async () => {
+  const { server, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    plugin.apply(f.ctx, { port, keepAwake: false, autoContinueDays: 2 })
+    // 第 1 天：预设工具 sleep 睡醒
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '今天先睡了，晚安。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 1)
+    assert.equal(agent.sent[0].content[0].text, plugin.sleepContinueText(1, 2))
+    assert.ok(f.logs.some((l) => l.includes('睡醒自动续玩 第 1/2 天')))
+
+    // 第 2 天：入口工具 stardew action="sleep" 返回“正在进入新的一天”
+    playTurn(f.emit, { tool: 'stardew', args: '{"action":"sleep"}', resultContent: SLEEP_ENTERING, last: [{ type: 'text', text: '上床存档啦。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.equal(agent.sent[1].content[0].text, plugin.sleepContinueText(2, 2))
+    assert.ok(f.logs.some((l) => l.includes('睡醒自动续玩 第 2/2 天')))
+
+    // 第 3 天：达到上限 2 天，停下等玩家
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '又过了一天。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.ok(f.logs.some((l) => l.includes('已自动续玩 2 天，停下等玩家')))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('睡醒自动续玩（关闭保持唤醒）：玩家发话后计数清零', async () => {
+  const { server, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    plugin.apply(f.ctx, { port, keepAwake: false, autoContinueDays: 2 })
+    // 第 1 次续玩（1/2）
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '睡醒了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 1)
+    assert.equal(agent.sent[0].content[0].text, plugin.sleepContinueText(1, 2))
+
+    // 玩家自己发一条消息（DSH 真实格式）：计数清零，下一次睡醒重新从 1/2 开始
+    f.emit('session/event', { id: 's1' }, { type: 'user/message', data: { content: [{ type: 'text', text: '继续' }], source: { kind: 'user' } } })
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '又睡醒了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.equal(agent.sent[1].content[0].text, plugin.sleepContinueText(1, 2))
+
+    // 再睡一天（2/2）达到上限
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '再睡一天。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 3)
+    assert.equal(agent.sent[2].content[0].text, plugin.sleepContinueText(2, 2))
+
+    // 到上限后停下
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '停下。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 3)
+
+    // 停下后玩家再发一条消息（同时验证兼容旧的 data.message.source.kind 格式）：计数清零，重新从 1/2 开始
+    f.emit('session/event', { id: 's1' }, { type: 'user/message', data: { message: { role: 'user', content: [{ type: 'text', text: '再来' }], source: { kind: 'user' } } } })
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '重新开始。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 4)
+    assert.equal(agent.sent[3].content[0].text, plugin.sleepContinueText(1, 2))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('睡醒自动续玩：非玩家 user/message（time-context/runtime-context/repeat-tool-reminder/插件 followup/无 kind）不清零，到上限就停', async () => {
+  const { server, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  const session = { id: 's1' }
+  const userMsg = (kind) => f.emit('session/event', session, {
+    type: 'user/message',
+    data: kind === undefined
+      ? { content: [{ type: 'text', text: '无来源消息' }] }
+      : { content: [{ type: 'text', text: kind }], source: { kind } },
+  })
+  try {
+    plugin.apply(f.ctx, { port, keepAwake: false, autoContinueDays: 2 })
+    // 第 1 天：夹着各种 DSH 内部注入消息和缺省 kind
+    userMsg('agent-instructions')
+    userMsg('runtime-context')
+    userMsg('skill-catalog')
+    userMsg('time-context')
+    userMsg(undefined)
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 1 天睡了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 1)
+    assert.equal(agent.sent[0].content[0].text, plugin.sleepContinueText(1, 2))
+
+    // 第 2 天：夹着本插件 followup 和各类系统消息，计数不能清零
+    userMsg(plugin.name)
+    userMsg('time-context')
+    userMsg('runtime-context')
+    userMsg('repeat-tool-reminder')
+    userMsg(undefined)
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 2 天睡了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.equal(agent.sent[1].content[0].text, plugin.sleepContinueText(2, 2))
+
+    // 第 3 天：同样夹着非玩家消息，但已到上限 2 天，必须停下
+    userMsg(plugin.name)
+    userMsg('time-context')
+    userMsg('repeat-tool-reminder')
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 3 天睡了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.ok(f.logs.some((l) => l.includes('已自动续玩 2 天，停下等玩家')))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('睡醒自动续玩：先发 user/message(插件名) 再 turn/start，以及 followup 内同步触发 turn/start 都不清零', async () => {
+  const { server, port } = await fakeGame()
+  try {
+    // 场景 1：DSH 先发 user/message(kind=插件名) 再发 turn/start
+    {
+      const { agent, service } = fakeAgents()
+      const f = fakeCtx({ agents: service })
+      try {
+        plugin.apply(f.ctx, { port, keepAwake: false, autoContinueDays: 2 })
+        playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 1 天。' }] })
+        await wait(1800)
+        assert.equal(agent.sent.length, 1)
+        assert.equal(agent.sent[0].content[0].text, plugin.sleepContinueText(1, 2))
+
+        f.emit('session/event', { id: 's1' }, { type: 'user/message', data: { content: agent.sent[0].content, source: { kind: plugin.name } } })
+        playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 2 天。' }] })
+        await wait(1800)
+        assert.equal(agent.sent.length, 2)
+        assert.equal(agent.sent[1].content[0].text, plugin.sleepContinueText(2, 2))
+
+        f.emit('session/event', { id: 's1' }, { type: 'user/message', data: { content: agent.sent[1].content, source: { kind: plugin.name } } })
+        playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 3 天。' }] })
+        await wait(1800)
+        assert.equal(agent.sent.length, 2)
+      } finally {
+        f.dispose()
+      }
+    }
+
+    // 场景 2：agent.followup() 内部同步触发 turn/start（以及本插件 user/message）
+    {
+      const { agent, service } = fakeAgents()
+      const f = fakeCtx({ agents: service })
+      agent.followup = (m) => {
+        agent.sent.push(m)
+        f.emit('session/event', { id: 's1' }, { type: 'user/message', data: { content: m.content, source: m.source } })
+        f.emit('session/event', { id: 's1' }, { type: 'turn/start', data: { turn: agent.sent.length + 1 } })
+      }
+      try {
+        plugin.apply(f.ctx, { port, keepAwake: false, autoContinueDays: 2 })
+        playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '第 1 天。' }] })
+        await wait(1800)
+        assert.equal(agent.sent.length, 1)
+        assert.equal(agent.sent[0].content[0].text, plugin.sleepContinueText(1, 2))
+
+        // followup 已经同步触发了 turn/start，接下来完成这一轮的剩余事件
+        const finishSleepTurn = () => {
+          const session = { id: 's1' }
+          f.emit('session/event', session, { type: 'tool/call', data: { callId: 'c1', name: 'mcp__stardew__sleep', arguments: '{}' } })
+          f.emit('session/event', session, { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'c1', isError: false, content: SLEEP_WOKE } } })
+          f.emit('session/event', session, { type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: '睡了。' }] } } })
+          f.emit('session/event', session, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+        }
+        finishSleepTurn()
+        await wait(1800)
+        assert.equal(agent.sent.length, 2)
+        assert.equal(agent.sent[1].content[0].text, plugin.sleepContinueText(2, 2))
+
+        finishSleepTurn()
+        await wait(1800)
+        assert.equal(agent.sent.length, 2)
+      } finally {
+        f.dispose()
+      }
+    }
+  } finally {
+    server.close()
+  }
+})
+
+test('睡醒自动续玩：没睡觉、未进新一天、autoContinueDays=0、总开关关、被打断、接管中、游玩时长到了都不续', async () => {
+  const { server, state, port } = await fakeGame()
+  try {
+    const cases = [
+      { name: '没睡觉正常说完', turn: { tool: 'mcp__stardew__water_crops', resultContent: [{ type: 'text', text: '成功：浇完水了' }] } },
+      { name: 'sleep 失败', turn: { tool: 'mcp__stardew__sleep', ok: false, resultContent: [{ type: 'text', text: '失败：现在才 10:00，一天还长' }] } },
+      { name: '夜里选职业还没进新一天', turn: { tool: 'mcp__stardew__sleep', resultContent: [{ type: 'text', text: '成功：睡下了，夜里技能升级要选职业（选完游戏才会存档、进入新的一天，不用再 sleep）' }] } },
+      { name: 'autoContinueDays=0', config: { autoContinueDays: 0 }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE } },
+      { name: 'autoContinue=false', config: { autoContinue: false }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE } },
+      { name: '被打断', turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, reason: 'aborted' } },
+      { name: '玩家已发话', turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE }, userTyped: true },
+      { name: '玩家接管中', game: { playerInControl: true }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE } },
+      { name: '内置 AI 运行中', game: { agentRunning: true }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE } },
+      { name: '游玩时长到了(sessionEnded)', game: { sessionEnded: true }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE } },
+      { name: '游玩时长到了(旧版 session 文字)', game: { session: '本次游玩已经结束（游戏日 1/1 天）：不要再执行游戏动作，向玩家汇报。' }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE } },
+      { name: '游玩分钟到了(旧版 session 文字)', game: { session: '本次游玩时间到了（已玩 30/30 分钟）：马上 sleep 回家存档，然后汇报。' }, turn: { tool: 'mcp__stardew__sleep', resultContent: SLEEP_ENTERING } },
+    ]
+    for (const c of cases) {
+      state.goal = null
+      state.session = c.game?.session ?? '不限时长'
+      state.sessionEnded = c.game?.sessionEnded ?? false
+      state.playerInControl = c.game?.playerInControl ?? false
+      state.agentRunning = c.game?.agentRunning ?? false
+      const { agent, service } = fakeAgents()
+      if (c.userTyped) agent.inbox.nextTurn.push({ id: 'u' })
+      const f = fakeCtx({ agents: service })
+      try {
+        plugin.apply(f.ctx, { port, keepAwake: false, ...c.config })
+        playTurn(f.emit, { last: [{ type: 'text', text: '汇报完毕。' }], ...c.turn })
+        await wait(1800)
+        assert.equal(agent.sent.length, 0, c.name)
+      } finally {
+        f.dispose()
+      }
+    }
+  } finally {
+    server.close()
+  }
+})
+
+test('睡醒自动续玩：有 pendingGoal 时优先走原目标逻辑，不消耗睡醒续玩天数', async () => {
+  const { server, state, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    state.goal = { minutes: 0, played: 0, days: 4, daysDone: 1, pending: true }
+    plugin.apply(f.ctx, { port, keepAwake: false, autoContinueDays: 1 })
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '睡到第二天了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 1)
+    assert.equal(agent.sent[0].content[0].text, plugin.goalContinueText(state.goal))
+
+    // 目标结束后，睡醒自动续玩额度仍完整（第 1/1 天）
+    state.goal = null
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '又睡了一觉。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.equal(agent.sent[1].content[0].text, plugin.sleepContinueText(1, 1))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('保持唤醒（默认开）：普通回合说完会自动续玩，不限于睡觉后，且不受 autoContinueDays 限制；pendingGoal 仍优先', async () => {
+  const { server, state, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    // 默认开启 keepAwake；即使 autoContinueDays=0 也继续唤醒
+    plugin.apply(f.ctx, { port, autoContinueDays: 0 })
+    // 普通回合（浇水，未睡觉、无目标）正常说完 -> 自动续玩
+    playTurn(f.emit, { tool: 'mcp__stardew__water_crops', resultContent: [{ type: 'text', text: '成功：浇完水了' }], last: [{ type: 'text', text: '水浇好了，接下来等你指示。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 1)
+    assert.equal(agent.sent[0].content[0].text, plugin.KEEP_AWAKE_TEXT)
+    assert.ok(f.logs.some((l) => l.includes('保持唤醒，自动接着玩')))
+
+    // 睡醒回合同样走保持唤醒，不受 autoContinueDays=0 限制
+    playTurn(f.emit, { tool: 'mcp__stardew__sleep', resultContent: SLEEP_WOKE, last: [{ type: 'text', text: '晚安，明天见。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.equal(agent.sent[1].content[0].text, plugin.KEEP_AWAKE_TEXT)
+
+    // 有 pendingGoal 时优先走原目标逻辑
+    state.goal = { minutes: 30, played: 5, pending: true }
+    playTurn(f.emit, { tool: 'mcp__stardew__water_crops', resultContent: [{ type: 'text', text: '成功' }], last: [{ type: 'text', text: '汇报一下。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 3)
+    assert.equal(agent.sent[2].content[0].text, plugin.goalContinueText(state.goal))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('保持唤醒：游玩上限到了、玩家接管、内置 AI 运行中、被打断、玩家已发话、总开关关、游戏未连上、关闭开关时不续', async () => {
+  const { server, state, port } = await fakeGame()
+  try {
+    const cases = [
+      { name: '游玩上限到了(sessionEnded)', game: { sessionEnded: true } },
+      { name: '游玩上限到了(旧版天数文字)', game: { session: '本次游玩已经结束（游戏日 3/3 天）：不要再执行游戏动作，向玩家汇报。' } },
+      { name: '游玩上限到了(旧版分钟文字)', game: { session: '本次游玩时间到了（已玩 60/60 分钟）：马上 sleep 回家存档，然后汇报。' } },
+      { name: '玩家接管中', game: { playerInControl: true } },
+      { name: '内置 AI 运行中', game: { agentRunning: true } },
+      { name: '回合被中断', turn: { reason: 'aborted' } },
+      { name: '回合被取消', turn: { reason: 'cancelled' } },
+      { name: '非星露谷工具', turn: { tool: 'bash' } },
+      { name: '玩家已发话', userTyped: true },
+      { name: '总开关 autoContinue=false', config: { autoContinue: false } },
+      { name: '关闭保持唤醒 keepAwake=false（无目标普通回合）', config: { keepAwake: false } },
+      { name: '游戏未连上', config: { port: 1 } },
+    ]
+    for (const c of cases) {
+      state.goal = null
+      state.session = c.game?.session ?? '不限时长'
+      state.sessionEnded = c.game?.sessionEnded ?? false
+      state.playerInControl = c.game?.playerInControl ?? false
+      state.agentRunning = c.game?.agentRunning ?? false
+      const { agent, service } = fakeAgents()
+      if (c.userTyped) agent.inbox.nextTurn.push({ id: 'u' })
+      const f = fakeCtx({ agents: service })
+      try {
+        plugin.apply(f.ctx, { port, ...c.config })
+        playTurn(f.emit, {
+          tool: 'mcp__stardew__water_crops',
+          resultContent: [{ type: 'text', text: '成功：浇完水了' }],
+          last: [{ type: 'text', text: '浇完了。' }],
+          ...c.turn,
+        })
+        await wait(1800)
+        assert.equal(agent.sent.length, 0, c.name)
+      } finally {
+        f.dispose()
+      }
+    }
+  } finally {
+    server.close()
+  }
+})
+
+test('保持唤醒：连续没有成功游戏动作达到 autoContinueMax 就停；有一次成功动作后又能续', async () => {
+  const { server, port } = await fakeGame()
+  const { agent, service } = fakeAgents()
+  const f = fakeCtx({ agents: service })
+  try {
+    plugin.apply(f.ctx, { port, autoContinueMax: 2 })
+    for (let i = 0; i < 3; i++) {
+      playTurn(f.emit, { ok: false, last: [{ type: 'text', text: '失败了。' }] })
+      await wait(100)
+    }
+    await wait(1800)
+    assert.equal(agent.sent.length, 2)
+    assert.ok(f.logs.some((l) => l.includes('不再自动续玩')))
+
+    // 一次成功的游戏动作后重新计数，又能续了
+    playTurn(f.emit, { ok: true, resultContent: [{ type: 'text', text: '成功' }], last: [{ type: 'text', text: '好了。' }] })
+    await wait(1800)
+    assert.equal(agent.sent.length, 3)
+    assert.equal(agent.sent[2].content[0].text, plugin.KEEP_AWAKE_TEXT)
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+// ───────────────────────── 在游戏左上角显示 AI 想法 ─────────────────────────
+
+test('显示 AI 想法：星露谷会话的文字和思考事件会转发，非星露谷会话不转发', async () => {
+  const { server, state, port } = await fakeGame()
+  const f = fakeCtx()
+  try {
+    plugin.apply(f.ctx, { port })
+    // 非星露谷普通会话：不转发
+    f.emit('session/event', { id: 'chat-only' }, {
+      type: 'assistant/message',
+      data: { message: { role: 'assistant', content: [{ type: 'text', text: '这是一段普通聊天，不该发到游戏里' }] } },
+    })
+    await wait(120)
+    assert.equal(state.thoughts.length, 0)
+
+    // 带星露谷预设的会话：转发 text（同时有 reasoning 和 text 时优先 text）
+    const presetSession = { id: 'stardew-preset', header: { agentPreset: plugin.PRESET_ID } }
+    f.emit('session/event', presetSession, {
+      type: 'assistant/message',
+      data: {
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: '先想想今天干嘛' },
+            { type: 'text', text: '早安！先去给防风草浇水。' },
+          ],
+        },
+      },
+    })
+    await wait(150)
+    assert.equal(state.thoughts.length, 1)
+    assert.equal(state.thoughts[0].text, '早安！先去给防风草浇水。')
+
+    // 等节流窗口过去后，只带 reasoning 的星露谷会话也会转发 reasoning
+    await wait(1050)
+    f.emit('session/event', { id: 'gateway-session' }, {
+      type: 'tool/call',
+      data: { callId: 'c1', name: 'stardew', arguments: '{"action":"get_state"}' },
+    })
+    f.emit('session/event', { id: 'gateway-session' }, {
+      type: 'assistant/message',
+      data: {
+        message: {
+          role: 'assistant',
+          content: [{ type: 'reasoning', text: '体力和时间都够，等会儿去海边钓鱼。' }],
+        },
+      },
+    })
+    await wait(150)
+    assert.equal(state.thoughts.length, 2)
+    assert.equal(state.thoughts[1].text, '体力和时间都够，等会儿去海边钓鱼。')
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('显示 AI 想法：工具调用 JSON 参数和坏掉的工具调用文字不会当成想法转发', async () => {
+  const { server, state, port } = await fakeGame()
+  const f = fakeCtx()
+  try {
+    plugin.apply(f.ctx, { port })
+    const session = { id: 's-tool', header: { agentPreset: plugin.PRESET_ID } }
+    const agent = { id: 's-tool', session }
+
+    // 只有 tool-call 块的 assistant/message：不转发
+    f.emit('session/event', session, {
+      type: 'assistant/message',
+      data: {
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool-call', id: 'c1', name: 'mcp__stardew__move_to', arguments: '{"x":64,"y":15}' }],
+        },
+      },
+    })
+    // 流式 tool-call-delta：不转发 JSON 参数
+    f.emit('agent/assistant-stream', { agent, frame: { type: 'start', turn: 1, step: 1 } })
+    f.emit('agent/assistant-stream', {
+      agent,
+      frame: { type: 'chunk', chunk: { type: 'tool-call-delta', index: 0, id: 'c2', name: 'mcp__stardew__buy', argumentsDelta: '{"item":"Parsnip Seeds","count":15}' } },
+    })
+    f.emit('agent/assistant-stream', { agent, frame: { type: 'end' } })
+    // 坏掉的工具调用文字：不转发
+    f.emit('session/event', session, {
+      type: 'assistant/message',
+      data: {
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '</｜DSML｜ invoke name="water_crops">' }],
+        },
+      },
+    })
+    await wait(150)
+    assert.equal(state.thoughts.length, 0)
+
+    // 同时包含自然语言 text 和 tool-call：只转发自然语言部分，不含 JSON 参数
+    f.emit('session/event', session, {
+      type: 'assistant/message',
+      data: {
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: '去皮埃尔商店买种子' },
+            { type: 'tool-call', id: 'c3', name: 'mcp__stardew__travel_to', arguments: '{"location":"SeedShop"}' },
+          ],
+        },
+      },
+    })
+    await wait(150)
+    assert.equal(state.thoughts.length, 1)
+    assert.equal(state.thoughts[0].text, '去皮埃尔商店买种子')
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('显示 AI 想法：截短到 200 字单行，流式增量节流到最多每秒一次并合并最新内容', async () => {
+  const { server, state, port } = await fakeGame()
+  const f = fakeCtx()
+  try {
+    plugin.apply(f.ctx, { port })
+    const session = { id: 's-stream', header: { agentPreset: plugin.PRESET_ID } }
+    const agent = { id: 's-stream', session }
+
+    // 1. 截短 + 合成一行 + 过滤控制字符
+    const longRaw = '第一行\r\n第二行\t带控制\u0000\u0007字符，' + '种田'.repeat(150)
+    const formatted = plugin.formatThoughtText(longRaw)
+    assert.ok(formatted.length <= plugin.THOUGHT_MAX_CHARS)
+    assert.ok(formatted.endsWith('…'))
+    assert.ok(!/[\r\n\t\u0000-\u001f]/.test(formatted))
+    assert.ok(formatted.startsWith('第一行 第二行 带控制字符，'))
+
+    // 2. 流式增量：短时间内发 20 个 chunk，立刻发第 1 次，1 秒内不再发，1 秒后发合并后的完整内容
+    f.emit('agent/assistant-stream', { agent, frame: { type: 'start', turn: 1, step: 1 } })
+    const parts = ['今天', '天气', '真好', '，先去', '给作物', '浇水', '再去', '海边', '钓鱼', '吧！']
+    for (const part of parts) {
+      f.emit('agent/assistant-stream', {
+        agent,
+        frame: { type: 'chunk', chunk: { type: 'reasoning-delta', index: 0, text: part } },
+      })
+    }
+    f.emit('agent/assistant-stream', { agent, frame: { type: 'end' } })
+
+    await wait(200)
+    assert.equal(state.thoughts.length, 1, '1 秒节流窗口内只应发出首次请求')
+    assert.equal(state.thoughts[0].text, '今天')
+
+    await wait(1000)
+    assert.equal(state.thoughts.length, 2, '节流窗口结束后应发出合并后的完整想法')
+    assert.equal(state.thoughts[1].text, parts.join(''))
+  } finally {
+    f.dispose()
+    server.close()
+  }
+})
+
+test('显示 AI 想法：模组没开时不报错、不影响插件运行', async () => {
+  const f = fakeCtx()
+  try {
+    plugin.apply(f.ctx, { port: 1 }) // 没人监听的端口
+    const session = { id: 's-offline', header: { agentPreset: plugin.PRESET_ID } }
+    f.emit('session/event', session, {
+      type: 'assistant/message',
+      data: { message: { role: 'assistant', content: [{ type: 'text', text: '游戏没开时发一条想法' }] } },
+    })
+    await wait(250)
+    assert.ok(!f.logs.some((l) => l.startsWith('error')), '不能产生 error 日志')
+  } finally {
+    f.dispose()
+  }
+})
+
+test('显示 AI 想法：关掉开关不转发（支持活引用动态切换）', async () => {
+  const { server, state, port } = await fakeGame()
+  const f = fakeCtx()
+  let enabled = false
+  try {
+    plugin.apply(f.ctx, { port, showThoughtInGame: { get: () => enabled } })
+    const session = { id: 's-toggle', header: { agentPreset: plugin.PRESET_ID } }
+    f.emit('session/event', session, {
+      type: 'assistant/message',
+      data: { message: { role: 'assistant', content: [{ type: 'text', text: '开关关着，不该转发' }] } },
+    })
+    await wait(150)
+    assert.equal(state.thoughts.length, 0)
+
+    // 动态打开开关后立即生效
+    enabled = true
+    f.emit('session/event', session, {
+      type: 'assistant/message',
+      data: { message: { role: 'assistant', content: [{ type: 'text', text: '开关打开了，应该转发' }] } },
+    })
+    await wait(150)
+    assert.equal(state.thoughts.length, 1)
+    assert.equal(state.thoughts[0].text, '开关打开了，应该转发')
+  } finally {
+    f.dispose()
     server.close()
   }
 })

@@ -53,6 +53,7 @@ namespace BlindWhaleFarmer
         public override void Entry(IModHelper helper)
         {
             Config = helper.ReadConfig<ModConfig>();
+            ModSupport.Detect(helper.ModRegistry);
             Monitor.Log(Guide.Load(helper.DirectoryPath, Config.GuideFile), LogLevel.Info);
             Guide.SetOverrides(Config.GuideOverrides);
             GameActions.PersistSaveReserved = SaveNotes;
@@ -80,6 +81,9 @@ namespace BlindWhaleFarmer
             GameActions.PassbyEmoteEnabled = Config.PassbyEmoteEnabled;
             GameActions.PassbyEmoteChance = Math.Clamp(Config.PassbyEmoteChance, 0f, 1f);
             GameActions.PassbyEmoteCooldownMinutes = Math.Clamp(Config.PassbyEmoteCooldownMinutes, 1, 120);
+            GameActions.ProactiveGiftEnabled = Config.ProactiveGiftEnabled;
+            GameActions.ProactiveGiftChance = Math.Clamp(Config.ProactiveGiftChance, 0f, 1f);
+            GameActions.ProactiveGiftCooldownDays = Math.Clamp(Config.ProactiveGiftCooldownDays, 1, 28);
             GameActions.ModeChanged = mode =>
             {
                 Config.CompanionMode = mode;
@@ -93,7 +97,20 @@ namespace BlindWhaleFarmer
                 if (Context.ScreenId != 0)
                     return;
                 Exits.ClearCache();
+                GameActions.ClearShopTileCache();
                 Session.OnDayStarted();
+            };
+            helper.Events.Content.AssetsInvalidated += (_, e) =>
+            {
+                if (Context.ScreenId != 0)
+                    return;
+                foreach (var name in e.NamesWithoutLocale)
+                {
+                    if (name.StartsWith("Maps/", allowSubfolder: true) || name.IsEquivalentTo("Data/Minecarts"))
+                        Exits.ClearCache();
+                    if (name.StartsWith("Maps/", allowSubfolder: true) || name.IsEquivalentTo("Data/Shops"))
+                        GameActions.ClearShopTileCache();
+                }
             };
             helper.Events.GameLoop.ReturnedToTitle += (_, _) =>
             {
@@ -133,6 +150,7 @@ namespace BlindWhaleFarmer
             helper.ConsoleCommands.Add("dsai_tokens", "查看本次运行消耗的 token。", (_, _) =>
                 Monitor.Log($"输入 {Agent.TotalPromptTokens} tokens（其中命中缓存 {Agent.TotalCacheHitTokens}，"
                     + $"{(Agent.TotalPromptTokens > 0 ? Agent.TotalCacheHitTokens * 100 / Agent.TotalPromptTokens : 0)}%），输出 {Agent.TotalCompletionTokens} tokens", LogLevel.Info));
+            helper.ConsoleCommands.Add("dsai_audit_world", "体检当前世界（扩展模组状态、地图分区、可达性与商店柜台，供排查 SVE 等模组适配）。", (_, _) => OnAuditWorldCommand());
 
             Monitor.Log($"大肥鱼种白饭 Blind Whale Farmer 已加载。进入存档后按 {Config.ToggleKey} 启动/停止 AI。", LogLevel.Info);
 
@@ -169,6 +187,52 @@ namespace BlindWhaleFarmer
                 Monitor.Log("结果：" + (t.IsFaulted ? t.Exception?.GetBaseException().Message : t.Result), LogLevel.Info));
         }
 
+        private void OnAuditWorldCommand()
+        {
+            if (!Context.IsWorldReady)
+            {
+                Monitor.Log("请先进入存档。", LogLevel.Info);
+                return;
+            }
+            var sb = new StringBuilder();
+            sb.AppendLine($"=== 世界体检（地图 {Game1.locations.Count} 张，SVE={ModSupport.HasSve}）===");
+            sb.AppendLine($"农场类型：{Observer.FarmTypeName()}；专题列表：{string.Join("、", Guide.Topics)}");
+            var farm = Game1.getLocationFromName("Farm");
+            int reachable = 0, unreachable = 0, deep = 0;
+            var deepExamples = new List<string>();
+            var multiArea = new List<string>();
+            foreach (var loc in Game1.locations)
+            {
+                if (loc?.Map == null || ModSupport.IsWarpRoom(loc.NameOrUniqueName))
+                    continue;
+                var exits = Exits.Get(loc);
+                var areas = exits.Select(e => Exits.Area(loc.NameOrUniqueName, e.Tile)).Where(a => a > 0).Distinct().ToList();
+                if (areas.Count > 1)
+                    multiArea.Add($"{loc.NameOrUniqueName}({areas.Count}区)");
+                if (farm != null && loc != farm)
+                {
+                    var route = Exits.PlanRoute(farm, loc.NameOrUniqueName);
+                    if (route == null)
+                        unreachable++;
+                    else
+                    {
+                        reachable++;
+                        if (route.Count > 12)
+                        {
+                            deep++;
+                            if (deepExamples.Count < 6)
+                                deepExamples.Add($"{loc.NameOrUniqueName}({route.Count}跳)");
+                        }
+                    }
+                }
+            }
+            sb.AppendLine($"从 Farm 可达：{reachable} 张（超过 12 跳：{deep} 张{(deepExamples.Count > 0 ? "，如 " + string.Join("、", deepExamples) : "")}），当前不可达：{unreachable} 张");
+            sb.AppendLine($"多分区地图（{multiArea.Count} 张）：{string.Join("、", multiArea.Take(15))}");
+            int shopLocs = Game1.locations.Count(l => l?.Map != null && GameActions.ShopsHere(l).Count > 0);
+            sb.AppendLine($"含商店柜台的地图：{shopLocs} 张；博物馆藏品总数：{Knowledge.MuseumCollection()?.Count ?? 0}");
+            Monitor.Log("\n" + sb.ToString().TrimEnd(), LogLevel.Info);
+        }
+
         private void OnSaveLoaded(object sender, SaveLoadedEventArgs e)
         {
             if (Context.ScreenId != 0)
@@ -191,6 +255,7 @@ namespace BlindWhaleFarmer
             }
             Agent.ClearLog();
             Exits.ClearCache();
+            GameActions.ClearShopTileCache();
             // 每次读档算新的一次游玩，时长重新计
             Session.Reset();
             Session.OnSaveLoaded();
@@ -235,6 +300,12 @@ namespace BlindWhaleFarmer
                 Config.IdleFollowIntervalSeconds = Math.Clamp(idleFollowInt.GetValue<int>(), 30, 3600);
             if (s["idleFollowDurationSeconds"] is { } idleFollowDur)
                 Config.IdleFollowDurationSeconds = Math.Clamp(idleFollowDur.GetValue<int>(), 10, 180);
+            if (s["proactiveGiftEnabled"] is { } giftEn)
+                GameActions.ProactiveGiftEnabled = Config.ProactiveGiftEnabled = giftEn.GetValue<bool>();
+            if (s["proactiveGiftChance"] is { } giftChance)
+                GameActions.ProactiveGiftChance = Config.ProactiveGiftChance = Math.Clamp((float)giftChance.GetValue<double>(), 0f, 1f);
+            if (s["proactiveGiftCooldownDays"] is { } giftCd)
+                GameActions.ProactiveGiftCooldownDays = Config.ProactiveGiftCooldownDays = Math.Clamp(giftCd.GetValue<int>(), 1, 28);
             if (s["companionMode"] is { } mode)
             {
                 string newMode = GameActions.NormalizeMode(mode.GetValue<string>());
@@ -562,8 +633,6 @@ namespace BlindWhaleFarmer
                 Monitor.LogOnce("HUD 绘制失败：" + ex.Message, LogLevel.Warn);
             }
         }
-
-
     }
 
     /// <summary>屏幕左上角的小面板：显示 AI 状态、想法和当前动作。</summary>

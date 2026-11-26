@@ -29,11 +29,32 @@ namespace BlindWhaleFarmer
                 pathfinding: true, projectile: false, ignoreCharacterRequirement: false, skipCollisionEffects: true);
         }
 
-        /// <summary>踩上去就会触发传送的格子（TouchAction Warp）。寻路时绕开，除非它就是目的地。</summary>
+        /// <summary>踩上去就会触发传送的格子（TouchAction Warp / MagicWarp / LoadMap）。寻路时绕开，除非它就是目的地。</summary>
         public static bool IsTouchWarp(GameLocation loc, int x, int y)
         {
             string touch = loc.doesTileHaveProperty(x, y, "TouchAction", "Back");
-            return touch != null && (touch.StartsWith("Warp") || touch.StartsWith("MagicWarp"));
+            return IsTouchWarpAction(touch);
+        }
+
+        /// <summary>判断一条 TouchAction 字符串是不是踩上去就传走的动作（Warp / MagicWarp / SVE 的 LoadMap）。</summary>
+        internal static bool IsTouchWarpAction(string touch)
+        {
+            if (string.IsNullOrWhiteSpace(touch))
+                return false;
+            var verb = touch.TrimStart().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+            return verb.Equals("Warp", StringComparison.OrdinalIgnoreCase)
+                || verb.Equals("MagicWarp", StringComparison.OrdinalIgnoreCase)
+                || verb.Equals("LoadMap", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>按地图总格数给大地图（如 SVE 156x156 / 240x156、IF2R 163x156）放宽探索上限。</summary>
+        internal static int MapNodeBudget(GameLocation loc, int minNodes, int cap = 120000)
+        {
+            if (loc?.Map?.Layers == null || loc.Map.Layers.Count == 0)
+                return minNodes;
+            long area = (long)MapWidth(loc) * MapHeight(loc);
+            int scaled = area > int.MaxValue ? cap : (int)Math.Min(cap, Math.Max(minNodes, area * 2));
+            return scaled;
         }
 
         /// <summary>
@@ -102,6 +123,7 @@ namespace BlindWhaleFarmer
         /// </summary>
         public static (int Reachable, Point Closest, int Distance) Explore(GameLocation loc, Point start, ICollection<Point> goals, int maxNodes = 20000)
         {
+            maxNodes = MapNodeBudget(loc, maxNodes, 60000);
             var goalSet = new HashSet<Point>(goals);
             var seen = new HashSet<Point> { start };
             var queue = new Queue<Point>();
@@ -172,6 +194,8 @@ namespace BlindWhaleFarmer
         {
             if (goals.Count == 0)
                 return null;
+            if (maxNodes >= 60000)
+                maxNodes = MapNodeBudget(loc, maxNodes, 120000);
             var goalSet = new HashSet<Point>(goals);
             if (goalSet.Contains(start))
                 return new List<Point> { start };

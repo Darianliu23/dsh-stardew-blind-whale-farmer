@@ -292,7 +292,7 @@ namespace BlindWhaleFarmer
                         mod.Hud.SetAction($"{call.Name} → {OneLine(result, 80)}");
 
                         bool failed = !result.StartsWith("成功");
-                        bool menuOpen = await mod.MainThread.Invoke(() => Game1.activeClickableMenu != null || Game1.eventUp).ConfigureAwait(false);
+                        bool menuOpen = await mod.MainThread.Invoke(() => Game1.activeClickableMenu != null || Game1.eventUp || Game1.currentMinigame != null).ConfigureAwait(false);
                         // 失败或者弹出了界面，剩下的计划可能已经不合适了，重新观察
                         if (failed || (menuOpen && call.Name is not ("dialogue" or "buy" or "sell" or "open_shop" or "menu_click")))
                             break;

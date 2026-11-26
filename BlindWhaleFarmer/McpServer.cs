@@ -134,6 +134,11 @@ namespace BlindWhaleFarmer
                     await HandleSettings(req, resp);
                     return;
                 }
+                if (req.Url?.AbsolutePath.TrimEnd('/') == "/thought")
+                {
+                    await HandleThought(req, resp);
+                    return;
+                }
                 if (req.Url?.AbsolutePath.TrimEnd('/') != "/mcp")
                 {
                     await Write(resp, 404, null);
@@ -638,6 +643,73 @@ namespace BlindWhaleFarmer
             await Write(resp, 405, null);
         }
 
+        /// <summary>单条想法的最大长度（和内置 AI 记日志截断一致，HUD 最多画 4 行）。</summary>
+        internal const int MaxThoughtLength = 200;
+
+        /// <summary>把想法整理成单行：过滤控制字符、合并连续空白，超过上限截断并加省略号。</summary>
+        internal static string SanitizeThought(string text, int maxLen = MaxThoughtLength)
+        {
+            if (string.IsNullOrEmpty(text))
+                return "";
+            var sb = new StringBuilder(Math.Min(text.Length, Math.Max(maxLen, 16) + 8));
+            bool prevSpace = true;
+            foreach (char c in text)
+            {
+                if (c == '\r' || c == '\n' || c == '\t' || char.IsWhiteSpace(c))
+                {
+                    if (!prevSpace)
+                    {
+                        sb.Append(' ');
+                        prevSpace = true;
+                    }
+                    continue;
+                }
+                if (char.IsControl(c))
+                    continue;
+                sb.Append(c);
+                prevSpace = false;
+            }
+            string s = sb.ToString().Trim();
+            if (maxLen > 0 && s.Length > maxLen)
+                s = maxLen == 1 ? "…" : s.Substring(0, maxLen - 1) + "…";
+            return s;
+        }
+
+        /// <summary>
+        /// /thought：给 DSH 插件实时推送 AI 的想法和说的话，显示在游戏左上角 HUD 的“想法：”一栏（受 ShowHud 控制）。
+        /// 只监听 127.0.0.1，并拒绝外部网页来源（Origin 检查在 Handle 里）。
+        /// </summary>
+        private async Task HandleThought(HttpListenerRequest req, HttpListenerResponse resp)
+        {
+            if (req.HttpMethod != "POST")
+            {
+                resp.AddHeader("Allow", "POST");
+                await Write(resp, 405, null);
+                return;
+            }
+            string body;
+            using (var rd = new StreamReader(req.InputStream, Encoding.UTF8))
+                body = await rd.ReadToEndAsync();
+            JsonNode parsed;
+            try
+            {
+                parsed = JsonNode.Parse(body);
+            }
+            catch
+            {
+                await Write(resp, 400, new JsonObject { ["error"] = "无效的 JSON" });
+                return;
+            }
+            if (parsed is not JsonObject msg || msg["text"] is not JsonValue textVal || !textVal.TryGetValue<string>(out string raw))
+            {
+                await Write(resp, 400, new JsonObject { ["error"] = "需要 {\"text\": \"...\"}" });
+                return;
+            }
+            string thought = SanitizeThought(raw);
+            mod.Hud?.SetThought(thought);
+            await Write(resp, 200, new JsonObject { ["ok"] = true, ["thought"] = thought });
+        }
+
         private JsonObject SettingsSnapshot(string message)
         {
             var c = mod.Config;
@@ -662,11 +734,17 @@ namespace BlindWhaleFarmer
                     ["idleFollowEnabled"] = c.IdleFollowEnabled,
                     ["idleFollowIntervalSeconds"] = c.IdleFollowIntervalSeconds,
                     ["idleFollowDurationSeconds"] = c.IdleFollowDurationSeconds,
+                    ["proactiveGiftEnabled"] = c.ProactiveGiftEnabled,
+                    ["proactiveGiftChance"] = c.ProactiveGiftChance,
+                    ["proactiveGiftCooldownDays"] = c.ProactiveGiftCooldownDays,
                     ["extraInstructions"] = c.ExtraInstructions,
                     ["reservedItems"] = c.ReservedItems,
                     ["guideFile"] = c.GuideFile
                 },
                 ["session"] = mod.Session?.Status() ?? "不限时长",
+                ["sessionEnded"] = mod.Session?.LimitReached == true,
+                ["playerInControl"] = mod.PlayerInControl,
+                ["agentRunning"] = mod.Agent?.Running == true,
                 // 玩家在聊天里要求的游玩时长：插件在 AI 提前停下时据此自动续玩
                 ["goal"] = mod.Session?.Goal is { } g
                     ? new JsonObject { ["minutes"] = g.Minutes, ["played"] = Math.Round(g.Played, 1), ["days"] = g.Days, ["daysDone"] = g.DaysDone, ["pending"] = mod.Session.GoalPending && !mod.PlayerInControl && mod.Agent?.Running != true }

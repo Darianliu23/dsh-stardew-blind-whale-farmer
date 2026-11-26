@@ -67,13 +67,14 @@ namespace BlindWhaleFarmer
             sb.AppendLine("- 五项技能 10 级（5%）：" + (lowSkills.Count == 0 ? "都满了" : "还差 " + string.Join("、", lowSkills)));
 
             // 星之果实
+            int museumTotal = Knowledge.MuseumCollection()?.Count ?? 95;
             var drops = new (string mail, string where)[]
             {
                 ("CF_Fair", "秋 16 日展览会用 2000 星星币换"),
                 ("CF_Fish", "钓齐鱼类图鉴后威利来信送"),
                 ("CF_Mines", "矿井 100 层的宝箱"),
                 ("CF_Sewer", "下水道科罗布斯那里 20000 金买（open_shop）"),
-                ("museumComplete", "博物馆捐齐 95 件"),
+                ("museumComplete", $"博物馆捐齐 {museumTotal} 件"),
                 ("CF_Spouse", "配偶或室友好感很高时送"),
                 ("CF_Statue", "秘密森林的雕像前拿着宝石甜莓 interact"),
             };
@@ -184,6 +185,14 @@ namespace BlindWhaleFarmer
                 for (int y = 0; y < h; y++)
                     if (Array.IndexOf(GilTileIndexes, guild.getTileIndexAt(x, y, "Buildings", "1")) >= 0)
                         gilTiles.Add(new Microsoft.Xna.Framework.Point(x, y));
+            // 兜底：若模组调整了图块集编号，扫描 Buildings 层所有图块集
+            if (gilTiles.Count == 0 && guild.Map?.GetLayer("Buildings") is { } bldg)
+            {
+                for (int x = 0; x < w; x++)
+                    for (int y = 0; y < h; y++)
+                        if (bldg.Tiles[x, y] is { } t && Array.IndexOf(GilTileIndexes, t.TileIndex) >= 0)
+                            gilTiles.Add(new Microsoft.Xna.Framework.Point(x, y));
+            }
             if (gilTiles.Count == 0)
             {
                 yield return ActionResult.Fail("在冒险家公会里没找到 Gil 坐的位置");

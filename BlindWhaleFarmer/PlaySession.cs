@@ -214,6 +214,19 @@ namespace BlindWhaleFarmer
             }
         }
 
+        /// <summary>本次游玩是否已到上限（已彻底结束，或分钟数已到、睡完这一觉就该停）。</summary>
+        public bool LimitReached
+        {
+            get
+            {
+                lock (sync)
+                {
+                    UpdateMinutes();
+                    return Ended || minutesUpAtDay >= 0;
+                }
+            }
+        }
+
         private void UpdateMinutes()
         {
             if (config.SessionMinutes > 0 && minutesUpAtDay < 0 && Minutes >= config.SessionMinutes)

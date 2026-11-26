@@ -683,6 +683,65 @@ namespace BlindWhaleFarmer
             return key;
         }
 
+        /// <summary>符合肥鱼设定的可爱食物动物名字库（buy_animal 未传 name 时随机挑不重名的）。</summary>
+        internal static readonly string[] CuteAnimalNames =
+        {
+            "饭团", "米饭", "包子", "馒头", "大白饭", "汤圆", "年糕", "布丁",
+            "饺子", "烧卖", "花卷", "豆包", "麻薯", "泡芙", "蛋挞", "吐司",
+            "奶黄包", "糯米滋", "小笼包", "肉松卷", "红豆沙", "芋圆", "丸子", "团子",
+            "糍粑", "糖葫芦", "曲奇", "松饼", "铜锣烧", "可颂", "卷饼", "锅贴"
+        };
+
+        /// <summary>
+        /// 挑选一个不重名的动物名字：传了 preferred 且不重名直接用，重名则加数字后缀；
+        /// 没传时从 CuteAnimalNames 随机挑不重名的，全用完则加数字后缀。
+        /// </summary>
+        internal static string PickAnimalName(string preferred, Func<string, bool> isNameTaken, Random rng = null)
+        {
+            rng ??= Game1.random ?? Random.Shared;
+            string trimmed = preferred?.Trim();
+            if (!string.IsNullOrEmpty(trimmed))
+            {
+                if (!isNameTaken(trimmed))
+                    return trimmed;
+                for (int suffix = 2; suffix <= 99; suffix++)
+                {
+                    string withSuffix = $"{trimmed}{suffix}";
+                    if (!isNameTaken(withSuffix))
+                        return withSuffix;
+                }
+            }
+
+            var pool = CuteAnimalNames.ToList();
+            for (int i = pool.Count - 1; i > 0; i--)
+            {
+                int j = rng.Next(i + 1);
+                (pool[i], pool[j]) = (pool[j], pool[i]);
+            }
+            foreach (string candidate in pool)
+                if (!isNameTaken(candidate))
+                    return candidate;
+
+            for (int suffix = 2; suffix <= 999; suffix++)
+            {
+                foreach (string candidate in pool)
+                {
+                    string withSuffix = $"{candidate}{suffix}";
+                    if (!isNameTaken(withSuffix))
+                        return withSuffix;
+                }
+            }
+            return $"饭团{rng.Next(1000, 9999)}";
+        }
+
+        internal static bool IsChildBirthNaming() =>
+            Game1.farmEvent is StardewValley.Events.BirthingEvent or StardewValley.Events.PlayerCoupleBirthingEvent;
+
+        internal static string FormatNamingMenuPrompt(bool isChildBirth) =>
+            isChildBirth
+                ? "要给新出生的孩子起名字：用 set_name 传一个名字"
+                : "有刚出生的动物要起名字：请自己想一个可爱的名字（比如饭团、米饭、包子、馒头、大白饭、汤圆这类食物名），用 set_name 传进来";
+
         public IEnumerable<object> BuyAnimal(string typeSpec, string name, int count)
         {
             var o = new Outcome();
@@ -741,14 +800,7 @@ namespace BlindWhaleFarmer
                     stop = $"没有能住 {animal.displayType} 的空位（鸡舍/畜棚满了或者没建）";
                     break;
                 }
-                string animalName = !string.IsNullOrWhiteSpace(name) && n == 0 && !Utility.areThereAnyOtherAnimalsWithThisName(name.Trim()) ? name.Trim() : null;
-                for (int tries = 0; animalName == null && tries < 20; tries++)
-                {
-                    string candidate = StardewValley.Dialogue.randomName();
-                    if (!Utility.areThereAnyOtherAnimalsWithThisName(candidate))
-                        animalName = candidate;
-                }
-                animalName ??= type + Game1.random.Next(1000, 9999);
+                string animalName = PickAnimalName(n == 0 ? name : null, Utility.areThereAnyOtherAnimalsWithThisName, Game1.random);
                 animal.Name = animalName;
                 animal.displayName = animalName;
                 ((AnimalHouse)home.GetIndoors()).adoptAnimal(animal);

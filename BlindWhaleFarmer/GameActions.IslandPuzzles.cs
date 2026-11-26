@@ -5,6 +5,7 @@ using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Locations;
 using StardewValley.Menus;
+using StardewValley.Minigames;
 using SObject = StardewValley.Object;
 using xLocation = xTile.Dimensions.Location;
 
@@ -745,6 +746,263 @@ namespace BlindWhaleFarmer
             int got = Game1.netWorldState.Value.GoldenWalnuts - walnutsBefore;
             string detail = (placedNow > 0 ? $"放了 {placedNow} 个长笛块、" : "") + (totalClicks > 0 ? $"调音 {totalClicks} 下、" : "");
             yield return ActionResult.Success($"解开了姜岛美人鱼谜题（{detail}从左到右吹响 2/11/9/5/7 档）！拿到 {Math.Max(got, 5)} 颗金核桃（现有 {Game1.netWorldState.Value.GoldenWalnuts} 个，一共找到 {Game1.netWorldState.Value.GoldenWalnutsFound} 个）");
+        }
+
+        // ───────────────────────── 姜岛：海盗湾投飞镖小游戏（IslandSouthEastCave） ─────────────────────────
+
+        // 与原版 StardewValley.Minigames.Darts.GetPointsForAim 一致的 20 个扇区顺序（从正上方 20 顺时针排列）
+        internal static readonly int[] DartsSectors =
+        {
+            20, 1, 18, 4, 13, 6, 10, 15, 2, 17,
+            3, 19, 7, 16, 8, 11, 14, 9, 12, 5,
+        };
+
+        private static bool TrySingleDartFinish(int points, out (int baseNumber, int multiplier, int score) hit)
+        {
+            if (points == 50) { hit = (50, 1, 50); return true; }
+            if (points == 25) { hit = (25, 1, 25); return true; }
+            if (points >= 1 && points <= 20) { hit = (points, 1, points); return true; }
+            if (points >= 2 && points <= 40 && points % 2 == 0) { hit = (points / 2, 2, points); return true; }
+            if (points >= 3 && points <= 60 && points % 3 == 0) { hit = (points / 3, 3, points); return true; }
+            hit = default;
+            return false;
+        }
+
+        /// <summary>按剩余分数（1~301）选这一镖的瞄准目标，确保不爆分且用最少镖数归零（301 分只需 6 镖：5×T20 + S1）。</summary>
+        internal static (int baseNumber, int multiplier, int score) ChooseDartsTarget(int remainingPoints)
+        {
+            if (remainingPoints <= 0)
+                return (20, 1, 20);
+            if (remainingPoints >= 60)
+                return (20, 3, 60);
+            if (TrySingleDartFinish(remainingPoints, out var direct))
+                return direct;
+            for (int s = 20; s >= 1; s--)
+                if (remainingPoints - s > 0 && TrySingleDartFinish(remainingPoints - s, out _))
+                    return (s, 1, s);
+            return (Math.Min(remainingPoints, 20), 1, Math.Min(remainingPoints, 20));
+        }
+
+        /// <summary>把目标分值换算成 Darts 小游戏 320×320 棋盘坐标系下的精确落点。</summary>
+        internal static Vector2 DartsAimPosition(int baseNumber, int multiplier, Vector2 dartBoardCenter)
+        {
+            if (baseNumber == 50)
+                return dartBoardCenter;
+            if (baseNumber == 25)
+                return dartBoardCenter - new Vector2(0f, 8f);
+            int idx = Array.IndexOf(DartsSectors, baseNumber);
+            if (idx < 0)
+                return dartBoardCenter;
+            double rad = (idx * 18.0 + 90.0) * Math.PI / 180.0;
+            float radius = multiplier switch
+            {
+                3 => 50.5f, // 三倍环 [46, 55) 中点
+                2 => 83.5f, // 两倍环 [79, 88] 中点
+                _ => 67.0f, // 外单倍环 [55, 79) 中点
+            };
+            return dartBoardCenter - new Vector2((float)(Math.Cos(rad) * radius), (float)(Math.Sin(rad) * radius));
+        }
+
+        internal static string FormatPirateDartsStatus(bool pirateNight, int wonNuts, int dayOfMonth, int timeOfDay, bool raining)
+        {
+            string progress = wonNuts >= 3
+                ? "3 颗飞镖金核桃已全部拿到（仍可用 darts_game 游玩）"
+                : $"已拿到 {wonNuts}/3 颗飞镖金核桃（剩余 {3 - wonNuts} 颗，分别需 20/15/10 镖内归零）";
+            if (pirateNight)
+                return $"海盗湾今晚营业中：{progress}；直接调用 darts_game 自动开局并投完。";
+            var reasons = new List<string>();
+            if (dayOfMonth % 2 != 0) reasons.Add($"偶数日才开（今天第 {dayOfMonth} 天）");
+            if (raining) reasons.Add("姜岛下雨天不开");
+            if (timeOfDay < 2000) reasons.Add($"晚上 20:00 后才开（现在 {timeOfDay / 100:D2}:{timeOfDay % 100:D2}）");
+            return $"海盗湾现在没海盗（{string.Join("，", reasons)}）。{progress}。";
+        }
+
+        /// <summary>去姜岛海盗湾（IslandSouthEastCave）自动开始并完成一局投飞镖小游戏（301 分归零），领走金核桃奖励；若已在投飞镖小游戏里则直接接管投完。</summary>
+        public IEnumerable<object> DartsGame()
+        {
+            var o = new Outcome();
+            int walnutsBefore = Game1.netWorldState.Value.GoldenWalnuts;
+            int nutsDroppedBefore = Player.team.GetDroppedLimitedNutCount("Darts");
+
+            // 如果已经在投飞镖小游戏里，直接接管打完；如果是别的小游戏则报错
+            if (Game1.currentMinigame != null && Game1.currentMinigame is not Darts)
+            {
+                string mgName = Game1.currentMinigame.minigameId() ?? Game1.currentMinigame.GetType().Name;
+                yield return ActionResult.Fail($"当前正在运行其他小游戏（{mgName}），请先用 close_menu 退出");
+                yield break;
+            }
+
+            if (Game1.currentMinigame is not Darts)
+            {
+                bool alreadyAskedDarts = Loc is IslandSouthEastCave
+                    && Game1.activeClickableMenu is DialogueBox { isQuestion: true }
+                    && Loc.lastQuestionKey == "DartsGame";
+
+                if (!alreadyAskedDarts && Blocked(out string why))
+                {
+                    yield return ActionResult.Fail($"无法开始投飞镖小游戏：{why}");
+                    yield break;
+                }
+
+                if (Loc is not IslandSouthEastCave)
+                {
+                    foreach (var s in TravelInner("IslandSouthEastCave", o))
+                        yield return s;
+                    if (!o.Ok || Loc is not IslandSouthEastCave)
+                    {
+                        yield return ActionResult.Fail($"走不到姜岛海盗湾（IslandSouthEastCave）：{o.Message}（需要先在姜岛南边喂 20 颗金核桃解锁度假村，从东南海滩进入）");
+                        yield break;
+                    }
+                }
+
+                var cave = (IslandSouthEastCave)Loc;
+                if (!IslandSouthEastCave.isPirateNight())
+                {
+                    yield return ActionResult.Fail(FormatPirateDartsStatus(
+                        pirateNight: false,
+                        wonNuts: nutsDroppedBefore,
+                        dayOfMonth: Game1.dayOfMonth,
+                        timeOfDay: Game1.timeOfDay,
+                        raining: Game1.IsRainingHere(cave)));
+                    yield break;
+                }
+
+                // 20:00 前就在洞里时，地图还没切成海盗版本，游戏会自动把人传回东南海滩；等传出或主动出去再进一次
+                if (!cave.wasPirateCaveOnLoad)
+                {
+                    for (int w = 0; w < 30 && Loc == cave; w++)
+                        yield return null;
+                    if (Loc == cave)
+                    {
+                        foreach (var s in TravelInner("IslandSouthEast", o))
+                            yield return s;
+                    }
+                    foreach (var s in TravelInner("IslandSouthEastCave", o))
+                        yield return s;
+                    if (!o.Ok || Loc is not IslandSouthEastCave reloadedCave || !reloadedCave.wasPirateCaveOnLoad)
+                    {
+                        yield return ActionResult.Fail("海盗湾地图尚未切换到夜晚版本，请先走出洞口到 IslandSouthEast 再重新进入 IslandSouthEastCave");
+                        yield break;
+                    }
+                    cave = reloadedCave;
+                }
+
+                if (!alreadyAskedDarts)
+                {
+                    var dartsTile = FindActionTile(cave, "DartsGame") ?? new Point(30, 8);
+                    foreach (var s in GoAdjacent(dartsTile, o))
+                        yield return s;
+                    if (!o.Ok)
+                    {
+                        yield return ActionResult.Fail($"走不到投飞镖海盗 ({dartsTile.X},{dartsTile.Y}) 旁边：{o.Message}");
+                        yield break;
+                    }
+                    PutAwayHeldItem();
+                    Face(dartsTile);
+                    cave.checkAction(new xLocation(dartsTile.X, dartsTile.Y), Game1.viewport, Player);
+                    for (int w = 0; w < 60 && Game1.activeClickableMenu is not DialogueBox { isQuestion: true } && Game1.currentMinigame is not Darts; w++)
+                        yield return null;
+                }
+
+                if (Game1.currentMinigame is not Darts && Game1.activeClickableMenu is DialogueBox { isQuestion: true } ask)
+                {
+                    int yesIdx = 0;
+                    if (ask.responses != null)
+                    {
+                        for (int i = 0; i < ask.responses.Length; i++)
+                        {
+                            if (ask.responses[i]?.responseKey == "Yes")
+                            {
+                                yesIdx = i;
+                                break;
+                            }
+                        }
+                    }
+                    foreach (var s in Dialogue(yesIdx))
+                        if (s is not ActionResult)
+                            yield return s;
+                    for (int w = 0; w < 120 && Game1.currentMinigame is not Darts; w++)
+                        yield return null;
+                }
+
+                if (Game1.currentMinigame is not Darts)
+                {
+                    yield return ActionResult.Fail("未能进入投飞镖小游戏（与 (30,8) 海盗对话后未启动 Darts）。当前界面：" + observer.DescribeMenu());
+                    yield break;
+                }
+            }
+
+            // 接管 Darts 小游戏：每次进入 Aiming 状态时瞄准最优目标并精准投出，由原版 tick 完成飞行、计分与结算
+            int lastPoints = 301;
+            int lastThrows = 0;
+            int aimingWait = 0;
+            for (int tick = 0; tick < 6000 && Game1.currentMinigame is Darts darts; tick++)
+            {
+                lastPoints = darts.points;
+                lastThrows = darts.throwsCount;
+                if (darts.currentGameState == Darts.GameState.Aiming && darts.dartCount > 0 && darts.points > 0)
+                {
+                    var target = ChooseDartsTarget(darts.points);
+                    Vector2 aim = DartsAimPosition(target.baseNumber, target.multiplier, darts.dartBoardCenter);
+                    darts.aimPosition = aim;
+                    aimingWait++;
+                    if (aimingWait >= 12)
+                    {
+                        darts.chargeTime = 0f;
+                        darts.dartCount--;
+                        darts.throwsCount++;
+                        darts.FireDart(0f);
+                        aimingWait = 0;
+                    }
+                }
+                else
+                {
+                    aimingWait = 0;
+                }
+                yield return null;
+            }
+
+            if (Game1.currentMinigame is Darts stuck)
+            {
+                stuck.QuitGame();
+                yield return ActionResult.Fail($"投飞镖小游戏超时未结算（剩余 {stuck.points} 分，已退出）");
+                yield break;
+            }
+
+            // 等海盗的胜负对话框弹出并点完（金核桃在对话结束后的 Game1.afterDialogues 才掉落）
+            for (int w = 0; w < 45 && Game1.activeClickableMenu is not DialogueBox; w++)
+                yield return null;
+            for (int k = 0; k < 6 && Game1.activeClickableMenu is DialogueBox { isQuestion: false }; k++)
+                foreach (var s in Dialogue(null))
+                    if (s is not ActionResult)
+                        yield return s;
+
+            bool won = lastPoints == 0;
+            if (!won)
+            {
+                yield return ActionResult.Fail($"本局投飞镖未能在剩余镖数内归零（结束时剩 {lastPoints} 分，共投 {lastThrows} 镖），可再调 darts_game 重开一局");
+                yield break;
+            }
+
+            // 捡起掉落的金核桃（原版掉在 (1984, 512) 即图块 (31, 8)）
+            foreach (var s in WaitTicks(45))
+                yield return s;
+            var pickupNotes = new List<string>();
+            if (Loc is IslandSouthEastCave)
+            {
+                foreach (var s in CollectDebris(new Rectangle(27, 5, 9, 8), pickupNotes, 90))
+                    yield return s;
+            }
+
+            int nutsDroppedAfter = Player.team.GetDroppedLimitedNutCount("Darts");
+            int gotWalnuts = Game1.netWorldState.Value.GoldenWalnuts - walnutsBefore;
+            bool gotNewPrize = nutsDroppedAfter > nutsDroppedBefore || gotWalnuts > 0;
+            string perfect = lastThrows <= 6 ? "（完美通关！）" : "";
+            string nutInfo = gotNewPrize
+                ? $"拿到 {Math.Max(gotWalnuts, 1)} 颗金核桃（海盗湾飞镖奖励进度 {nutsDroppedAfter}/3，现有 {Game1.netWorldState.Value.GoldenWalnuts} 个"
+                  + (nutsDroppedAfter < 3 ? "；可再调 darts_game 拿剩下的奖励" : "，已全部拿齐") + "）"
+                : $"海盗湾飞镖的 3 颗金核桃奖励已全部拿过（当前进度 {nutsDroppedAfter}/3）";
+            yield return ActionResult.Success($"赢了海盗湾投飞镖小游戏！共投 {lastThrows} 镖将 301 分精准归零{perfect}，{nutInfo}");
         }
     }
 }

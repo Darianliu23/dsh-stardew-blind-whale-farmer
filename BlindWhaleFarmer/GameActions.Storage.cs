@@ -11,6 +11,232 @@ namespace BlindWhaleFarmer
 {
     internal sealed partial class GameActions
     {
+        // ───────────────────────── 大箱子原地升级 ─────────────────────────
+
+        internal const string WoodChestId = "(BC)130";
+        internal const string StoneChestId = "(BC)232";
+        internal const string BigWoodChestId = "(BC)BigChest";
+        internal const string BigStoneChestId = "(BC)BigStoneChest";
+
+        internal static bool IsBigChestId(string qualifiedId)
+            => qualifiedId is BigWoodChestId or BigStoneChestId;
+
+        internal static bool IsBigChestItem(Item item)
+            => item != null && IsBigChestId(item.QualifiedItemId);
+
+        internal static bool IsUpgradableNormalChestId(string qualifiedId)
+            => qualifiedId is WoodChestId or StoneChestId;
+
+        internal static string FormatChestTypeLabel(string qualifiedId, Chest.SpecialChestTypes specialType, int capacity, bool isFridge)
+        {
+            if (isFridge)
+                return "冰箱";
+            if (qualifiedId == BigWoodChestId)
+                return $"大箱子（{capacity} 格）";
+            if (qualifiedId == BigStoneChestId)
+                return $"大石箱（{capacity} 格）";
+            if (specialType == Chest.SpecialChestTypes.BigChest)
+                return $"大箱子（{capacity} 格）";
+            if (specialType == Chest.SpecialChestTypes.JunimoChest)
+                return $"祝尼魔箱（{capacity} 格）";
+            if (specialType == Chest.SpecialChestTypes.MiniShippingBin)
+                return $"迷你出货箱（{capacity} 格）";
+            if (specialType == Chest.SpecialChestTypes.AutoLoader)
+                return $"加料器（{capacity} 格）";
+            if (qualifiedId == WoodChestId && specialType == Chest.SpecialChestTypes.None)
+                return $"普通箱子（{capacity} 格，可用大箱子升级）";
+            if (qualifiedId == StoneChestId && specialType == Chest.SpecialChestTypes.None)
+                return $"石箱（{capacity} 格，可用大石箱升级）";
+            return $"箱子（{capacity} 格）";
+        }
+
+        internal static string ChestTypeLabel(Chest chest, bool isFridge = false)
+            => FormatChestTypeLabel(chest.QualifiedItemId, chest.SpecialChestType, chest.GetActualCapacity(), isFridge || chest.fridge.Value);
+
+        internal static string FormatChestShortKind(Chest chest, bool isFridge = false)
+        {
+            if (isFridge || chest.fridge.Value)
+                return " 冰箱";
+            return chest.QualifiedItemId switch
+            {
+                BigWoodChestId => " 大箱子",
+                BigStoneChestId => " 大石箱",
+                WoodChestId when chest.SpecialChestType == Chest.SpecialChestTypes.None => " 普通箱子",
+                StoneChestId when chest.SpecialChestType == Chest.SpecialChestTypes.None => " 石箱",
+                _ => chest.SpecialChestType switch
+                {
+                    Chest.SpecialChestTypes.BigChest => " 大箱子",
+                    Chest.SpecialChestTypes.JunimoChest => " 祝尼魔箱",
+                    Chest.SpecialChestTypes.MiniShippingBin => " 迷你出货箱",
+                    _ => ""
+                }
+            };
+        }
+
+        internal static string FormatStorageChestSummary(IEnumerable<string> typeLabels)
+        {
+            var counts = typeLabels.GroupBy(l => l).Select(g => g.Count() == 1 ? g.Key : $"{g.Key}×{g.Count()}").ToList();
+            return counts.Count == 0 ? "" : $"（{string.Join("、", counts)}）";
+        }
+
+        /// <summary>
+        /// 校验大箱子原地升级目标箱子是否合法。合法返回 null，否则返回给 AI 看的明确原因。
+        /// 规则：木箱 (BC)130 只能用大箱子 (BC)BigChest 升级；石箱 (BC)232 只能用大石箱 (BC)BigStoneChest 升级；
+        /// 已是大箱子或特殊箱子（冰箱、祝尼魔箱、迷你出货箱、加料器、礼物箱等）均拒绝。
+        /// </summary>
+        internal static string ChestUpgradeProblem(
+            string bigChestId,
+            string targetId,
+            bool targetPlayerChest,
+            bool targetGiftbox,
+            bool targetFridge,
+            Chest.SpecialChestTypes targetSpecialType,
+            string targetName)
+        {
+            if (!IsBigChestId(bigChestId))
+                return "背包里选中的物品不是大箱子（需要大箱子或大石箱）";
+            string label = string.IsNullOrWhiteSpace(targetName) ? "该箱子" : targetName;
+            if (targetFridge)
+                return $"{label}是冰箱（特殊箱子），不能用大箱子原地升级（只能升级普通木箱或石箱）";
+            if (!targetPlayerChest || targetGiftbox
+                || targetSpecialType is Chest.SpecialChestTypes.MiniShippingBin
+                    or Chest.SpecialChestTypes.JunimoChest
+                    or Chest.SpecialChestTypes.AutoLoader
+                    or Chest.SpecialChestTypes.Enricher)
+                return $"{label}是特殊箱子，不能用大箱子原地升级（只能升级普通木箱或石箱）";
+            if (targetSpecialType == Chest.SpecialChestTypes.BigChest || IsBigChestId(targetId))
+                return $"{label}已经是大箱子（70 格），不需要再升级";
+            if (targetId == WoodChestId)
+                return bigChestId == BigWoodChestId
+                    ? null
+                    : "木箱和石箱类型配不上：目标是普通木箱，只能用大箱子升级，不能用大石箱";
+            if (targetId == StoneChestId)
+                return bigChestId == BigStoneChestId
+                    ? null
+                    : "木箱和石箱类型配不上：目标是石箱，只能用大石箱升级，不能用大箱子";
+            return $"{label}是特殊箱子，不能用大箱子原地升级（只能升级普通木箱或石箱）";
+        }
+
+        internal static string FormatBigChestUpgradeHint(bool hasBigWood, bool hasBigStone, int woodChests, int stoneChests)
+        {
+            bool canWood = hasBigWood && woodChests > 0;
+            bool canStone = hasBigStone && stoneChests > 0;
+            if (!canWood && !canStone)
+                return null;
+            string what = canWood && canStone ? "大箱子/大石箱" : canWood ? "大箱子" : "大石箱";
+            string target = canWood && canStone ? "对应的普通箱子/石箱" : canWood ? "普通箱子" : "石箱";
+            return $"提示：背包里有{what}，可用 place_item 传已有{target}的 x,y 原地升级（36→70 格，东西和颜色自动保留不用搬），也可另放空位。";
+        }
+
+        internal static string BigChestUpgradeHint()
+        {
+            bool hasBigWood = false, hasBigStone = false;
+            foreach (var item in Player.Items)
+            {
+                if (item == null) continue;
+                if (item.QualifiedItemId == BigWoodChestId) hasBigWood = true;
+                else if (item.QualifiedItemId == BigStoneChestId) hasBigStone = true;
+            }
+            if (!hasBigWood && !hasBigStone)
+                return null;
+            int woodChests = 0, stoneChests = 0;
+            foreach (var (loc, _, chest) in AllChests())
+            {
+                if (chest.fridge.Value || chest == loc.GetFridge() || !chest.playerChest.Value || chest.giftbox.Value || chest.SpecialChestType != Chest.SpecialChestTypes.None)
+                    continue;
+                if (chest.QualifiedItemId == WoodChestId) woodChests++;
+                else if (chest.QualifiedItemId == StoneChestId) stoneChests++;
+            }
+            return FormatBigChestUpgradeHint(hasBigWood, hasBigStone, woodChests, stoneChests);
+        }
+
+        /// <summary>
+        /// 用大箱子原地升级指定格子的普通箱子（走过去、调用原版 performObjectDropInAction 替换、扣掉手上的大箱子）。
+        /// </summary>
+        private IEnumerable<object> UpgradeChestAt(int itemIdx, int x, int y)
+        {
+            var loc = Loc;
+            var target = new Point(x, y);
+            var v = new Vector2(x, y);
+            var selected = Player.Items[itemIdx];
+
+            // 先检查冰箱、收纳家具（走过去之前直接拒，不白跑）
+            var fridge = loc.GetFridge();
+            if (fridge != null && loc.GetFridgePosition() is Point fp && (fp == target || (fp.X == x && fp.Y - 1 == y)))
+            {
+                yield return ActionResult.Fail($"({x},{y}) 是冰箱（特殊箱子），不能用大箱子原地升级（只能升级普通木箱或石箱）");
+                yield break;
+            }
+            var storageFurn = loc.furniture.FirstOrDefault(f => f is StorageFurniture && f.GetBoundingBox().Contains(x * 64 + 32, y * 64 + 32));
+            if (storageFurn != null)
+            {
+                yield return ActionResult.Fail($"({x},{y}) 是{storageFurn.DisplayName}（收纳箱/家具，特殊容器），不能用大箱子原地升级（只能升级普通木箱或石箱）");
+                yield break;
+            }
+            if (!loc.Objects.TryGetValue(v, out var obj) || obj is not Chest targetChest)
+            {
+                yield return ActionResult.Fail($"({x},{y}) 没有可升级的箱子");
+                yield break;
+            }
+            if (ChestUpgradeProblem(selected.QualifiedItemId, targetChest.QualifiedItemId, targetChest.playerChest.Value,
+                targetChest.giftbox.Value, targetChest.fridge.Value, targetChest.SpecialChestType, targetChest.DisplayName) is string problem)
+            {
+                yield return ActionResult.Fail($"不能升级 ({x},{y})：{problem}");
+                yield break;
+            }
+
+            var o = new Outcome();
+            foreach (var s in GoAdjacent(target, o))
+                yield return s;
+            if (!o.Ok)
+            {
+                yield return ActionResult.Fail(o.Message);
+                yield break;
+            }
+
+            // 到场后再复核一次背包和目标箱子
+            int curIdx = Player.Items.IndexOf(selected);
+            if (curIdx < 0)
+            {
+                yield return ActionResult.Fail("到场后背包里没有大箱子了");
+                yield break;
+            }
+            if (Loc != loc || !loc.Objects.TryGetValue(v, out var nowObj) || nowObj is not Chest nowChest)
+            {
+                yield return ActionResult.Fail($"到场后 ({x},{y}) 的箱子不见了");
+                yield break;
+            }
+            if (ChestUpgradeProblem(selected.QualifiedItemId, nowChest.QualifiedItemId, nowChest.playerChest.Value,
+                nowChest.giftbox.Value, nowChest.fridge.Value, nowChest.SpecialChestType, nowChest.DisplayName) is string problemNow)
+            {
+                yield return ActionResult.Fail($"到场后不能升级 ({x},{y})：{problemNow}");
+                yield break;
+            }
+
+            string oldName = nowChest.DisplayName;
+            Player.CurrentToolIndex = curIdx;
+            var activeItem = Player.Items[curIdx];
+            bool ok = nowChest.performObjectDropInAction(activeItem, probe: false, Player, returnFalseIfItemConsumed: true);
+            if (!ok)
+            {
+                yield return ActionResult.Fail($"未能原地升级 ({x},{y}) 的{oldName}（可能正被占用或不支持替换），原箱子和里面的物品未改动");
+                yield break;
+            }
+            Player.reduceActiveItemByOne();
+            foreach (var s in WaitTicks(15))
+                yield return s;
+
+            if (loc.Objects.TryGetValue(v, out var afterObj) && afterObj is Chest afterChest)
+            {
+                int itemSlots = afterChest.GetItemsForPlayer().Count(i => i != null);
+                yield return ActionResult.Success($"已将 ({x},{y}) 的{oldName}原地升级为{afterChest.DisplayName}（容量 {afterChest.GetActualCapacity()} 格，原有 {itemSlots} 格物品和颜色已保留，旧箱子已退回）");
+            }
+            else
+            {
+                yield return ActionResult.Success($"已将 ({x},{y}) 的{oldName}原地升级为{activeItem.DisplayName}");
+            }
+        }
+
         // ───────────────────────── 储藏区 ─────────────────────────
 
         /// <summary>同地图的箱子沿横竖和斜角两格以内相连，连成一片就算一组。</summary>
@@ -154,7 +380,8 @@ namespace BlindWhaleFarmer
                     int free = inventories.Sum(c => Math.Max(0, c.capacity - c.items.Count(i => i != null)));
                     var first = group[0];
                     string range = $"({box.Left},{box.Top})-({box.Right - 1},{box.Bottom - 1})";
-                    string head = $"{loc.NameOrUniqueName} {range}，near=\"{first.X},{first.Y}\"，{members.Count} 个箱子，空 {free}/{capacity} 格";
+                    string chestSummary = FormatStorageChestSummary(members.Select(c => ChestTypeLabel(c)));
+                    string head = $"{loc.NameOrUniqueName} {range}，near=\"{first.X},{first.Y}\"，{members.Count} 个箱子{chestSummary}，空 {free}/{capacity} 格";
                     if (canPlace == null)
                     {
                         lines.Add(head + "。算不出进图位置，到了当地再查可扩空位");

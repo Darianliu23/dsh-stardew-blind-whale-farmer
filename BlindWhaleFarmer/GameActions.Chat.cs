@@ -436,6 +436,109 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success($"跟了 {seconds} 秒" + (last != null ? $"，{last.Name} 在 {last.currentLocation?.NameOrUniqueName} ({last.TilePoint.X},{last.TilePoint.Y})" : ""));
         }
 
+        internal static bool ProactiveGiftEnabled = true;
+        internal static float ProactiveGiftChance = 0.5f;
+        internal static int ProactiveGiftCooldownDays = 1;
+
+        private static readonly Random ProactiveGiftRng = new();
+        private static int lastProactiveGiftDay = int.MinValue;
+        private static int lastProactiveGiftRollDay = int.MinValue;
+        private static bool proactiveGiftActiveToday;
+
+        internal static void ResetProactiveGiftState()
+        {
+            lastProactiveGiftDay = int.MinValue;
+            lastProactiveGiftRollDay = int.MinValue;
+            proactiveGiftActiveToday = false;
+        }
+
+        internal static void RecordProactiveGiftSent(int todayTotalDays)
+        {
+            lastProactiveGiftDay = todayTotalDays;
+            proactiveGiftActiveToday = false;
+        }
+
+        /// <summary>判断是否应在联机状态下提示 AI 主动给玩家送一件小礼物。单机、关闭开关、无在线玩家、冷却期内都不触发。</summary>
+        internal static bool ShouldPromptProactiveGift(
+            bool enabled, bool isMultiplayer, bool hasOnlineOtherPlayer, bool safe,
+            float chance, int cooldownDays, int todayTotalDays, int lastGiftDay,
+            int lastRolledDay, bool alreadyActiveToday, double randomRoll)
+        {
+            if (!enabled || !isMultiplayer || !hasOnlineOtherPlayer || !safe)
+                return false;
+            int cd = Math.Clamp(cooldownDays, 1, 28);
+            if (lastGiftDay != int.MinValue && todayTotalDays - lastGiftDay < cd)
+                return false;
+            if (lastRolledDay == todayTotalDays)
+                return alreadyActiveToday;
+            float p = Math.Clamp(chance, 0f, 1f);
+            return p > 0f && randomRoll < p;
+        }
+
+        /// <summary>给背包物品做主动送礼优先级打分：料理 > 花 > 鱼 > 采集/水果/工匠品 > 其他可丢物品；不可丢或保留物返回 0。</summary>
+        internal static int ScoreProactiveGiftItem(bool canDrop, bool isReserved, int category)
+        {
+            if (!canDrop || isReserved)
+                return 0;
+            return category switch
+            {
+                StardewValley.Object.CookingCategory => 5,
+                StardewValley.Object.flowersCategory => 4,
+                StardewValley.Object.FishCategory => 3,
+                StardewValley.Object.GreensCategory or StardewValley.Object.FruitsCategory or StardewValley.Object.artisanGoodsCategory => 2,
+                _ => 1,
+            };
+        }
+
+        /// <summary>联机且有在线真人玩家时，按概率和冷却在 get_state 中给出主动送礼提示。</summary>
+        public static string ProactiveGiftHint()
+        {
+            if (!ProactiveGiftEnabled || !Context.IsMultiplayer || !IsSafeForSocialBehavior(Loc))
+                return null;
+            var onlineOthers = Game1.getOnlineFarmers()
+                .Where(f => f != null && f != Player && f.currentLocation != null && !f.currentLocation.IsTemporary)
+                .ToList();
+            if (onlineOthers.Count == 0)
+                return null;
+
+            int today = Game1.Date.TotalDays;
+            bool should = ShouldPromptProactiveGift(
+                ProactiveGiftEnabled, true, true, true,
+                ProactiveGiftChance, ProactiveGiftCooldownDays,
+                today, lastProactiveGiftDay, lastProactiveGiftRollDay, proactiveGiftActiveToday,
+                lastProactiveGiftRollDay == today ? 0.0 : ProactiveGiftRng.NextDouble());
+            if (lastProactiveGiftRollDay != today)
+            {
+                lastProactiveGiftRollDay = today;
+                proactiveGiftActiveToday = should;
+            }
+            if (!should)
+                return null;
+
+            // 优先选同一地图或最近的在线玩家
+            var target = onlineOthers
+                .OrderBy(f => f.currentLocation?.NameOrUniqueName == Loc?.NameOrUniqueName ? 0 : 1)
+                .ThenBy(f => Util.Manhattan(Player.TilePoint, f.TilePoint))
+                .First();
+            string targetName = string.IsNullOrWhiteSpace(target.Name) ? "小伙伴" : target.Name;
+
+            var reservedCheck = ReservedChecker();
+            var picks = Player.Items
+                .Where(it => it != null)
+                .Select(it => (item: it, score: ScoreProactiveGiftItem(it.canBeDropped(), reservedCheck(it) != null, it.Category)))
+                .Where(x => x.score >= 2)
+                .OrderByDescending(x => x.score)
+                .Select(x => x.item.DisplayName)
+                .Distinct()
+                .Take(4)
+                .ToList();
+            string suggest = picks.Count > 0 ? $"（背包里像 {string.Join("、", picks)} 就不错）" : "";
+            string chatStep = AllowChat
+                ? $"先用 say 告诉 {targetName} 站着别动，再用 drop_item item=… count=1 to={targetName} message=\"一句介绍\" emote=heart 走过去送给对方并发表情"
+                : $"用 drop_item item=… count=1 to={targetName} emote=heart 走过去送给对方并发表情";
+            return $"【主动送礼灵感】有空可以挑一件有心意的小礼物送给 {targetName}：优先自己做的菜、捡的小花、钓的鱼{suggest}，别送【留着】的、交任务用的东西或工具。{chatStep}。";
+        }
+
         private static readonly Random IdleFollowRng = new();
 
         internal static bool ShouldStartIdleFollow(
@@ -464,8 +567,7 @@ namespace BlindWhaleFarmer
                 .Where(f => f != null && f != Player
                     && f.currentLocation != null
                     && !f.currentLocation.IsTemporary
-                    && f.currentLocation is not MineShaft
-                    && f.currentLocation is not VolcanoDungeon)
+                    && !ModSupport.IsCombatZone(f.currentLocation))
                 .ToList();
             if (candidates.Count == 0)
                 yield break;
@@ -488,7 +590,7 @@ namespace BlindWhaleFarmer
 
                 var where = target.currentLocation;
                 string name = where?.NameOrUniqueName;
-                if (name == null || where.IsTemporary || where is MineShaft || where is VolcanoDungeon || Game1.isFestival())
+                if (name == null || where.IsTemporary || ModSupport.IsCombatZone(where) || Game1.isFestival())
                     yield break;
 
                 if (name != Loc.NameOrUniqueName)

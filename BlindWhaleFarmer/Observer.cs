@@ -183,6 +183,15 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(panHint);
                 if (GameActions.BooksellerHint() is string books)
                     sb.AppendLine(books);
+                if (loc is not Forest && Game1.getLocationFromName("Forest") is Forest cartForest)
+                {
+                    bool cartDay = cartForest.travelingMerchantDay || cartForest.ShouldTravelingMerchantVisitToday();
+                    var cartTile = cartForest.GetTravelingMerchantCartTile();
+                    if (FormatTravelingCartHint(cartDay, Game1.timeOfDay, inForest: false, new Point(cartTile.X + 4, cartTile.Y + 1)) is string cartHint)
+                        sb.AppendLine(cartHint);
+                }
+                if (HomeGiftboxHint(player, loc) is string giftHint)
+                    sb.AppendLine(giftHint);
                 if (GameActions.UnreadItemsHint() is string unread)
                     sb.AppendLine(unread);
                 if (GameActions.IslandHint() is string island)
@@ -191,6 +200,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(parrots);
                 if (Once("farmtype", $"农场类型：{FarmTypeName()}（get_guide 专题“农场类型”有这种地图的要点）") is string ft && !ft.StartsWith("（"))
                     sb.AppendLine(ft);
+                if (ModSupport.InstalledModsNote() is string modNote && Once("mods", modNote) is string mn && !mn.StartsWith("（"))
+                    sb.AppendLine(mn);
                 if (GameActions.SpendingAdvice() is string spend)
                     sb.AppendLine(Once("spend", spend) is string sp && sp.StartsWith("（") ? "【花钱建议】和上次一样，省略" : spend);
             });
@@ -223,6 +234,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(romance);
                 if (GameActions.OtherPlayersLine() is string others)
                     sb.AppendLine(others);
+                if (GameActions.ProactiveGiftHint() is string giftPrompt)
+                    sb.AppendLine(giftPrompt);
                 if (GameActions.TakeChat() is string chat)
                     sb.AppendLine(chat);
             });
@@ -276,6 +289,13 @@ namespace BlindWhaleFarmer
                     sb.AppendLine("附近有水，可以用 fish 工具钓鱼（会自动找岸边）");
             });
             Safe(sb, () => AppendMine(sb, loc, pt));
+            if (loc is Forest curForest)
+            {
+                bool cartDay = curForest.travelingMerchantDay || curForest.ShouldTravelingMerchantVisitToday();
+                var cartTile = curForest.GetTravelingMerchantCartTile();
+                if (FormatTravelingCartHint(cartDay, Game1.timeOfDay, inForest: true, new Point(cartTile.X + 4, cartTile.Y + 1)) is string forestCart)
+                    sb.AppendLine(forestCart);
+            }
             if (loc is MermaidHouse)
                 sb.AppendLine("美人鱼表演：进来几秒后自动开演，整场一分多钟（现实时间）。用 mermaid_show 等它演完并按顺序敲贝壳拿珍珠，别进来转一圈就出去（出去再进来要重新看）");
             if (loc is StardewValley.Locations.IslandWestCave1 cave)
@@ -313,6 +333,13 @@ namespace BlindWhaleFarmer
                         .ToList();
                     sb.AppendLine(GameActions.FormatMermaidPuzzleStatus(se.mermaidPuzzleFinished.Value, se.MermaidIsHere(), flutes));
                 }
+                if (loc is StardewValley.Locations.IslandSouthEastCave cave)
+                {
+                    int won = Game1.player.team.GetDroppedLimitedNutCount("Darts");
+                    sb.AppendLine(GameActions.FormatPirateDartsStatus(
+                        StardewValley.Locations.IslandSouthEastCave.isPirateNight(),
+                        won, Game1.dayOfMonth, Game1.timeOfDay, Game1.IsRainingHere(cave)));
+                }
             });
 
             sb.AppendLine();
@@ -345,6 +372,8 @@ namespace BlindWhaleFarmer
             {
                 if (GameActions.StorageSpreadHint() is string storage)
                     sb.AppendLine(storage);
+                if (GameActions.BigChestUpgradeHint() is string upgrade)
+                    sb.AppendLine(upgrade);
             });
 
             Safe(sb, () =>
@@ -382,6 +411,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(Once("fields", fields));
                 if (loc is Farm && FarmClutterHint(loc) is string clutter)
                     sb.AppendLine(clutter);
+                if (loc is Farm && GameActions.SprinklerClutterHint(loc) is string sprClutter)
+                    sb.AppendLine(sprClutter);
                 if (loc is not Farm)
                 {
                     CountCrops(Game1.getFarm(), out int needWater, out int ready, out int total);
@@ -446,14 +477,24 @@ namespace BlindWhaleFarmer
             if (Knowledge.CommunityCenterUnavailable() != null)
                 return;
             var hints = new List<string>();
+            var vaultHints = new List<string>();
             foreach (var b in Knowledge.Bundles().Where(b => !b.Complete && Knowledge.IsBundleAvailable(b)))
             {
+                int cost = Knowledge.VaultCost(b);
+                if (cost > 0)
+                {
+                    if (Game1.player.Money >= cost)
+                        vaultHints.Add($"{b.DisplayName}({cost}g)");
+                    continue;
+                }
                 var have = Knowledge.InventoryMatches(b);
                 if (have.Count > 0)
                     hints.Add($"{string.Join("、", have)}→{b.DisplayName}");
             }
             if (hints.Count > 0)
                 sb.AppendLine($"可以交给社区中心收集包：{string.Join("；", hints.Take(8))}（用 donate_bundles；bundle_info 看还缺什么）");
+            if (vaultHints.Count > 0)
+                sb.AppendLine($"金库收集包钱够交：{string.Join("、", vaultHints)}（用 donate_bundles pay_vault=true 交钱并领奖励）");
         }
 
         /// <summary>动物：总体待办（任何地点都显示）+ 当前地点里每只动物的状态。</summary>
@@ -597,6 +638,58 @@ namespace BlindWhaleFarmer
         internal static string CabinLine(int x, int y, Point door, int radius) =>
             $"你的小屋：农场 ({x},{y})（左上角），门口 ({door.X},{door.Y})。联机时你的田算门口 {radius} 格以内：till_area、plant_seeds 不给坐标就开在、种在这一片，不碰主机和别人的田（要用全农场的田传 shared=true）";
 
+        /// <summary>旅行货车（猪车）的可见提示：周五/周日在森林营业至 20:00。纯逻辑，便于单测。</summary>
+        internal static string FormatTravelingCartHint(bool isCartDay, int timeOfDay, bool inForest, Point counterTile)
+        {
+            if (!isCartDay)
+                return null;
+            if (timeOfDay < 2000)
+                return inForest
+                    ? $"旅行货车（猪车）正在营业：柜台在 ({counterTile.X},{counterTile.Y})（20:00 收摊），用 open_shop 打开商店（或 interact x={counterTile.X} y={counterTile.Y}）"
+                    : "旅行货车（猪车）今天在森林 Forest 营业（20:00 收摊），去 Forest 后用 open_shop 逛货车";
+            return inForest ? "旅行货车（猪车）今天来过，20:00 已经收摊了" : null;
+        }
+
+        /// <summary>自己家（主机 FarmHouse、农场工人自己的 Cabin）里未拆开的礼物盒提示。纯逻辑，便于单测。</summary>
+        internal static string FormatHomeGiftboxHint(bool isInHome, string homeName, Point tile, string itemsSummary)
+        {
+            string inside = string.IsNullOrEmpty(itemsSummary) ? "" : $"（里面有：{itemsSummary}）";
+            return isInHome
+                ? $"屋里 ({tile.X},{tile.Y}) 有一个未打开的礼物盒{inside}，用 interact x={tile.X} y={tile.Y} 打开"
+                : $"你家里（{homeName}）的 ({tile.X},{tile.Y}) 还有一个未打开的礼物盒{inside}，先 travel_to 回家（{homeName}）再 interact x={tile.X} y={tile.Y} 打开";
+        }
+
+        /// <summary>地图/附近物体里礼物盒的显示文字与操作提示（区分自己家与别人的开局礼物盒）。纯逻辑，便于单测。</summary>
+        internal static (string name, string hint) FormatGiftboxFeature(bool isStarterGift, bool canOpen, string ownerName, string myHomeName, string itemsSummary)
+        {
+            string inside = string.IsNullOrEmpty(itemsSummary) ? "" : $"（里面有：{itemsSummary}）";
+            if (isStarterGift && !canOpen)
+            {
+                string who = string.IsNullOrEmpty(ownerName) ? "其他玩家" : ownerName;
+                return ($"别人的开局礼物盒{inside}（{who} 的，你打不开；你自己的在 {myHomeName} 里）", "");
+            }
+            return ($"礼物盒{inside}", "interact 打开");
+        }
+
+        private static string HomeGiftboxHint(Farmer player, GameLocation currentLoc)
+        {
+            var home = Utility.getHomeOfFarmer(player);
+            if (home == null)
+                return null;
+            foreach (var pair in home.Objects.Pairs)
+            {
+                if (pair.Value is not Chest { giftbox.Value: true } gift)
+                    continue;
+                string items = string.Join("、", gift.Items.Where(i => i != null).Select(i => $"{i.DisplayName}x{i.Stack}"));
+                return FormatHomeGiftboxHint(
+                    currentLoc == home || currentLoc?.NameOrUniqueName == home.NameOrUniqueName,
+                    home.NameOrUniqueName,
+                    new Point((int)pair.Key.X, (int)pair.Key.Y),
+                    items);
+            }
+            return null;
+        }
+
         /// <summary>“今日：生日 艾米丽（送最爱的礼物好感 8 倍）；节日 无”。天气和运气在上面一行已经写了，这里不重复。</summary>
         internal static string TodayLine(IReadOnlyCollection<string> birthdays, string festival)
         {
@@ -651,14 +744,17 @@ namespace BlindWhaleFarmer
 
         /// <summary>
         /// 其他地点的村民现在在哪（按地点分组，一行一个地点），方便规划去认识人、找人送礼。
-        /// 只列能社交的村民；地点用英文内部名，可以直接 travel_to。interact / give_gift 传名字会自动找过去。
+        /// 只列能社交、在可进入地图上的村民（跳过 SVE 的 *_WarpRoom 后台房间与地图外影子 NPC）；
+        /// 用 Once 去重，避免 50+ 模组村民在没人移动时每次 get_state 都重复刷屏占 token。
         /// </summary>
-        private static void AppendVillagerWhereabouts(StringBuilder sb, GameLocation here)
+        private void AppendVillagerWhereabouts(StringBuilder sb, GameLocation here)
         {
             var byLocation = new Dictionary<string, List<string>>();
             Utility.ForEachVillager(n =>
             {
-                if (n.CanSocialize && n.currentLocation != null && n.currentLocation != here && !n.IsInvisible)
+                if (n.CanSocialize && n.currentLocation != null && n.currentLocation != here && !n.IsInvisible
+                    && n.TilePoint.X >= 0 && n.TilePoint.Y >= 0
+                    && !ModSupport.IsWarpRoom(n.currentLocation.NameOrUniqueName))
                 {
                     string mark = "";
                     if (!Game1.player.friendshipData.TryGetValue(n.Name, out var f))
@@ -676,9 +772,12 @@ namespace BlindWhaleFarmer
             });
             if (byLocation.Count == 0)
                 return;
-            sb.AppendLine("其他地点的村民（✓=今天聊过，未认识的标出来了；interact/give_gift 传名字会自动走过去）：");
-            foreach (var (location, names) in byLocation.OrderByDescending(kv => kv.Value.Count))
-                sb.AppendLine($"  {location}：{string.Join("、", names)}");
+            var body = new StringBuilder();
+            body.AppendLine("其他地点的村民（✓=今天聊过，未认识的标出来了；interact/give_gift 传名字会自动走过去）：");
+            foreach (var (location, names) in byLocation.OrderByDescending(kv => kv.Value.Count).ThenBy(kv => kv.Key, StringComparer.Ordinal))
+                body.AppendLine($"  {location}：{string.Join("、", names)}");
+            string shown = Once("villagers", body.ToString().TrimEnd());
+            sb.AppendLine(shown.StartsWith("（") ? "其他地点的村民：" + shown : shown);
         }
 
         private void AppendCharacters(StringBuilder sb, GameLocation loc, Point pt)
@@ -782,6 +881,12 @@ namespace BlindWhaleFarmer
             return Math.Max(0, days - crop.dayOfCurrentPhase.Value);
         }
 
+        internal static string FormatFruitTreeLabel(string fruitName, int fruitCount)
+        {
+            string baseName = string.IsNullOrEmpty(fruitName) ? "果树" : fruitName + "树";
+            return fruitCount > 0 ? $"{baseName}（{fruitCount} 个果子）" : baseName;
+        }
+
         private void AppendCrops(StringBuilder sb, GameLocation loc, Point pt)
         {
             var needWater = new List<Point>();
@@ -789,9 +894,17 @@ namespace BlindWhaleFarmer
             var dead = new List<Point>();
             var emptyDirt = new List<Point>();
             var growing = new Dictionary<string, (int count, int minDays)>();
+            var fruitTreesReady = new List<Point>();
+            int readyFruits = 0;
 
             foreach (var pair in loc.terrainFeatures.Pairs)
             {
+                if (pair.Value is FruitTree ft && !ft.stump.Value && ft.growthStage.Value >= FruitTree.treeStage && ft.fruit.Count > 0)
+                {
+                    fruitTreesReady.Add(new Point((int)pair.Key.X, (int)pair.Key.Y));
+                    readyFruits += ft.fruit.Count;
+                    continue;
+                }
                 if (pair.Value is not HoeDirt hd)
                     continue;
                 var p = new Point((int)pair.Key.X, (int)pair.Key.Y);
@@ -819,7 +932,7 @@ namespace BlindWhaleFarmer
             }
 
             int total = ready.Count + growing.Values.Sum(g => g.count) + dead.Count;
-            if (total == 0 && emptyDirt.Count == 0)
+            if (total == 0 && emptyDirt.Count == 0 && fruitTreesReady.Count == 0)
             {
                 sb.AppendLine("无");
                 return;
@@ -827,6 +940,8 @@ namespace BlindWhaleFarmer
             Func<List<Point>, string> near = l => Util.Coords(l.OrderBy(p => Util.Manhattan(p, pt)), 30);
             if (ready.Count > 0)
                 sb.AppendLine($"可收获 {ready.Count} 株：{near(ready)}");
+            if (fruitTreesReady.Count > 0)
+                sb.AppendLine($"果树可收获 {fruitTreesReady.Count} 棵（共 {readyFruits} 个果子，harvest_crops 会一起收）：{near(fruitTreesReady)}");
             if (needWater.Count > 0)
                 sb.AppendLine($"需要浇水 {needWater.Count} 株：{near(needWater)}");
             foreach (var g in growing)
@@ -837,18 +952,38 @@ namespace BlindWhaleFarmer
                 sb.AppendLine($"空耕地 {emptyDirt.Count} 格（可播种）：{near(emptyDirt)}");
         }
 
-        /// <summary>农场地图类型（Farm.*_layout；7 是 1.6 的草原农场等数据定义的农场，看 GetFarmTypeID）。</summary>
-        public static string FarmTypeName() => Game1.whichFarm switch
+        /// <summary>农场地图类型（Farm.*_layout；7 是 1.6 的草原农场或模组自定义农场；标准农场槽位若被 SVE 农场替换则如实标注）。</summary>
+        public static string FarmTypeName()
         {
-            Farm.default_layout => "标准农场",
-            Farm.riverlands_layout => "河边农场（水多地少）",
-            Farm.forest_layout => "森林农场（有大树桩和采集品）",
-            Farm.mountains_layout => "山顶农场（有矿石）",
-            Farm.combat_layout => "荒野农场（晚上有怪）",
-            Farm.fourCorners_layout => "四角农场",
-            Farm.beach_layout => "海滩农场（沙地上洒水器不起作用）",
-            _ => Game1.GetFarmTypeID() == "MeadowlandsFarm" ? "草原农场（开局有鸡舍和两只鸡）" : Game1.GetFarmTypeID(),
-        };
+            if (Game1.whichFarm == Farm.default_layout && ModSupport.SveStandardFarmOverrideName() is string sveFarm)
+                return sveFarm;
+            return Game1.whichFarm switch
+            {
+                Farm.default_layout => "标准农场",
+                Farm.riverlands_layout => "河边农场（水多地少）",
+                Farm.forest_layout => "森林农场（有大树桩和采集品）",
+                Farm.mountains_layout => "山顶农场（有矿石）",
+                Farm.combat_layout => "荒野农场（晚上有怪）",
+                Farm.fourCorners_layout => "四角农场",
+                Farm.beach_layout => "海滩农场（沙地上洒水器不起作用）",
+                _ => FormatModFarmType(Game1.GetFarmTypeID()),
+            };
+        }
+
+        internal static string FormatModFarmType(string farmTypeId)
+        {
+            if (string.IsNullOrWhiteSpace(farmTypeId))
+                return "自定义农场";
+            if (farmTypeId.Equals("MeadowlandsFarm", StringComparison.OrdinalIgnoreCase))
+                return "草原农场（开局有鸡舍和两只鸡）";
+            if (farmTypeId.Contains("FrontierFarm", StringComparison.OrdinalIgnoreCase))
+                return $"边境农场（{farmTypeId}，SVE 农场）";
+            if (farmTypeId.Contains("GrandpasFarm", StringComparison.OrdinalIgnoreCase))
+                return $"爷爷的农场（{farmTypeId}，SVE 农场）";
+            if (farmTypeId.Contains("ImmersiveFarm2", StringComparison.OrdinalIgnoreCase))
+                return $"沉浸式农场2重制版（{farmTypeId}，SVE 超大农场）";
+            return farmTypeId;
+        }
 
         public static string ClumpName(ResourceClump rc) => rc.parentSheetIndex.Value switch
         {
@@ -904,9 +1039,17 @@ namespace BlindWhaleFarmer
                     return ('X', "蟹笼（等待中）", "");
                 }
                 if (o.readyForHarvest.Value && o.heldObject.Value != null)
-                    return ('&', $"{o.DisplayName}（产物：{o.heldObject.Value.DisplayName}）", "interact 收取");
+                    return ('&', $"{o.DisplayName}（产物：{o.heldObject.Value.DisplayName}）", "collect_machines 批量收，或 interact 收这台");
                 if (o is Chest { giftbox.Value: true } gift)
-                    return ('*', $"礼物箱（里面有：{string.Join("、", gift.Items.Where(i => i != null).Select(i => $"{i.DisplayName}x{i.Stack}"))}）", "interact 打开");
+                {
+                    string items = string.Join("、", gift.Items.Where(i => i != null).Select(i => $"{i.DisplayName}x{i.Stack}"));
+                    bool starter = gift.giftboxIsStarterGift.Value;
+                    bool isOtherStarter = starter && loc is FarmHouse fh && !fh.IsOwnedByCurrentPlayer;
+                    string ownerName = loc is FarmHouse fh2 ? (fh2.owner?.Name ?? "其他玩家") : null;
+                    string myHome = Utility.getHomeOfFarmer(Game1.player)?.NameOrUniqueName ?? "FarmHouse";
+                    var (gName, gHint) = FormatGiftboxFeature(starter, !isOtherStarter, ownerName, myHome, items);
+                    return ('*', gName, gHint);
+                }
                 if (o is Chest)
                     return ('X', o.DisplayName, "箱子");
                 if (o is StardewValley.Objects.ItemPedestal ped)
@@ -966,7 +1109,8 @@ namespace BlindWhaleFarmer
                                 fruitName = fd.DisplayName;
                         }
                         catch { }
-                        return ('F', string.IsNullOrEmpty(fruitName) ? "果树" : fruitName + "树", "");
+                        int fruitCount = ft.stump.Value ? 0 : ft.fruit.Count;
+                        return ('F', FormatFruitTreeLabel(fruitName, fruitCount), fruitCount > 0 ? "harvest_crops 可收获" : "");
                     case Grass:
                         return ('"', "草", "镰刀");
                     case Flooring:
@@ -1034,6 +1178,11 @@ namespace BlindWhaleFarmer
             {
                 var p = new Point((int)rc.Tile.X, (int)rc.Tile.Y);
                 Add(ClumpName(rc) + $"（{rc.width.Value}x{rc.height.Value}，坐标是左上角）", "", p);
+            }
+            if (loc is Forest nearForest && (nearForest.travelingMerchantDay || nearForest.ShouldTravelingMerchantVisitToday()) && Game1.timeOfDay < 2000)
+            {
+                var cart = nearForest.GetTravelingMerchantCartTile();
+                Add("旅行货车（猪车）", "open_shop 打开商店，或 interact", new Point(cart.X + 4, cart.Y + 1));
             }
             foreach (var b in loc.buildings)
             {
@@ -1136,6 +1285,14 @@ namespace BlindWhaleFarmer
                     continue;
                 overlay[npc.TilePoint] = npc is Monster ? 'M' : (npc is Pet || npc is Horse) ? 'p' : 'N';
             }
+            if (loc is Forest mapForest && (mapForest.travelingMerchantDay || mapForest.ShouldTravelingMerchantVisitToday()) && Game1.timeOfDay < 2000)
+            {
+                var cart = mapForest.GetTravelingMerchantCartTile();
+                for (int cx = cart.X; cx <= cart.X + 6; cx++)
+                    for (int cy = cart.Y; cy <= cart.Y + 1; cy++)
+                        overlay[new Point(cx, cy)] = 'B';
+                overlay[new Point(cart.X + 4, cart.Y + 1)] = 'N';
+            }
             overlay[pt] = '@';
 
             for (int y = pt.Y - ry; y <= pt.Y + ry; y++)
@@ -1218,6 +1375,11 @@ namespace BlindWhaleFarmer
             else if (Game1.eventUp && Game1.CurrentEvent != null)
                 sb.AppendLine($"正在播放剧情/节日事件{(Game1.CurrentEvent.skippable ? "（可以用 skip_event 跳过）" : "")}。剧情中出现对话时用 dialogue 推进。");
 
+            if (Game1.currentMinigame is StardewValley.Minigames.Darts darts)
+                sb.AppendLine($"正在玩海盗湾投飞镖小游戏（剩余 {darts.points} 分，剩余 {darts.dartCount} 支飞镖，状态 {darts.currentGameState}）：用 darts_game 自动投完，或 close_menu 退出。");
+            else if (Game1.currentMinigame != null)
+                sb.AppendLine($"正在运行小游戏（{Game1.currentMinigame.minigameId() ?? Game1.currentMinigame.GetType().Name}）：用 close_menu 退出。");
+
             var menu = Game1.activeClickableMenu;
             if (menu == null)
             {
@@ -1246,7 +1408,7 @@ namespace BlindWhaleFarmer
                     break;
 
                 case NamingMenu:
-                    sb.AppendLine("要起名字（孩子或者刚出生的动物）：用 set_name 传一个名字");
+                    sb.AppendLine(GameActions.FormatNamingMenuPrompt(GameActions.IsChildBirthNaming()));
                     break;
 
                 case GeodeMenu:
@@ -1262,7 +1424,10 @@ namespace BlindWhaleFarmer
                             continue;
                         string stock = info.Stock == int.MaxValue ? "" : $" 库存{info.Stock}";
                         string trade = info.TradeItem != null ? $" +{info.TradeItemCount ?? 1}个{Util.ObjectName(info.TradeItem)}" : "";
-                        sb.AppendLine($"  {i2}: {s.DisplayName} {info.Price}g{trade}{stock}");
+                        string bookTag = s is SObject bookObj
+                            ? GameActions.FormatShopBookTag(bookObj.Category, bookObj.ItemId, Game1.player.stats.Get(bookObj.ItemId) != 0)
+                            : "";
+                        sb.AppendLine($"  {i2}: {s.DisplayName} {info.Price}g{trade}{stock}{bookTag}");
                         if (++i2 >= 60)
                             break;
                     }
@@ -1293,8 +1458,12 @@ namespace BlindWhaleFarmer
                     sb.AppendLine("奖券机的界面。用 close_menu 关掉，再用 prize_machine 换奖品。");
                     break;
 
+                case JunimoNoteMenu jn when jn.whichArea == CommunityCenter.AREA_Vault:
+                    sb.AppendLine("社区中心金库（Vault）收集包界面（交钱的）。用 close_menu 关掉，再用 donate_bundles pay_vault=true 交钱并领奖励（可用 budget 限制最多花多少）。");
+                    break;
+
                 case JunimoNoteMenu:
-                    sb.AppendLine("收集包/浣熊需求界面。用 close_menu 关掉：社区中心用 bundle_info / donate_bundles，森林浣熊大树桩用 raccoon。");
+                    sb.AppendLine("收集包/浣熊需求界面。用 close_menu 关掉：社区中心用 bundle_info / donate_bundles（金库交钱传 pay_vault=true），森林浣熊大树桩用 raccoon。");
                     break;
 
                 case ShippingMenu:

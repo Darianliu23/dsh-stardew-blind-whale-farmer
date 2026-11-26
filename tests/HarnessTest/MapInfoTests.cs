@@ -738,6 +738,55 @@ partial class Program
         Check(mDone.Contains("已完成") && mRain.Contains("mermaid_puzzle") && mRain.Contains("(16,27)=200[第2档]") && mDry.Contains("没下雨"),
             "FormatMermaidPuzzleStatus 准确反映完成/雨天已有长笛块/晴天状态：" + mRain);
 
+        // darts_game 姜岛海盗湾投飞镖小游戏：目标选分、落点坐标与原版 GetPointsForAim 一致性
+        Check(schema.Any(t => t["function"]["name"].GetValue<string>() == "darts_game"), "schema 注册了 darts_game");
+        Check(Run0("darts_game", "{}").Contains("游戏世界未就绪"), "darts_game 通过参数校验");
+        var chooseDarts = tActions.GetMethod("ChooseDartsTarget", Any);
+        var dartsAim = tActions.GetMethod("DartsAimPosition", Any);
+        var dartsSectors = (int[])tActions.GetField("DartsSectors", Any).GetValue(null);
+        var boardCenter = new Microsoft.Xna.Framework.Vector2(160f, 160f);
+        int VanillaDartsScore(Microsoft.Xna.Framework.Vector2 aim)
+        {
+            var v = boardCenter - aim;
+            float dist = v.Length();
+            if (dist < 5f) return 50;
+            if (dist < 12f) return 25;
+            if (dist > 88f) return 0;
+            float deg = (float)(Math.Atan2(v.Y, v.X) * (180.0 / Math.PI)) - 81f;
+            if (deg < 0f) deg += 360f;
+            int sector = dartsSectors[(int)(deg / 18f)];
+            if (dist >= 46f && dist < 55f) return sector * 3;
+            if (dist >= 79f) return sector * 2;
+            return sector;
+        }
+        bool allDartsMatch = true;
+        for (int rem = 1; rem <= 301; rem++)
+        {
+            var (baseNum, mult, dartScore) = ((int, int, int))chooseDarts.Invoke(null, new object[] { rem });
+            var pos = (Microsoft.Xna.Framework.Vector2)dartsAim.Invoke(null, new object[] { baseNum, mult, boardCenter });
+            int actual = VanillaDartsScore(pos);
+            if (dartScore <= 0 || dartScore > rem || actual != dartScore)
+            {
+                allDartsMatch = false;
+                break;
+            }
+        }
+        Check(allDartsMatch, "ChooseDartsTarget 与 DartsAimPosition 对 1~301 分每档都精准命中且不爆分");
+        int simPoints = 301, simThrows = 0;
+        while (simPoints > 0 && simThrows < 10)
+        {
+            var (baseNum, mult, _) = ((int, int, int))chooseDarts.Invoke(null, new object[] { simPoints });
+            var pos = (Microsoft.Xna.Framework.Vector2)dartsAim.Invoke(null, new object[] { baseNum, mult, boardCenter });
+            simPoints -= VanillaDartsScore(pos);
+            simThrows++;
+        }
+        Check(simPoints == 0 && simThrows == 6, $"301 分模拟投飞镖 6 镖完美归零（实际 {simThrows} 镖，剩余 {simPoints} 分）");
+        var fmtDarts = tActions.GetMethod("FormatPirateDartsStatus", Any);
+        string dOpen = (string)fmtDarts.Invoke(null, new object[] { true, 1, 14, 2030, false });
+        string dClosed = (string)fmtDarts.Invoke(null, new object[] { false, 3, 15, 1800, true });
+        Check(dOpen.Contains("darts_game") && dOpen.Contains("1/3") && dClosed.Contains("偶数日") && dClosed.Contains("20:00") && dClosed.Contains("下雨") && dClosed.Contains("全部拿到"),
+            "FormatPirateDartsStatus 准确反映营业/未营业原因与核桃进度：" + dClosed);
+
         // raccoon 大树桩浣熊任务工具、动作与各阶段状态格式
         var racProps = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "raccoon")?["function"]["parameters"]["properties"] as JsonObject;
         Check(racProps != null && racProps["action"] != null, "schema 注册了 raccoon(action)");

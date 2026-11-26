@@ -52,7 +52,7 @@ namespace BlindWhaleFarmer
         private static readonly HashSet<string> NoChatInterrupt = new() { "say", "set_mode", "reserve_items", "wait_chat", "follow", "propose", "sleep", "festival", "fish", "get_state", "get_guide", "map_info" };
 
         /// <summary>会往背包里攒东西的工具：做完在外面背包快满时提醒一句“回农场会自动收纳”。</summary>
-        private static readonly HashSet<string> LootTools = new() { "fish", "forage", "explore_mine", "fight", "move_to", "travel_to", "interact", "check_crab_pots", "clear_area", "use_tool" };
+        private static readonly HashSet<string> LootTools = new() { "fish", "forage", "explore_mine", "fight", "move_to", "travel_to", "interact", "check_crab_pots", "collect_machines", "clear_area", "use_tool" };
 
         /// <summary>打怪类工具：本来就会挨打，不因掉血中断。</summary>
         private static readonly HashSet<string> CombatTools = new() { "fight", "explore_mine", "collect_walnuts" };
@@ -88,7 +88,7 @@ namespace BlindWhaleFarmer
                 P("item", "string", "手里拿的物品（名称或背包序号）；只传 item 自动找机器投料", false),
                 P("times", "integer", "连续交互次数（调长笛块 1~25、鼓块 1~7 用，默认 1）", false));
 
-            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子建议集中放在一片（挨着已有的），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。放箱子时也可以先用 storage_info 查储藏区，然后用 near=\"x,y\" 选定箱子群或新锚点，在它旁边挑一个合规空位。near 和直接放置的 x,y 二选一。", 60,
+            Add("place_item", "把背包里的物品放到某一格（种单颗种子、施肥、放置箱子/稻草人/机器等）。item 参数就是物品名，中英文都行，如 Chest / 宝箱，也可以写背包序号。x,y 可以不给：不给就在你身边 8 格内找离你最近、符合摆放规矩的一格放下，结果里会说放在了哪。农场上的机器、箱子建议集中放在一片（挨着已有的），不能放在田里、堵在建筑门口；洒水器、稻草人放田里。洒水器要放在没种作物的格子上（空耕地也行），普通款浇上下左右 4 格、优质 3x3、铱制 5x5；位置浇不到耕地或者有明显更好的位置会被拒绝，并告诉你最好的坐标，照着放就行。放箱子时也可以先用 storage_info 查储藏区，然后用 near=\"x,y\" 选定箱子群或新锚点，在它旁边挑一个合规空位。near 和直接放置的 x,y 二选一。拿大箱子/大石箱对着已有普通木箱/石箱的 x,y 放可原地升级（物品保留不用搬），也可另放空位。", 60,
                 j => () => a.PlaceItem(Str(j, "item"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false, OptStr(j, "near")),
                 P("item", "string", "物品名称或背包序号"),
                 P("x", "integer", "放在哪格 x（和 y 一起给；都不给就在你身边自动找一格）", false), P("y", "integer", "放在哪格 y", false),
@@ -136,7 +136,7 @@ namespace BlindWhaleFarmer
                 j => () => a.WaterCrops(OptInt(j, "max") ?? 300),
                 P("max", "integer", "最多浇几株", false));
 
-            Add("harvest_crops", "收获本地点所有成熟的作物（需要镰刀的会自动用镰刀）。", 300,
+            Add("harvest_crops", "收获本地点所有成熟的作物和挂果的果树（需要镰刀的作物会自动用镰刀；果树最多挂 3 个果子，当季晚收不烂但会占位置不再长）。", 300,
                 j => () => a.HarvestCrops(OptInt(j, "max") ?? 300),
                 P("max", "integer", "最多收几株", false));
 
@@ -186,6 +186,11 @@ namespace BlindWhaleFarmer
                 j => () => a.ListMachines(OptStr(j, "item")),
                 P("item", "string", "机器名（中英文），可省略", false));
 
+            Add("collect_machines", "一次收完指定地点（或当前地点）所有已做好的机器产物（含蘑菇箱、小桶、罐头瓶、熔炉、采集器等），不自动补料。", 240,
+                j => () => a.CollectMachines(OptStr(j, "location"), OptStr(j, "item")),
+                P("location", "string", "地点内部名（可省略=当前地点）", false),
+                P("item", "string", "按机器名或产物名筛选（可省略）", false));
+
             Add("map_info", "查当前地图的出口（走过去就换地图）、桥（会断/要修的桥，写明修没修好）、门（店门、房门、建筑门），每条写名字、格子坐标、通向哪个地点。"
                 + "坐标和 get_state 里“你站在 (x,y)”同一套。按离你远近排，每类最多 " + MapInfo.MaxEntriesPerSection + " 条，要全部传 all=true。"
                 + "只读，不移动你、不花游戏时间。move_to 老走不到、想换地图走、找不到出口时用；要去别的地点直接 travel_to 就行，不用先查。", 10,
@@ -204,6 +209,14 @@ namespace BlindWhaleFarmer
                 P("item", "string", "物品名称或背包序号"), P("count", "integer", "扔几个，不传扔掉这一格全部", false),
                 P("force", "boolean", "要交的东西也照样扔（一般不要用）", false));
 
+            Add("drop_item", "把背包里的东西丢到地上（不会销毁，别人走近可以捡起）。联机时传 to=玩家名 会自动走到对方身边丢在脚边交给对方，可附带 message 和 emote 一步送礼说话发表情；不传 to 就在原地丢。工具和任务物品不能丢。", 180,
+                j => () => a.DropItem(Str(j, "item"), OptInt(j, "count"), OptStr(j, "to"), OptBool(j, "force") ?? false, OptStr(j, "message"), OptStr(j, "emote")),
+                P("item", "string", "物品名称或背包序号"), P("count", "integer", "丢几个，不传丢掉这一格全部", false),
+                P("to", "string", "联机时交给哪位在线玩家（玩家名，留空则在原地丢）", false),
+                P("force", "boolean", "原地丢弃时保留物品也照样丢（一般不要用）", false),
+                P("message", "string", "联机送给玩家后顺便在聊天里说一句话（可省略）", false),
+                P("emote", "string", "联机送给玩家后顺便发一个表情，如 heart/happy（可省略）", false));
+
             Add("eat", "吃掉背包里的食物恢复体力和生命。任务、特别订单、收集包要交的东西（背包里标了【留着】）会拒绝，挑别的吃。", 30,
                 j => () => a.Eat(Str(j, "item"), OptBool(j, "force") ?? false),
                 P("item", "string", "食物名称或背包序号"),
@@ -219,10 +232,10 @@ namespace BlindWhaleFarmer
                 j => () => a.OpenShop(OptStr(j, "shop_id")),
                 P("shop_id", "string", "商店ID，可省略", false));
 
-            Add("buy", "在已打开的商店里购买。自己会做（craft）而且材料够的东西会先拦下，提醒你自己做省钱。", 20,
+            Add("buy", "在已打开的商店里购买。自己会做且材料够的东西、已读过的能力书会先拦下；真要买传 force=true。", 20,
                 j => () => a.Buy(Str(j, "item"), OptInt(j, "count") ?? 1, OptBool(j, "force") ?? false),
                 P("item", "string", "商品名称或商店列表序号"), P("count", "integer", "数量", false),
-                P("force", "boolean", "会做也要买（材料要留着别的用时）", false));
+                P("force", "boolean", "强制购买（如会做也要买、或买已读能力书送人）", false));
 
             Add("sell", "在已打开的商店里出售背包物品（立即得钱，价格和出货箱一样）。同名的东西不管分在几格（普通、银星、金星各一格）都会一起卖，便宜的品质先卖；"
                 + "写了品质（“沙丁鱼 金星”）或背包序号就只卖那一档或那一格。标了【留着】的格子不会跟着卖掉。", 20,
@@ -286,9 +299,10 @@ namespace BlindWhaleFarmer
                 P("x1", "integer", "左上 x（四个坐标要一起给）", false), P("y1", "integer", "左上 y", false),
                 P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false));
 
-            Add("gift_info","查询村民的送礼喜好（最爱/喜欢/讨厌）、生日、好感和本周送礼次数，以及背包里哪些东西他喜欢。不花游戏时间。", 10,
-                j => () => a.GiftInfo(Str(j, "npc")),
-                P("npc", "string", "村民名字（英文或中文）"));
+            Add("gift_info", "查送礼：传 npc 查这个人的喜好、生日、好感和本周次数；不传 npc 从背包反查今天还能送谁（只列最爱/喜欢，生日置顶，chests=true 可连箱子一起查）。不花时间。", 10,
+                j => () => a.GiftInfo(OptStr(j, "npc"), OptBool(j, "chests") ?? false),
+                P("npc", "string", "村民名（中英文）；省略则从背包反查今天送谁", false),
+                P("chests", "boolean", "不传 npc 时是否把箱子里的物品也算进去，默认 false", false));
 
             Add("give_gift", "给村民送礼：村民不在当前地点会自动找过去。每人每天 1 次、每周 2 次（生日不限）；生日送最爱的礼物效果 8 倍。送之前最好用 gift_info 确认他喜欢；他讨厌、不喜欢的东西会拒送并列出背包里能换的（交任务的东西不拦）。送花束开始恋爱、送美人鱼吊坠求婚也用它，这两样不受次数限制。", 240,
                 j => () => a.GiveGift(Str(j, "npc"), Str(j, "item"), OptBool(j, "force") ?? false),
@@ -307,8 +321,12 @@ namespace BlindWhaleFarmer
                 j => () => a.BundleInfo(OptBool(j, "all") ?? false),
                 P("all", "boolean", "是否包含未解锁区域", false));
 
-            Add("donate_bundles", "去社区中心把背包里能交的材料全部交进收集包，完成的收集包会自动领奖励，整个房间完成时会播放修复过场。", 600,
-                j => () => a.DonateBundles());
+            Add("donate_bundles", "去社区中心把背包里能交的材料交进收集包，完成的收集包会自动领奖励，整个房间完成时会播放修复过场。"
+                + "金库（Vault）交钱收集包传 pay_vault=true（按从便宜到贵交钱，可用 budget 限制最多花多少；联机共用钱包默认需玩家同意后再传 confirm=true）。", 600,
+                j => () => a.DonateBundles(OptBool(j, "pay_vault") ?? false, OptInt(j, "budget"), OptBool(j, "confirm") ?? false),
+                P("pay_vault", "boolean", "是否给已解锁的金库（Vault）收集包交钱，默认 false", false),
+                P("budget", "integer", "金库交钱最多花多少金币（可省略=按余额）", false),
+                P("confirm", "boolean", "联机共用钱包时，玩家已同意交钱再传 true，默认 false", false));
 
             Add("cook", "在厨房做菜（农舍升级后才有厨房；不在家会自动回家）。背包和冰箱里的材料都能用。不传 recipe 或写错时会列出已学会的菜谱和材料、标出现在能做的。料理回体力回血多，也是好礼物。", 120,
                 j => () => a.Cook(OptStr(j, "recipe"), OptInt(j, "count") ?? 1),
@@ -414,6 +432,8 @@ namespace BlindWhaleFarmer
 
             Add("mermaid_puzzle", "姜岛雨天美人鱼谜题（IslandSouthEast 东南海滩，需先喂 20 核桃解锁度假村且姜岛下雨天、凑齐 5 个长笛块）：自动摆放/复用 5 个长笛块、按 2/11/9/5/7 档（音高 200/1100/900/500/700）调音并从左向右走过吹响，拿 5 颗金核桃。", 300,
                 j => () => a.MermaidPuzzle());
+            Add("darts_game", "姜岛海盗湾投飞镖小游戏（IslandSouthEastCave，偶数日晚上 20:00 后且姜岛不下雨）：自动去海盗湾找 (30,8) 海盗开局并精准投完 301 分归零，捡走金核桃（共 3 颗，需赢 3 局分别 20/15/10 镖内）；已在投飞镖界面里时直接接管投完。", 180,
+                j => () => a.DartsGame());
 
             Add("repair_boat", "去威利鱼店后屋的船坞修去姜岛的船（社区中心修好或 Joja 路线走完后威利来信邀请才进得去）：把背包里够数的材料交上——硬木 200、铱锭 5、电池组 5，可以分几次交；全交齐的第二天船就能开，之后 travel_to IslandSouth 坐船去姜岛（船票 1000g，回来免费）。", 180,
                 j => () => a.RepairBoat());
@@ -435,10 +455,10 @@ namespace BlindWhaleFarmer
                 j => () => a.RaccoonAction(OptStr(j, "action")),
                 P("action", "string", "status（默认）/ fix / donate / shop", false));
 
-            Add("buy_animal", "去 Marnie 的牧场（AnimalShop）买动物，自动放进有空位的鸡舍/畜棚并起名。不传 type 会列出能买的动物和价格。", 240,
+            Add("buy_animal", "去 Marnie 的牧场（AnimalShop）买动物，自动放进有空位的鸡舍/畜棚。不传 type 列能买的动物和价格。欢迎自己想可爱的食物名（如饭团、米饭、包子、馒头、大白饭）传 name。", 240,
                 j => () => a.BuyAnimal(OptStr(j, "type"), OptStr(j, "name"), OptInt(j, "count") ?? 1),
                 P("type", "string", "动物种类，如 Chicken、Cow、Goat、Duck、Pig（中英文都可以）", false),
-                P("name", "string", "名字（可省略，自动起名）", false), P("count", "integer", "买几只，默认 1", false));
+                P("name", "string", "名字（欢迎自己起名，如食物名；可省略，会从食物名字库随机挑不重名的）", false), P("count", "integer", "买几只，默认 1", false));
 
             Add("build", "在农场建造、升级或移动建筑：action=build（默认）建造/升级（普通建筑找木匠 Robin，魔法建筑如方尖碑/黄金时钟/祝尼魔小屋找法师；不传 building 列图纸和价格，不传 x,y 自动规划位置）；action=move 找 Robin 免费当场移动已有建筑（不传 building 列农场建筑和坐标，不传 x,y 给几个可放空位供你选）。", 300,
                 j => () => a.Build(OptStr(j, "building"), OptInt(j, "x"), OptInt(j, "y"), OptBool(j, "force") ?? false, OptStr(j, "action")),
@@ -866,13 +886,14 @@ namespace BlindWhaleFarmer
             ["place_item"] = Aliases(("name", "item"), ("item_name", "item")),
             ["get_state"] = Aliases(("part", "section"), ("which", "section"), ("sections", "section")),
             // 村民名：模型最常写 name、villager、character、target（WorkBuddy 真机：gift_info 写 name 被整段拒绝）
-            ["gift_info"] = NpcAliases(),
+            ["gift_info"] = Aliases(NpcPairs.Concat(new[] { ("include_chests", "chests"), ("chest", "chests") }).ToArray()),
             ["give_gift"] = Aliases(NpcPairs.Concat(new[] { ("gift", "item"), ("present", "item"), ("item_name", "item") }).ToArray()),
             ["interact"] = Aliases(NpcPairs.Concat(new[] { ("item_name", "item") }).ToArray()),
             ["use_tool"] = Aliases(("tool_name", "tool"), ("times_to_use", "times"), ("count", "times")),
             ["eat"] = Aliases(("food", "item"), ("name", "item"), ("item_name", "item")),
             ["use_item"] = Aliases(("name", "item"), ("item_name", "item")),
             ["trash_item"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count")),
+            ["drop_item"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count"), ("player", "to"), ("target", "to"), ("npc", "to")),
             ["ship_items"] = Aliases(("name", "item"), ("items", "item"), ("item_name", "item"), ("quantity", "count")),
             ["sell"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count")),
             ["buy"] = Aliases(("name", "item"), ("item_name", "item"), ("quantity", "count"), ("amount", "count")),
@@ -889,6 +910,7 @@ namespace BlindWhaleFarmer
             ["wait"] = Aliases(("time", "until"), ("duration", "minutes"), ("min", "minutes")),
             ["travel_to"] = Aliases(("place", "location"), ("destination", "location"), ("map", "location"), ("to", "location")),
             ["check_crab_pots"] = Aliases(("place", "location"), ("map", "location")),
+            ["collect_machines"] = Aliases(("place", "location"), ("map", "location"), ("machine", "item"), ("name", "item")),
             ["collect_walnuts"] = Aliases(("location", "where"), ("place", "where")),
             ["mastery"] = Aliases(("name", "skill")),
             ["set_name"] = Aliases(("text", "name")),
@@ -899,6 +921,7 @@ namespace BlindWhaleFarmer
             ["festival"] = Aliases(("npc", "partner"), ("who", "partner"), ("name", "partner")),
             ["sleep"] = Aliases(("player", "with"), ("who", "with"), ("house", "location"), ("place", "location")),
             ["furniture"] = Aliases(("item", "name"), ("furniture", "name"), ("count", "times"), ("rotate", "times")),
+            ["donate_bundles"] = Aliases(("vault", "pay_vault"), ("pay", "pay_vault"), ("max_spend", "budget")),
         };
 
 

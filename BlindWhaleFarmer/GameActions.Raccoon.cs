@@ -35,7 +35,7 @@ namespace BlindWhaleFarmer
             if (!treeFallen)
                 return "煤矿森林北边的大树还没倒（完成茶水间收集包等前期进度后，暴风雨夜会吹倒它），目前还没有浣熊任务。";
             if (!stumpFixed)
-                return $"煤矿森林北边大树已倒、大树桩待修复：需要 100 个硬木（当前背包 {hardwoodCount}/100）。够了就用 raccoon action=fix 去修（在 Forest (56,6)）。";
+                return $"煤矿森林北边大树已倒、大树桩待修复：需要 100 个硬木（当前背包 {hardwoodCount}/100）。够了就用 raccoon action=fix 去修（会自动定位 Forest 里的大树桩）。";
             if (!hasMrRaccoon)
                 return "大树桩已经修好了！浣熊先生明天就会搬进来，明天再用 raccoon 查看需求。";
 

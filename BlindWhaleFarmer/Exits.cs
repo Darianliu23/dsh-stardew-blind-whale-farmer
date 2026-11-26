@@ -62,9 +62,16 @@ namespace BlindWhaleFarmer
     /// <summary>计算每个地点的出口，并在地点之间做广度优先搜索规划路线。</summary>
     internal static class Exits
     {
-        private static readonly Dictionary<string, List<Exit>> TileExitCache = new();
+        private static readonly Dictionary<string, List<Exit>> TileExitCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, (int[,] Grid, long DoorMask)> AreaCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, List<string[]>> DoorActionCache = new(StringComparer.OrdinalIgnoreCase);
 
-        public static void ClearCache() => TileExitCache.Clear();
+        public static void ClearCache()
+        {
+            TileExitCache.Clear();
+            AreaCache.Clear();
+            DoorActionCache.Clear();
+        }
 
         public static List<Exit> Get(GameLocation loc)
         {
@@ -81,18 +88,21 @@ namespace BlindWhaleFarmer
                 // 没炸开时传送点仍然在，但人走不进去，只能当它不存在，免得寻路往石头里钻
                 if (target == "IslandNorthCave1" && loc is StardewValley.Locations.IslandNorth { caveOpened.Value: false })
                     continue;
-                if (w.npcOnly.Value || (!StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(target) && Game1.getLocationFromName(target) == null))
+                if (w.npcOnly.Value || ModSupport.IsWarpRoom(target)
+                    || (!StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(target) && Game1.getLocationFromName(target) == null))
                     continue;
                 list.Add(new Exit { Kind = ExitKind.Warp, Tile = new Point(w.X, w.Y), Target = target, TargetTile = new Point(w.TargetX, w.TargetY) });
             }
 
             // 去沙漠的巴士要等金库收集包（或 Joja 的巴士项目）完成、巴士修好以后才有
             // 威利的后屋（船坞）要收到威利的邀请信才进得去；去姜岛的船要修好才开
+            // 下水道入口（Town / SVE 蓝月葡萄园的 EnterSewer）需要生锈的钥匙
             list.AddRange(GetTileExits(loc).Where(e =>
                 (e.Kind != ExitKind.Bus || e.Target != "Desert" || BusRepaired)
                 && (e.Target != "BoatTunnel" || e.Kind != ExitKind.Door || Game1.player.mailReceived.Contains("willyBackRoomInvitation"))
                 && (e.Kind != ExitKind.Bus || e.Target != "IslandSouth" || BoatRepaired)
                 && (e.Target != "QiNutRoom" || StardewValley.Locations.IslandWest.IsQiWalnutRoomDoorUnlocked(out _))
+                && (e.Target != "Sewer" || e.Kind != ExitKind.Door || Game1.player.hasRustyKey)
                 && (e.Kind != ExitKind.Minecart || MinecartUsable(loc, e))));
 
             foreach (var b in loc.buildings)
@@ -222,40 +232,56 @@ namespace BlindWhaleFarmer
                     }
 
                     string touch = loc.doesTileHaveProperty(x, y, "TouchAction", "Back");
-                    if (!string.IsNullOrEmpty(touch))
-                    {
-                        var parts = touch.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                        // 沙漠里停着的巴士：走到车门那一格就问“是否返回星露谷”
-                        if (parts.Length >= 1 && parts[0] == "DesertBus" && Game1.getLocationFromName("BusStop") != null)
-                            list.Add(new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BusStop", IsTouch = true, Note = "（坐巴士回巴士站，免费）" });
-                        // 姜岛南边码头的船：走上去问“要不要回去”，坐船回威利的船坞（免费）
-                        if (parts.Length >= 1 && parts[0] == "LeaveIsland" && Game1.getLocationFromName("BoatTunnel") != null)
-                            list.Add(new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BoatTunnel", IsTouch = true, Note = "（坐威利的船回鹈鹕镇，免费）" });
-                        if (parts.Length >= 4 && (parts[0] == "Warp" || parts[0] == "MagicWarp")
-                            && Game1.getLocationFromName(parts[1]) != null
-                            && int.TryParse(parts[2], out int tx) && int.TryParse(parts[3], out int ty))
-                        {
-                            list.Add(new Exit { Kind = ExitKind.Warp, Tile = new Point(x, y), Target = parts[1], TargetTile = new Point(tx, ty), IsTouch = true });
-                        }
-                    }
+                    if (!string.IsNullOrEmpty(touch) && ParseTouchWarp(touch, x, y) is Exit touchExit)
+                        list.Add(touchExit);
                 }
             }
             TileExitCache[key] = list;
             return list;
         }
 
-        private static Exit ParseDoorAction(string action, int x, int y)
+        internal static Exit ParseTouchWarp(string touch, int x, int y, Func<string, bool> locationExists = null)
+        {
+            if (string.IsNullOrWhiteSpace(touch))
+                return null;
+            locationExists ??= name => Game1.getLocationFromName(name) != null;
+            var parts = touch.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+                return null;
+            string verb = parts[0];
+            // 沙漠里停着的巴士：走到车门那一格就问“是否返回星露谷”
+            if (verb.Equals("DesertBus", StringComparison.OrdinalIgnoreCase) && locationExists("BusStop"))
+                return new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BusStop", IsTouch = true, Note = "（坐巴士回巴士站，免费）" };
+            // 姜岛南边码头的船：走上去问“要不要回去”，坐船回威利的船坞（免费）
+            if (verb.Equals("LeaveIsland", StringComparison.OrdinalIgnoreCase) && locationExists("BoatTunnel"))
+                return new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "BoatTunnel", IsTouch = true, Note = "（坐威利的船回鹈鹕镇，免费）" };
+            // Warp / MagicWarp / SVE 的 LoadMap <地点> <x> <y> [朝向]
+            if (parts.Length >= 4
+                && (verb.Equals("Warp", StringComparison.OrdinalIgnoreCase)
+                    || verb.Equals("MagicWarp", StringComparison.OrdinalIgnoreCase)
+                    || verb.Equals("LoadMap", StringComparison.OrdinalIgnoreCase))
+                && !ModSupport.IsWarpRoom(parts[1])
+                && locationExists(parts[1])
+                && int.TryParse(parts[2], out int tx) && int.TryParse(parts[3], out int ty))
+            {
+                return new Exit { Kind = ExitKind.Warp, Tile = new Point(x, y), Target = parts[1], TargetTile = new Point(tx, ty), IsTouch = true };
+            }
+            return null;
+        }
+
+        internal static Exit ParseDoorAction(string action, int x, int y, Func<string, bool> locationExists = null)
         {
             var p = action.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (p.Length == 0)
                 return null;
+            locationExists ??= name => Game1.getLocationFromName(name) != null;
             switch (p[0])
             {
                 case "Warp":
                 case "LockedDoorWarp":
                 case "WarpMensLocker":
                 case "WarpWomensLocker":
-                    if (p.Length >= 4 && Game1.getLocationFromName(p[3]) != null
+                    if (p.Length >= 4 && !ModSupport.IsWarpRoom(p[3]) && locationExists(p[3])
                         && int.TryParse(p[1], out int tx) && int.TryParse(p[2], out int ty))
                     {
                         string note = "";
@@ -277,17 +303,24 @@ namespace BlindWhaleFarmer
                         return exit;
                     }
                     break;
+                case "MagicWarp":
+                    if (p.Length >= 4 && !ModSupport.IsWarpRoom(p[1]) && locationExists(p[1])
+                        && int.TryParse(p[2], out int mtx) && int.TryParse(p[3], out int mty))
+                        return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = p[1], TargetTile = new Point(mtx, mty) };
+                    break;
+                case "EnterSewer" when locationExists("Sewer"):
+                    return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "Sewer", TargetTile = new Point(16, 11), Note = "（下水道，需要生锈的钥匙）" };
                 case "WarpCommunityCenter":
                     return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "CommunityCenter" };
                 // 皮埃尔家通往卡洛琳阳光房的门（GameLocation.performAction，和卡洛琳 2 心以上才开）
-                case "Warp_Sunroom_Door" when Game1.getLocationFromName("Sunroom") != null:
+                case "Warp_Sunroom_Door" when locationExists("Sunroom"):
                     return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "Sunroom", TargetTile = new Point(5, 13),
                         FriendNpc = "Caroline", FriendPoints = 500, Note = "（卡洛琳的阳光房，要和卡洛琳有 2 心好感）" };
                 // 威利鱼店里通往后屋船坞的门（FishShop.performAction，收到邀请信才开）
-                case "WarpBoatTunnel" when Game1.getLocationFromName("BoatTunnel") != null:
+                case "WarpBoatTunnel" when locationExists("BoatTunnel"):
                     return new Exit { Kind = ExitKind.Door, Tile = new Point(x, y), Target = "BoatTunnel", TargetTile = new Point(6, 12), Note = "（威利的船坞）" };
                 // 船坞的售票机：买票坐船去姜岛（BoatTunnel.checkAction，船修好以后）
-                case "BoatTicket" when Game1.getLocationFromName("IslandSouth") != null:
+                case "BoatTicket" when locationExists("IslandSouth"):
                     return new Exit { Kind = ExitKind.Bus, Tile = new Point(x, y), Target = "IslandSouth", Note = "（售票机，坐威利的船去姜岛，船票 1000g）" };
             }
             return null;
@@ -335,12 +368,168 @@ namespace BlindWhaleFarmer
         public static string ExitKey(string fromName, Exit e) => $"{fromName}>{e.Target}@{e.Tile.X},{e.Tile.Y}";
 
         /// <summary>
-        /// 地图里被墙隔开、互不相通的区域编号（大多数地图只有一块，都是 0）。
-        /// 后山（Backwoods）右下角从巴士站上来、通隧道的那一小块和农场北门到山上的那条路不通，
-        /// 不分开的话会规划出“巴士站→后山→山上”这种走不通的路线。
+        /// 地图里被悬崖、水或锁住的室内门隔开、互不相通的区域编号（大多数地图只有一块，都是 1；无法计算时退回 0）。
+        /// 动态按静态地图地形做连通分量计算（不因农场/树林上临时长出的杂草树枝误切），同时兼容原版和 SVE 重绘/新增的多分区地图
+        /// （如 Backwoods、Railroad、Custom_ForestWest、Custom_Highlands 等）。
         /// </summary>
-        public static int Area(string locationName, Point tile) =>
-            locationName.Equals("Backwoods", StringComparison.OrdinalIgnoreCase) && tile.X >= 22 && tile.Y >= 26 ? 1 : 0;
+        public static int Area(string locationName, Point tile)
+        {
+            if (string.IsNullOrWhiteSpace(locationName))
+                return 0;
+            GameLocation loc = null;
+            try
+            {
+                loc = Game1.getLocationFromName(locationName);
+            }
+            catch
+            {
+                // 离线测试没有 Game1.locations
+            }
+            if (loc?.Map == null)
+                return 0;
+            var grid = GetAreaGrid(loc);
+            if (grid == null)
+                return 0;
+            return AreaFromGrid(grid, grid.GetLength(0), grid.GetLength(1), tile);
+        }
+
+        private static int[,] GetAreaGrid(GameLocation loc)
+        {
+            string key = loc.NameOrUniqueName;
+            long doorMask = ComputeDoorMask(loc, key);
+            if (AreaCache.TryGetValue(key, out var cached) && cached.DoorMask == doorMask)
+                return cached.Grid;
+            int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
+            if (w <= 0 || h <= 0)
+                return null;
+            var grid = ComputeComponents(w, h, (x, y) => StaticTerrainPassable(loc, x, y));
+            AreaCache[key] = (grid, doorMask);
+            return grid;
+        }
+
+        /// <summary>
+        /// 计算室内门的可开状态掩码：既支持未进过室内（loc.interiorDoors 尚未填充、只从地图属性 Doors 读取）的情况，
+        /// 又能让有室内门的地图同样命中缓存，且在好感/解锁条件变化时自动失效重算。
+        /// </summary>
+        private static long ComputeDoorMask(GameLocation loc, string key)
+        {
+            if (loc.isOutdoors.Value)
+                return 0;
+            if (!DoorActionCache.TryGetValue(key, out var doors))
+            {
+                doors = new List<string[]>();
+                var seen = new HashSet<Point>();
+                foreach (var p in InteriorDoorDictionary.GetDoorTilesFromMapProperty(loc))
+                {
+                    if (!seen.Add(p))
+                        continue;
+                    if (loc.doesTileHaveProperty(p.X, p.Y, "Action", "Buildings") is { } action
+                        && ArgUtility.SplitBySpace(action) is { Length: > 0 } parts
+                        && parts[0] == "Door")
+                        doors.Add(parts);
+                }
+                DoorActionCache[key] = doors;
+            }
+            long mask = 0;
+            int n = Math.Min(doors.Count, 62);
+            for (int i = 0; i < n; i++)
+            {
+                if (Pathfinder.CanOpenDoor(loc, doors[i]))
+                    mask |= 1L << i;
+            }
+            return mask;
+        }
+
+        /// <summary>
+        /// 只看静态地图地形（悬崖、墙、未修好的桥、水域与锁着的室内门），忽略杂草/树枝/树木/石块等动态障碍，
+        /// 避免农场长满杂物时把连通的地图误切成孤岛。
+        /// </summary>
+        private static bool StaticTerrainPassable(GameLocation loc, int x, int y)
+        {
+            if (!loc.isTileOnMap(x, y))
+                return false;
+            var p = new Point(x, y);
+            if (Pathfinder.InteriorDoor(loc, p) is { } door)
+                return Pathfinder.CanOpenDoor(loc, door);
+            // 未进过室内地图前 loc.interiorDoors 为空，直接按 Buildings 层 Action="Door ..." 判断室内门是否可开
+            if (!loc.isOutdoors.Value
+                && loc.doesTileHaveProperty(x, y, "Action", "Buildings") is { } action
+                && ArgUtility.SplitBySpace(action) is { Length: > 0 } doorParts
+                && doorParts[0] == "Door")
+                return Pathfinder.CanOpenDoor(loc, doorParts);
+            if (!loc.isTilePassable(new xTile.Dimensions.Location(x, y), Game1.viewport))
+                return false;
+            // 普通水域不可走，但盖在水上的桥（Buildings 层有 Passable=T）能走
+            if (loc.isWaterTile(x, y) && loc.doesTileHaveProperty(x, y, "Passable", "Buildings") is not ("T" or "True"))
+                return false;
+            return true;
+        }
+
+        /// <summary>计算二维网格的四邻域连通分量（可走格从 1 开始编号，不可走格为 0）。纯算法，供离线单测直接验证。</summary>
+        internal static int[,] ComputeComponents(int width, int height, Func<int, int, bool> passable)
+        {
+            var grid = new int[width, height];
+            var queue = new Queue<Point>();
+            int nextId = 0;
+            for (int x = 0; x < width; x++)
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    if (grid[x, y] != 0 || !passable(x, y))
+                        continue;
+                    nextId++;
+                    grid[x, y] = nextId;
+                    queue.Enqueue(new Point(x, y));
+                    while (queue.Count > 0)
+                    {
+                        var cur = queue.Dequeue();
+                        foreach (var d in Pathfinder.Dirs)
+                        {
+                            int nx = cur.X + d.X, ny = cur.Y + d.Y;
+                            if (nx >= 0 && ny >= 0 && nx < width && ny < height && grid[nx, ny] == 0 && passable(nx, ny))
+                            {
+                                grid[nx, ny] = nextId;
+                                queue.Enqueue(new Point(nx, ny));
+                            }
+                        }
+                    }
+                }
+            }
+            return grid;
+        }
+
+        /// <summary>
+        /// 查 tile 所在的连通分量编号；如果 tile 在地图外（边缘传送点）或本身不可站（门/下水道口），
+        /// 先夹回地图内再按优先南侧的顺序找半径 2 以内最近的可站格。找不到返回 0。
+        /// </summary>
+        internal static int AreaFromGrid(int[,] grid, int width, int height, Point tile)
+        {
+            if (width <= 0 || height <= 0)
+                return 0;
+            int cx = Math.Clamp(tile.X, 0, width - 1);
+            int cy = Math.Clamp(tile.Y, 0, height - 1);
+            if (grid[cx, cy] > 0)
+                return grid[cx, cy];
+            // 门通常从南侧进入，先查南侧，再查其余三向及半径 2
+            var probes = new[] { new Point(0, 1), new Point(0, -1), new Point(1, 0), new Point(-1, 0) };
+            for (int r = 1; r <= 2; r++)
+            {
+                foreach (var d in probes)
+                {
+                    int nx = cx + d.X * r, ny = cy + d.Y * r;
+                    if (nx >= 0 && ny >= 0 && nx < width && ny < height && grid[nx, ny] > 0)
+                        return grid[nx, ny];
+                }
+            }
+            for (int dy = -2; dy <= 2; dy++)
+                for (int dx = -2; dx <= 2; dx++)
+                {
+                    int nx = cx + dx, ny = cy + dy;
+                    if (nx >= 0 && ny >= 0 && nx < width && ny < height && grid[nx, ny] > 0)
+                        return grid[nx, ny];
+                }
+            return 0;
+        }
 
         /// <param name="avoid">这次走不通的出口（ExitKey），规划时绕开。</param>
         /// <param name="avoidLocation">路过不了的地图（比如在布置节日的小镇），除非它就是目的地。</param>
@@ -374,7 +563,7 @@ namespace BlindWhaleFarmer
             while (queue.Count > 0)
             {
                 var (name, area, depth) = queue.Dequeue();
-                if (depth >= 12)
+                if (depth >= 24)
                     continue;
                 var loc = Game1.getLocationFromName(name);
                 if (loc == null)
@@ -383,11 +572,13 @@ namespace BlindWhaleFarmer
                 // 去同一个地方有正门也有侧门（比如玛鲁房间的侧门也通科学之家）时先走正门：要好感的门排在后面
                 foreach (var e in Get(loc).Where(e => e.FriendshipOk(loc)).OrderBy(e => e.FriendNpc != null))
                 {
-                    if (Area(name, e.Tile) != area)
+                    int exitArea = Area(name, e.Tile);
+                    if (area != 0 && exitArea != 0 && exitArea != area)
                         continue;
                     if (avoid != null && avoid.Contains(ExitKey(name, e)))
                         continue;
-                    string next = Key(e.Target, Area(e.Target, e.TargetTile));
+                    int nextArea = e.Kind == ExitKind.BuildingDoor || e.TargetTile == Point.Zero ? 0 : Area(e.Target, e.TargetTile);
+                    string next = Key(e.Target, nextArea);
                     if (prev.ContainsKey(next) || !VolcanoOk(e.Target))
                         continue;
                     if (avoidLocation != null && e.Target.Equals(avoidLocation, StringComparison.OrdinalIgnoreCase)
@@ -406,7 +597,7 @@ namespace BlindWhaleFarmer
                         route.Reverse();
                         return route;
                     }
-                    queue.Enqueue((e.Target, Area(e.Target, e.TargetTile), depth + 1));
+                    queue.Enqueue((e.Target, nextArea, depth + 1));
                 }
             }
             return null;

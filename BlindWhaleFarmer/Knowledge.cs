@@ -225,8 +225,21 @@ namespace BlindWhaleFarmer
             return !cc.areasComplete[b.Area] && cc.shouldNoteAppearInArea(b.Area);
         }
 
+        /// <summary>金库（Vault）交钱收集包的金额；不是交钱收集包返回 0。</summary>
+        public static int VaultCost(int area, IReadOnlyList<BundleIngredientDescription> ingredients)
+        {
+            if (area != CommunityCenter.AREA_Vault || ingredients == null || ingredients.Count == 0)
+                return 0;
+            var last = ingredients[^1];
+            return last.category == -1 && last.stack > 0 ? last.stack : 0;
+        }
+
+        public static int VaultCost(BundleInfo b) => b == null ? 0 : VaultCost(b.Area, b.Ingredients);
+
         public static string IngredientName(BundleIngredientDescription ing)
         {
+            if (ing.category == -1)
+                return $"{ing.stack}g";
             string name;
             if (ing.category.HasValue)
                 name = "任意" + SObject.GetCategoryDisplayName(ing.category.Value);

@@ -39,6 +39,7 @@ namespace BlindWhaleFarmer
         {
             LastPassbyGreetedUtc.Clear();
             LastPassbyMissUtc.Clear();
+            ResetProactiveGiftState();
         }
 
         internal static bool ShouldTriggerPassbyEmote(
@@ -82,7 +83,7 @@ namespace BlindWhaleFarmer
                 return false;
             if (loc != null)
             {
-                if (loc is MineShaft || loc is VolcanoDungeon)
+                if (ModSupport.IsCombatZone(loc))
                     return false;
                 if (loc.characters.OfType<Monster>().Any())
                     return false;
@@ -168,6 +169,23 @@ namespace BlindWhaleFarmer
                     yield break;
                 yield return null;
             }
+        }
+
+        internal static bool TryPlayNamedEmote(string which, out string cnName)
+        {
+            cnName = null;
+            string key = (which ?? "").Trim().ToLowerInvariant();
+            if (key == "")
+                return false;
+            var hit = EmoteNames.FirstOrDefault(e => e.id == key || e.cn == key);
+            if (hit.id == null)
+                return false;
+            var who = Player;
+            if (who == null || !who.CanEmote())
+                return false;
+            who.netDoEmote(hit.id);
+            cnName = hit.cn;
+            return true;
         }
 
         public IEnumerable<object> Emote(string which)

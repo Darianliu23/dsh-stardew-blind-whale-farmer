@@ -23,9 +23,20 @@ namespace BlindWhaleFarmer
 
         private static bool QiBoardUnlocked() => IslandWest.IsQiWalnutRoomDoorUnlocked(out _);
 
+        /// <summary>判断某个特别订单的 orderType 是否归属指定的订单板（镇上订单板一并展示 SVE 等模组的剧情特别订单）。</summary>
+        internal static bool MatchesOrderBoard(string orderType, string boardType)
+        {
+            string ot = orderType ?? "";
+            string bt = boardType ?? "";
+            if (bt == "Qi")
+                return ot == "Qi";
+            // 镇上视图：展示原版镇上特别订单（""）以及 SVE 等模组事件触发的自定义特别订单（排除 Qi 与沙漠节）
+            return ot == "" || (ot != "Qi" && !ot.StartsWith("DesertFestival", StringComparison.OrdinalIgnoreCase));
+        }
+
         /// <summary>正在做的订单（按订单板分）。</summary>
         private static List<SpecialOrder> ActiveOrders(string type) =>
-            Player.team.specialOrders.Where(s => s.orderType.Value == type && s.questState.Value == SpecialOrderStatus.InProgress).ToList();
+            Player.team.specialOrders.Where(s => MatchesOrderBoard(s.orderType.Value, type) && s.questState.Value == SpecialOrderStatus.InProgress).ToList();
 
         /// <summary>
         /// 状态里的提示：订单板有新订单可接、要往投递箱里放东西（背包里正好有）、有奖券没领/没换。没事返回 null。

@@ -17,17 +17,24 @@ namespace BlindWhaleFarmer
 {
     internal sealed partial class GameActions
     {
-        /// <summary>农场上所有住着动物的建筑。</summary>
+        /// <summary>农场上（以及模组额外可建建筑的农场地图上）所有住着动物的建筑。</summary>
         public static List<(Building building, AnimalHouse house)> AnimalBuildings()
         {
             var list = new List<(Building, AnimalHouse)>();
-            foreach (var b in Game1.getFarm().buildings)
+            var seen = new HashSet<AnimalHouse>();
+            Utility.ForEachLocation(loc =>
             {
-                if (b.isUnderConstruction() || b.GetIndoors() is not AnimalHouse house)
-                    continue;
-                if (house.animalsThatLiveHere.Count > 0)
-                    list.Add((b, house));
-            }
+                if (loc == null || loc.IsTemporary || ModSupport.IsWarpRoom(loc.NameOrUniqueName))
+                    return true;
+                foreach (var b in loc.buildings)
+                {
+                    if (b.isUnderConstruction() || b.GetIndoors() is not AnimalHouse house)
+                        continue;
+                    if (house.animalsThatLiveHere.Count > 0 && seen.Add(house))
+                        list.Add((b, house));
+                }
+                return true;
+            }, includeInteriors: false, includeGenerated: false);
             return list;
         }
 

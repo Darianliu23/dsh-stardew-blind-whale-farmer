@@ -64,6 +64,15 @@ namespace BlindWhaleFarmer
         /// <summary>每次空闲跟着玩家卖萌持续多久（现实秒，默认 30 秒；范围 10~180）。</summary>
         public int IdleFollowDurationSeconds { get; set; } = 30;
 
+        /// <summary>联机时偶尔提醒 AI 挑一件有心意的小礼物（做的菜、捡的花、钓的鱼等）主动送给在线玩家。默认开。</summary>
+        public bool ProactiveGiftEnabled { get; set; } = true;
+
+        /// <summary>联机主动送礼提示的触发概率（0~1，默认 0.5）。</summary>
+        public float ProactiveGiftChance { get; set; } = 0.5f;
+
+        /// <summary>联机主动送礼的冷却间隔（游戏日，默认 1 表示每天最多触发 1 次；范围 1~28）。</summary>
+        public int ProactiveGiftCooldownDays { get; set; } = 1;
+
         /// <summary>联机时 AI 怎么安排自己：solo 自己玩、command 主要听指令、hybrid 指令做完接着自己玩。</summary>
         public string CompanionMode { get; set; } = GameActions.ModeHybrid;
 
@@ -133,10 +142,10 @@ namespace BlindWhaleFarmer
         /// <summary>MCP 客户端超过 McpIdleSeconds 没有调用（AI 停下或断开）时把整个游戏暂停（怪物、时钟都停），按任意键接手或 AI 再次调用时继续。</summary>
         public bool PauseWhenAiStops { get; set; } = true;
 
-        /// <summary>每次游玩最多玩几个游戏日（睡一觉算一天），到了就让 AI 停下汇报。0 = 不限。读档后重新计。</summary>
-        public int SessionDays { get; set; } = 0;
+        /// <summary>每次游玩最多玩几个游戏日（睡一觉算一天，默认 3；0 = 不限），到了就让 AI 停下汇报。与 SessionMinutes 先到哪个先停。读档后重新计。</summary>
+        public int SessionDays { get; set; } = 3;
 
-        /// <summary>每次游玩最多玩多少现实分钟（从这次第一个动作开始算），到了就让 AI 回家睡觉存档后停下。0 = 不限。</summary>
-        public int SessionMinutes { get; set; } = 0;
+        /// <summary>每次游玩最多玩多少现实分钟（从这次第一个动作开始算，默认 60；0 = 不限），到了就让 AI 回家睡觉存档后停下。与 SessionDays 先到哪个先停。</summary>
+        public int SessionMinutes { get; set; } = 60;
     }
 }

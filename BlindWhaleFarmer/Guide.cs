@@ -28,17 +28,34 @@ namespace BlindWhaleFarmer
         /// <summary>当前主攻略全文（玩家改过的优先）；没有攻略时为空字符串（只用操作规则也能玩）。</summary>
         public static string Text => Get(mainName) ?? "";
 
-        /// <summary>专题名字（不含主攻略），按文件名排序。</summary>
-        public static IReadOnlyList<string> Topics =>
-            fromFiles.Keys.Concat(overrides.Keys).Distinct().Where(t => t != mainName).OrderBy(t => t).ToList();
+        /// <summary>是不是 SVE 扩展模组专属专题（未加载 SVE 时对原版玩家隐藏，不占上下文和专题列表）。</summary>
+        internal static bool IsSveTopic(string topic) =>
+            !string.IsNullOrWhiteSpace(topic)
+            && (topic.Equals("SVE", StringComparison.OrdinalIgnoreCase)
+                || topic.StartsWith("SVE-", StringComparison.OrdinalIgnoreCase)
+                || topic.StartsWith("SVE_", StringComparison.OrdinalIgnoreCase));
 
-        /// <summary>读某一篇（主攻略或专题）；没有返回 null。</summary>
+        /// <summary>专题名字（不含主攻略），按文件名排序；未加载 SVE 时自动隐藏 SVE 专题。</summary>
+        public static IReadOnlyList<string> Topics =>
+            fromFiles.Keys.Concat(overrides.Keys).Distinct()
+                .Where(t => t != mainName && (ModSupport.HasSve || !IsSveTopic(t) || overrides.ContainsKey(t)))
+                .OrderBy(t => t)
+                .ToList();
+
+        /// <summary>读某一篇（主攻略或专题）；没有或未加载对应模组时返回 null。</summary>
         public static string Get(string topic)
         {
             topic = string.IsNullOrWhiteSpace(topic) ? mainName : topic.Trim().Replace(".md", "");
             if (overrides.TryGetValue(topic, out var o) && !string.IsNullOrWhiteSpace(o))
                 return o.Trim();
-            return fromFiles.TryGetValue(topic, out var f) ? f : null;
+            if (!ModSupport.HasSve && IsSveTopic(topic))
+                return null;
+            if (fromFiles.TryGetValue(topic, out var f))
+                return f;
+            // 容错：AI 传 topic=SVE 时也能读到 SVE-总览
+            if (ModSupport.HasSve && topic.Equals("SVE", StringComparison.OrdinalIgnoreCase) && fromFiles.TryGetValue("SVE-总览", out var sveOverview))
+                return sveOverview;
+            return null;
         }
 
         /// <summary>玩家在 DSH 设置页改的内容：名字 → 全文（空的表示用文件里的）。</summary>

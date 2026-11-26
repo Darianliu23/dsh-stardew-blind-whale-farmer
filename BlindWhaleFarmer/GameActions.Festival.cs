@@ -182,7 +182,8 @@ namespace BlindWhaleFarmer
             var greeted = new List<string>();
             var skipped = new List<string>();
             var o = new Outcome();
-            for (int round = 0; round < 40; round++)
+            int maxRounds = Math.Max(80, ev.actors.Count + 10);
+            for (int round = 0; round < maxRounds; round++)
             {
                 if (!FestivalFreeRoam())
                 {

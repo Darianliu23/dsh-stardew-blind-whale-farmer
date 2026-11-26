@@ -459,7 +459,10 @@ namespace BlindWhaleFarmer
             {
                 case "mine":
                     return i is Pickaxe || IsEscapeItem(i) || (i is MeleeWeapon w && !w.isScythe()) || i is Slingshot
-                        || i is SObject o && (o.Name.Contains("Bomb") || o.QualifiedItemId is "(O)71" || includeHealingFood && o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0
+                        || i is SObject o && (o.Name.Contains("Bomb") || o.QualifiedItemId is "(O)71"
+                                              || o.Name.Contains("Elixir", StringComparison.OrdinalIgnoreCase)
+                                              || o.Name.Contains("Potion", StringComparison.OrdinalIgnoreCase)
+                                              || includeHealingFood && o.Edibility > 0 && o.healthRecoveredOnConsumption() > 0
                                               || o.Category == SObject.CookingCategory)
                         || i is Ring or Boots;
                 case "fish":
@@ -600,6 +603,88 @@ namespace BlindWhaleFarmer
                 fields.Add(field);
             }
             return fields.OrderByDescending(f => f.Tiles.Count).ToList();
+        }
+
+        /// <summary>
+        /// 洒水器覆盖范围内可顺手清理的杂草/小杂物：杂草与草用镰刀，小石头用镐，小树枝用斧。
+        /// 大石头、树桩、大树、小树苗、作物、果树、建筑、玩家摆的物件都返回 null（不动）。
+        /// </summary>
+        internal static string SprinklerClutterTool(char ch) => ch switch
+        {
+            'w' or '"' => "scythe",
+            'o' => "pickaxe",
+            '/' => "axe",
+            _ => null
+        };
+
+        internal static string SprinklerClutterToolLabel(string toolKey) => toolKey switch
+        {
+            "scythe" => "镰刀",
+            "pickaxe" => "镐子",
+            "axe" => "斧头",
+            _ => toolKey
+        };
+
+        /// <summary>clear_area 是否割草：整图清理（all=true）默认不割草留干草，但洒水器覆盖范围内会挡开垦，可以割。</summary>
+        internal static bool ShouldCutGrassInClearArea(bool wholeMap, bool inSprinklerCoverage) =>
+            !wholeMap || inSprinklerCoverage;
+
+        internal static string FormatMissingClutterTools(IReadOnlyDictionary<string, int> missingByTool)
+        {
+            if (missingByTool == null || missingByTool.Count == 0)
+                return null;
+            int total = missingByTool.Values.Sum();
+            if (total <= 0)
+                return null;
+            var parts = missingByTool
+                .Where(kv => kv.Value > 0)
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key)
+                .Select(kv => $"{SprinklerClutterToolLabel(kv.Key)}（{kv.Value} 格）");
+            return $"跳过 {total} 格杂草/杂物（背包里缺少：{string.Join("、", parts)}）";
+        }
+
+        internal static bool SprinklerClutter(GameLocation loc, Point p) =>
+            loc.isTileOnMap(p.X, p.Y) && loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null
+            && SprinklerClutterTool(Observer.ClassifyFeature(loc, new Vector2(p.X, p.Y)).ch) != null;
+
+        internal static string FormatSprinklerClutterHint(IReadOnlyList<(Point pos, int count)> sprinklers)
+        {
+            if (sprinklers == null || sprinklers.Count == 0)
+                return null;
+            if (sprinklers.Count == 1)
+                return $"洒水器 ({sprinklers[0].pos.X},{sprinklers[0].pos.Y}) 范围里有 {sprinklers[0].count} 格被杂草/杂物占着，till_area 会顺手清掉";
+            string list = string.Join("；", sprinklers.Take(5).Select(s => $"洒水器 ({s.pos.X},{s.pos.Y}) 范围里有 {s.count} 格被杂草/杂物占着"));
+            if (sprinklers.Count > 5)
+                list += $" 等共 {sprinklers.Count} 个洒水器";
+            return list + "，till_area 会顺手清掉";
+        }
+
+        /// <summary>农场有洒水器且覆盖范围里有杂草/小杂物/草占着格子时，提示 AI 用 till_area 顺手清掉。</summary>
+        internal static string SprinklerClutterHint(GameLocation loc)
+        {
+            if (loc == null)
+                return null;
+            var list = new List<(Point pos, int count)>();
+            foreach (var kv in loc.objects.Pairs)
+            {
+                if (!kv.Value.IsSprinkler())
+                    continue;
+                int count = 0;
+                foreach (var v in kv.Value.GetSprinklerTiles())
+                {
+                    if (NoSprinklers(loc, v))
+                        continue;
+                    if (SprinklerClutter(loc, new Point((int)v.X, (int)v.Y)))
+                        count++;
+                }
+                if (count > 0)
+                    list.Add((new Point((int)kv.Key.X, (int)kv.Key.Y), count));
+            }
+            if (list.Count == 0)
+                return null;
+            list.Sort((a, b) => b.count != a.count ? b.count.CompareTo(a.count) : a.pos.X != b.pos.X ? a.pos.X.CompareTo(b.pos.X) : a.pos.Y.CompareTo(b.pos.Y));
+            return FormatSprinklerClutterHint(list);
         }
 
         /// <summary>
@@ -1182,7 +1267,8 @@ namespace BlindWhaleFarmer
                 var items = chest.GetItemsForPlayer().Where(i => i != null).ToList();
                 bool fridge = loc is StardewValley.Locations.FarmHouse fh && chest == fh.fridge.Value;
                 string kind = fridge || items.Count == 0 ? "" : $"【{ChestGroup(items)}】";
-                string head = $"- {loc.NameOrUniqueName} ({tile.X},{tile.Y}){(fridge ? " 冰箱" : "")}{kind} {items.Count}/{chest.GetActualCapacity()} 格：";
+                string shortType = FormatChestShortKind(chest, fridge);
+                string head = $"- {loc.NameOrUniqueName} ({tile.X},{tile.Y}){shortType}{kind} {items.Count}/{chest.GetActualCapacity()} 格：";
                 string body = items.Count == 0 ? "空" : string.Join("、", items.OrderByDescending(i => i.Stack).Take(10).Select(i => $"{i.DisplayName}x{i.Stack}"))
                                                     + (items.Count > 10 ? $" 等 {items.Count} 种" : "");
                 if (sb.Length + head.Length + body.Length > maxChars)
@@ -1227,8 +1313,10 @@ namespace BlindWhaleFarmer
                 if (filter != null && items.Count == 0)
                     continue;
                 hits += items.Sum(i => i.Stack);
-                string kind = ChestGroup(chest.GetItemsForPlayer()) is { } g && !(loc is StardewValley.Locations.FarmHouse fh && chest == fh.fridge.Value) ? $"【{g}】" : "";
-                sb.AppendLine($"{loc.NameOrUniqueName} ({tile.X},{tile.Y}){kind} {chest.GetItemsForPlayer().Count(i => i != null)}/{chest.GetActualCapacity()} 格："
+                bool fridge = loc is StardewValley.Locations.FarmHouse fh && chest == fh.fridge.Value;
+                string kind = ChestGroup(chest.GetItemsForPlayer()) is { } g && !fridge ? $"【{g}】" : "";
+                string typeLabel = ChestTypeLabel(chest, fridge);
+                sb.AppendLine($"{loc.NameOrUniqueName} ({tile.X},{tile.Y}) {typeLabel}{kind} 已用 {chest.GetItemsForPlayer().Count(i => i != null)}/{chest.GetActualCapacity()} 格："
                     + (items.Count == 0 ? "空" : string.Join("、", items.Select(Util.ItemLabel))));
             }
             if (filter != null && hits == 0)

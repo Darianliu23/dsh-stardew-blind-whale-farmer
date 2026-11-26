@@ -80,7 +80,7 @@ SMAPI 控制台命令（调试用）：
 - 提供一个 **“大肥鱼种白饭”会话预设**（默认关闭，在插件的配置页里打开）：新建会话时选它，那个会话才连上游戏、拿到玩游戏的工具；其他会话里完全没有这些工具和说明，不占上下文；已经对话过的会话不能再换预设（DSH 的规定），要玩请新建会话；AI 的长期笔记会出现在 get_state 最前面，新会话能接着玩。
 - 也可以在所有会话（包括老会话）里提供一个很小的 **stardew 入口工具**（默认关闭）：不用换预设，常驻上下文只多一个工具的简短说明，AI 要玩时先 `action="help"` 再按需调用各个动作。
 - **AI 能自己开游戏**：游戏没开时，预设会话里的 AI 用 `stardew_launch_game` 工具、入口工具用 `action="launch_game"`，会通过 SMAPI 启动星露谷，在标题画面读存档（可以指定存档名，不指定读最近玩的那个），进了游戏才返回。游戏已经开着就什么都不做。需要先装好 SMAPI 和模组；找不到游戏目录时在插件设置里填“星露谷目录”。
-- 在 DSH 左侧边栏「插件」→ dsh-stardew-blind-whale-farmer → 点组件名旁边的「配置 ›」 里提供设置：**每次玩几个游戏日 / 多少分钟**、思考时冻结时间、给 AI 的额外要求、攻略文件等，改了自动推送到游戏，不用重启。
+- 在 DSH 左侧边栏「插件」→ dsh-stardew-blind-whale-farmer → 点组件名旁边的「配置 ›」 里提供设置：**每次玩几个游戏日 / 多少分钟**、**在游戏里显示 AI 想法**（默认开，把 AI 的思考和说话内容实时显示在游戏左上角 HUD）、**睡醒自动续玩天数**（默认 3 天，0 关闭，防无限消耗 API 额度）、思考时冻结时间、给 AI 的额外要求、攻略文件等，改了自动推送到游戏，不用重启。
 
 桌面版和网页版用不同的 profile，各自都要装。不要再在 profile 里全局挂 `@deepseek-ai/dsh-mcp-client` 连星露谷，否则每个会话都会带上这些工具。
 
@@ -184,8 +184,8 @@ SMAPI 控制台命令（调试用）：
 | `McpPort` | 18080 | MCP 端口，地址 `http://127.0.0.1:端口/mcp` |
 | `McpFreezeTime` | `true` | MCP 客户端思考时冻结游戏时间 |
 | `McpIdleSeconds` | 120 | 多久没有 MCP 调用就视为客户端不玩了，恢复走时 |
-| `SessionDays` | 0 | 每次游玩最多玩几个游戏日（睡一觉算一天），到了 AI 停下汇报。0 = 不限，每次读档重新计 |
-| `SessionMinutes` | 0 | 每次游玩最多玩多少现实分钟，到了先回家睡觉存档再停下。0 = 不限 |
+| `SessionDays` | 3 | 每次游玩最多玩几个游戏日（睡一觉算一天），到了 AI 停下汇报。0 = 不限（配合 DSH“保持唤醒”会一直玩并持续消耗 API 额度），与 `SessionMinutes` 先到哪个先停，每次读档重新计 |
+| `SessionMinutes` | 60 | 每次游玩最多玩多少现实分钟，到了先回家睡觉存档再停下。0 = 不限，与 `SessionDays` 先到哪个先停 |
 | `CoSleepDefault` | 空 | 联机 `sleep` 未传 `with`/`location` 时的默认同睡对象：留空 = 按 `AiHomeLocation`/自己的家；填玩家名 = 默认去对方屋里一起睡；填 `random` = 随机挑在线玩家 |
 | `PassbyEmoteEnabled` | `true` | 联机走路途中经过其他真人玩家附近（4 格内、非战斗/节日/剧情/菜单/钓鱼）时，停下转身发个可爱表情；想关就设为 `false` |
 | `PassbyEmoteChance` | `0.35` | 路上遇到玩家时发表情的触发概率（`0`~`1`） |
@@ -193,6 +193,9 @@ SMAPI 控制台命令（调试用）：
 | `IdleFollowEnabled` | `true` | 联机空闲（没有指派任务）时随机挑在线玩家跟一会儿并间或发表情卖萌（绝不捣乱，有任务或聊天立刻停下）；想关就设为 `false` |
 | `IdleFollowIntervalSeconds` | `180` | 联机空闲多久（现实秒，范围 `30`~`3600`）触发一次跟着玩家卖萌 |
 | `IdleFollowDurationSeconds` | `30` | 每次空闲跟着玩家卖萌持续多久（现实秒，范围 `10`~`180`） |
+| `ProactiveGiftEnabled` | `true` | 联机且有在线真人玩家时，偶尔提醒 AI 挑一件小礼物（做的菜、捡的花、钓的鱼等）主动送给玩家并说话发表情；单机不触发 |
+| `ProactiveGiftChance` | `0.5` | 联机主动给玩家送礼提示的触发概率（`0`~`1`） |
+| `ProactiveGiftCooldownDays` | `1` | 联机主动给玩家送礼的冷却间隔（游戏日，范围 `1`~`28`，默认 `1` 表示每天最多一次） |
 
 以上 `SessionDays`、`SessionMinutes`、`McpFreezeTime`、`McpIdleSeconds`、`ExtraInstructions`、`GuideFile` 也可以在 DSH 里用 `dsh-stardew-blind-whale-farmer` 插件改，改完会写回这个文件。
 

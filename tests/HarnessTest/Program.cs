@@ -59,7 +59,10 @@ partial class Program
         Check(readOnly.Contains("list_machines"), "list_machines 注册为只读工具");
         TestMuseumInfo(asm, schema, readOnly);
         TestQuestLabels(tActions);
+        TestVaultBundles(asm, tActions, schema);
         TestHayAndStorage(tActions, schema, readOnly);
+        TestGiftInfoReverse(tActions, schema, readOnly);
+        TestSveCompat(asm);
 
         var exec = tTools.GetMethod("Execute");
         string r1 = await (Task<string>)exec.Invoke(tools, new object[] { "update_notes", "{\"notes\":\"种防风草\"}" });
@@ -87,6 +90,10 @@ partial class Program
         bool ArgsAccepted(string r) => !r.Contains("不认识参数") && !r.Contains("缺少必填参数") && !r.Contains("缺少参数");
         string autoInteract = await Run("interact", "{\"item\":\"铜矿石\"}");
         Check(autoInteract.Contains("游戏世界未就绪"), "interact 只传 item 通过参数校验");
+        string reverseGiftDefault = await Run("gift_info", "{}");
+        Check(reverseGiftDefault.Contains("游戏世界未就绪"), "gift_info 不传 npc 通过参数校验");
+        string reverseGiftChests = await Run("gift_info", "{\"chests\":true}");
+        Check(reverseGiftChests.Contains("游戏世界未就绪"), "gift_info 只传 chests=true 通过参数校验");
         foreach (var (name, json) in new[]
         {
             ("craft", "{\"item\":\"Chest\"}"),
@@ -111,6 +118,8 @@ partial class Program
         Check(rNoItem.StartsWith("失败：place_item 缺少必填参数 item"), "place_item 不给 item 照样报缺必填：" + Shorten(rNoItem));
         string rAutoPlace = await Run("place_item", "{\"item\":\"Chest\"}");
         Check(ArgsAccepted(rAutoPlace) && !rAutoPlace.Contains("要一起给"), "place_item 不给 x,y 时参数被接受（进游戏后自动找位置）：" + Shorten(rAutoPlace));
+        TestCoopCartGiftDrop(asm, tActions, schema, Run);
+        TestMachinesBooksGiftNaming(asm, tActions, schema, readOnly, Run);
         string rUnknown = await Run("craft", "{\"recipe\":\"Chest\",\"colour\":\"red\"}");
         Check(rUnknown.Contains("不认识参数 colour"), "真不认识的参数照样拒绝：" + Shorten(rUnknown));
         string rOtherTool = await Run("move_to", "{\"x\":1,\"y\":2,\"width\":3}");
@@ -289,6 +298,7 @@ partial class Program
         listener.Stop();
 
         await TestMcp(asm, tMain, tTools, tActions, tConfig, notes);
+        TestFruitTreeAndSprinkler(asm, tActions, schema);
 
         Console.WriteLine(failures == 0 ? "\n全部通过" : $"\n{failures} 项失败");
         return failures;
@@ -349,7 +359,14 @@ partial class Program
         Check(Gate("dialogue") == null && Gate("close_menu") == null, "时长限制：结束后仍可处理界面");
         tSession.GetMethod("Reset").Invoke(session, null);
         Check(Gate("move_to") == null, "时长限制：读档后重新计");
-        var noLimit = Activator.CreateInstance(tSession, all, null, new object[] { Activator.CreateInstance(tConfig) }, null);
+        var defaultCfg = Activator.CreateInstance(tConfig);
+        Check((int)tConfig.GetProperty("SessionDays").GetValue(defaultCfg) == 3
+              && (int)tConfig.GetProperty("SessionMinutes").GetValue(defaultCfg) == 60,
+            "默认游玩上限：3 个游戏日 / 60 分钟");
+        var noLimitCfg = Activator.CreateInstance(tConfig);
+        tConfig.GetProperty("SessionDays").SetValue(noLimitCfg, 0);
+        tConfig.GetProperty("SessionMinutes").SetValue(noLimitCfg, 0);
+        var noLimit = Activator.CreateInstance(tSession, all, null, new object[] { noLimitCfg }, null);
         tSession.GetMethod("OnDayStarted").Invoke(noLimit, null);
         Check(tSession.GetMethod("Status").Invoke(noLimit, null) == null, "不设上限时不显示进度");
         tMod.GetField("Session", all).SetValue(mod, Activator.CreateInstance(tSession, all, null, new object[] { config }, null));
@@ -485,6 +502,38 @@ partial class Program
             "GET /settings 返回版本号和游戏实例标识（插件靠它判断要不要重推）");
         var badSettings = await http.PostAsync($"http://127.0.0.1:{port}/settings", new System.Net.Http.StringContent("{}", Encoding.UTF8, "application/json"));
         Check((int)badSettings.StatusCode == 400, "POST /settings 格式不对返回 400");
+
+        // ── /thought：DSH 插件推 AI 想法到左上角 HUD ──
+        var hudField = tMod.GetField("Hud", all).GetValue(mod);
+        var thoughtField = hudField.GetType().GetField("thought", BindingFlags.Instance | BindingFlags.NonPublic);
+        var tp = await http.PostAsync($"http://127.0.0.1:{port}/thought",
+            new System.Net.Http.StringContent("{\"text\":\"第一行\\r\\n第二行\\t\\u0000\\u0007去浇水啦\"}", Encoding.UTF8, "application/json"));
+        var tpBody = JsonNode.Parse(await tp.Content.ReadAsStringAsync());
+        string hudThought = (string)thoughtField.GetValue(hudField);
+        Check((int)tp.StatusCode == 200 && tpBody?["ok"]?.GetValue<bool>() == true && hudThought == "第一行 第二行 去浇水啦",
+            "POST /thought 过滤控制字符、合成一行并写入 Hud.SetThought：" + hudThought);
+
+        string longText = new string('鱼', 260);
+        var tpLong = await http.PostAsync($"http://127.0.0.1:{port}/thought",
+            new System.Net.Http.StringContent(new JsonObject { ["text"] = longText }.ToJsonString(), Encoding.UTF8, "application/json"));
+        string hudLong = (string)thoughtField.GetValue(hudField);
+        Check((int)tpLong.StatusCode == 200 && hudLong.Length == 200 && hudLong.EndsWith("…"),
+            $"POST /thought 超长文字截断到 200 字（实际 {hudLong.Length}）");
+
+        var tpBad = await http.PostAsync($"http://127.0.0.1:{port}/thought",
+            new System.Net.Http.StringContent("{}", Encoding.UTF8, "application/json"));
+        Check((int)tpBad.StatusCode == 400, "POST /thought 缺少 text 返回 400");
+
+        var tgGet = await http.GetAsync($"http://127.0.0.1:{port}/thought");
+        Check((int)tgGet.StatusCode == 405, "GET /thought 返回 405");
+
+        var evilThought = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"http://127.0.0.1:{port}/thought")
+        {
+            Content = new System.Net.Http.StringContent("{\"text\":\"hi\"}", Encoding.UTF8, "application/json")
+        };
+        evilThought.Headers.Add("Origin", "http://evil.example.com");
+        var tpEvil = await http.SendAsync(evilThought);
+        Check((int)tpEvil.StatusCode == 403, $"POST /thought 拒绝外部网页来源（{(int)tpEvil.StatusCode}）");
 
         var (c4, st) = await Post("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get_state\",\"arguments\":{}}}");
         string stText = st?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";

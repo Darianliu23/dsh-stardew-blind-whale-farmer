@@ -21,6 +21,66 @@ namespace BlindWhaleFarmer
 
         private static bool IsSecretNote(Item item) => item?.QualifiedItemId is "(O)79" or "(O)842";
 
+        internal enum BookKind { None, SkillBook, PurpleBook, PowerBook }
+
+        /// <summary>按 Object.readBook（SDV 1.6）区分书籍类型：SkillBook_* 和 PurpleBook 可重复读加经验，其余 booksCategory 是一次性能力书。</summary>
+        internal static BookKind ClassifyBook(int category, string itemId)
+        {
+            if (string.Equals(itemId, "PurpleBook", System.StringComparison.Ordinal))
+                return BookKind.PurpleBook;
+            if (category == SObject.skillBooksCategory
+                || (!string.IsNullOrEmpty(itemId) && itemId.StartsWith("SkillBook_", System.StringComparison.Ordinal)))
+                return BookKind.SkillBook;
+            if (category == SObject.booksCategory)
+                return BookKind.PowerBook;
+            return BookKind.None;
+        }
+
+        internal static bool IsZeroEffectOnRereadPowerBook(string itemId) =>
+            string.Equals(itemId, "Book_PriceCatalogue", System.StringComparison.Ordinal)
+            || string.Equals(itemId, "Book_AnimalCatalogue", System.StringComparison.Ordinal);
+
+        /// <summary>商店商品列表里给书籍加的标注。</summary>
+        internal static string FormatShopBookTag(int category, string itemId, bool alreadyRead) =>
+            ClassifyBook(category, itemId) switch
+            {
+                BookKind.SkillBook => "（技能书，加250经验，可重复读）",
+                BookKind.PurpleBook => "（星之书，五项各加250经验，可重复读）",
+                BookKind.PowerBook when alreadyRead => IsZeroEffectOnRereadPowerBook(itemId)
+                    ? "【已读过，再读无效果】"
+                    : "【已读过】",
+                BookKind.PowerBook => "（能力书，读一次永久生效）",
+                _ => ""
+            };
+
+        /// <summary>买书拦截检查：已读能力书（或一次买多本能力书）默认拒绝，传 force=true 才放行；技能书和星之书不拦。</summary>
+        internal static string CheckBuyBookBlock(int category, string itemId, string displayName, int count, bool alreadyRead, bool force)
+        {
+            if (force || ClassifyBook(category, itemId) != BookKind.PowerBook)
+                return null;
+            if (alreadyRead)
+            {
+                string detail = IsZeroEffectOnRereadPowerBook(itemId)
+                    ? "再读没有任何效果（也不加经验）"
+                    : "永久能力不会叠加，再读只给少量经验（100 点），花钱重买很不划算";
+                return $"先别买：《{displayName}》已经读过了，{detail}。如果是要买来送人或交易，请传 force=true";
+            }
+            if (count > 1)
+                return $"先别买多本：《{displayName}》是能力书，读 1 本就永久生效，多买的读了只给少量经验。只买 1 本即可；真要多买（如送人）请传 force=true";
+            return null;
+        }
+
+        /// <summary>use_item 读背包里的已读能力书时拦截，避免误消耗；传 force=true 才放行。</summary>
+        internal static string CheckUseBookBlock(int category, string itemId, string displayName, bool alreadyRead, bool force)
+        {
+            if (force || ClassifyBook(category, itemId) != BookKind.PowerBook || !alreadyRead)
+                return null;
+            string detail = IsZeroEffectOnRereadPowerBook(itemId)
+                ? "再读没有任何效果（也不加经验），会白白消耗掉"
+                : "永久能力不会叠加，再读只给少量经验（100 点），更适合卖掉、送人或在书商处以物易物";
+            return $"先别读：《{displayName}》已经读过了，{detail}。确定要读请传 force=true";
+        }
+
         /// <summary>背包里没读的书、秘密纸条（状态里提醒一句）；没有返回 null。</summary>
         public static string UnreadItemsHint()
         {
@@ -55,6 +115,11 @@ namespace BlindWhaleFarmer
 
             var obj = (SObject)Player.Items[idx];
             string name = obj.DisplayName;
+            if (CheckUseBookBlock(obj.Category, obj.ItemId, name, Player.stats.Get(obj.ItemId) != 0, force) is string useBookBlock)
+            {
+                yield return ActionResult.Fail(useBookBlock);
+                yield break;
+            }
             // 传送图腾：农场 —— 走回去来得及就别浪费：走路要一个半小时以上、或者走到家已经过了 23:00 才值得用
             if (obj.QualifiedItemId == "(O)688" && !force && Loc is not Farm && EstimateMinutesToBed(ResolveAiHome()) is int walk && walk < 90)
             {
@@ -69,9 +134,10 @@ namespace BlindWhaleFarmer
             // 游戏按宽度折行时会在中文中间塞空格（“双倍木 头”），去掉
             string desc = System.Text.RegularExpressions.Regex.Replace(obj.getDescription()?.Replace("\n", " ").Trim() ?? "",
                 @"(?<=\p{IsCJKUnifiedIdeographs})\s+(?=\p{IsCJKUnifiedIdeographs})", "");
-            bool book = IsBook(obj), note = IsSecretNote(obj);
-            bool skillBook = obj.Category == SObject.skillBooksCategory;
-            bool firstRead = book && !skillBook && Player.stats.Get(obj.ItemId) == 0;
+            var bookKind = ClassifyBook(obj.Category, obj.ItemId);
+            bool book = bookKind != BookKind.None, note = IsSecretNote(obj);
+            bool xpBook = bookKind is BookKind.SkillBook or BookKind.PurpleBook;
+            bool firstRead = bookKind == BookKind.PowerBook && Player.stats.Get(obj.ItemId) == 0;
             int notesBefore = Player.secretNotesSeen.Count;
             var locBefore = Loc;
 
@@ -106,11 +172,11 @@ namespace BlindWhaleFarmer
             }
             if (book)
             {
-                yield return ActionResult.Success(skillBook
+                yield return ActionResult.Success(xpBook
                     ? $"读了《{name}》，加了技能经验：{desc}"
                     : firstRead
                         ? $"读了《{name}》，获得永久效果：{desc}"
-                        : $"读了《{name}》。这本以前读过，效果已经有了，这次只加了一点经验（同样的书以后可以直接卖掉）");
+                        : $"读了《{name}》。这本以前读过，永久效果已经有了（未叠加）");
                 yield break;
             }
             string moved = Loc != locBefore ? $"，现在在 {Loc.DisplayName}（{Loc.Name}）" : "";

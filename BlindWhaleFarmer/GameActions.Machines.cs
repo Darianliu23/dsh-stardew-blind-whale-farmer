@@ -47,9 +47,22 @@ namespace BlindWhaleFarmer
         {
             var pending = new Queue<GameLocation>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            pending.Enqueue(Game1.getFarm());
+            void Enqueue(GameLocation loc)
+            {
+                if (loc != null && !loc.IsTemporary && !ModSupport.IsWarpRoom(loc.NameOrUniqueName))
+                    pending.Enqueue(loc);
+            }
+            Enqueue(Game1.getFarm());
             // 农场洞穴不在 buildings 里；农舍的地下室也由游戏单独关联。
-            pending.Enqueue(Game1.getLocationFromName("FarmCave"));
+            Enqueue(Game1.getLocationFromName("FarmCave"));
+            // 兼容 SVE 等模组的额外农场/温室/小屋/酒窖（如爷爷小屋、极光葡萄园、Grampleton Fields）以及温室/姜岛
+            foreach (var loc in Game1.locations)
+            {
+                if (loc == null || loc.IsTemporary || ModSupport.IsWarpRoom(loc.NameOrUniqueName))
+                    continue;
+                if (loc.IsFarm || loc.IsGreenhouse || loc.buildings.Count > 0 || loc.objects.Values.Any(o => GetFarmMachineData(o) != null))
+                    Enqueue(loc);
+            }
             while (pending.Count > 0)
             {
                 var location = pending.Dequeue();
@@ -60,9 +73,9 @@ namespace BlindWhaleFarmer
                     location = Loc;
                 yield return location;
                 foreach (var building in location.buildings)
-                    pending.Enqueue(building.GetIndoors());
+                    Enqueue(building.GetIndoors());
                 if (location is FarmHouse house && house.upgradeLevel >= 3 && house.GetCellarName() is string cellar)
-                    pending.Enqueue(Game1.getLocationFromName(cellar));
+                    Enqueue(Game1.getLocationFromName(cellar));
             }
         }
 
@@ -78,6 +91,9 @@ namespace BlindWhaleFarmer
                 return "农场目前没有已摆放的机器。";
 
             var lines = new List<string>();
+            int totalReady = 0;
+            foreach (var group in groups)
+                totalReady += group.Count(m => m.State == MachineState.Ready);
             foreach (var group in groups.Take(maxTypes))
             {
                 var idle = group.Where(m => m.State == MachineState.Idle).ToList();
@@ -97,6 +113,8 @@ namespace BlindWhaleFarmer
             }
             if (groups.Count > maxTypes)
                 lines.Add($"还有 {groups.Count - maxTypes} 种机器，用 list_machines 查看。");
+            if (totalReady > 0)
+                lines.Add($"共有 {totalReady} 台机器做好了，可用 collect_machines 一次收完。");
             return string.Join("\n", lines);
         }
 
@@ -104,6 +122,7 @@ namespace BlindWhaleFarmer
         {
             string spec = itemSpec?.Trim();
             var lines = new List<string>();
+            int totalReady = 0;
             foreach (var group in EnumerateFarmMachines())
             {
                 var machine = group.First().Object;
@@ -114,6 +133,8 @@ namespace BlindWhaleFarmer
                 lines.Add($"{machine.DisplayName}（{group.Key}）{group.Count()} 台");
                 foreach (var entry in group.OrderBy(m => m.Location.NameOrUniqueName, StringComparer.Ordinal).ThenBy(m => m.Tile.Y).ThenBy(m => m.Tile.X))
                 {
+                    if (entry.State == MachineState.Ready)
+                        totalReady++;
                     string state = entry.State switch
                     {
                         MachineState.Idle => "空闲",
@@ -124,8 +145,193 @@ namespace BlindWhaleFarmer
                     lines.Add($"- {entry.Position} {state}");
                 }
             }
+            if (totalReady > 0)
+                lines.Add($"共有 {totalReady} 台机器做好了，可用 collect_machines 一次收完。");
             yield return ActionResult.Success(lines.Count > 0 ? string.Join("\n", lines)
                 : string.IsNullOrEmpty(spec) ? "农场目前没有已摆放的机器。" : $"农场上没有已摆放的“{spec}”机器。");
+        }
+
+        internal static bool MatchesMachineFilter(
+            string spec,
+            string machineDisplayName, string machineName, string machineQualifiedId,
+            string heldDisplayName, string heldName, string heldQualifiedId)
+        {
+            if (string.IsNullOrWhiteSpace(spec))
+                return true;
+            string s = spec.Trim();
+            return (!string.IsNullOrEmpty(machineDisplayName) && machineDisplayName.Contains(s, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(machineName) && machineName.Contains(s, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(machineQualifiedId) && machineQualifiedId.Equals(s, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(heldDisplayName) && heldDisplayName.Contains(s, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(heldName) && heldName.Contains(s, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(heldQualifiedId) && heldQualifiedId.Equals(s, StringComparison.OrdinalIgnoreCase));
+        }
+
+        internal static string FormatCollectMachinesSummary(
+            int collected,
+            IEnumerable<(string id, string name, int quality, int quantity)> gains,
+            int skippedUnreachable,
+            int skippedOther,
+            int remainingFull,
+            bool stoppedFull)
+        {
+            string gainedText = InventoryDiff.FormatGains(gains);
+            string head = !string.IsNullOrEmpty(gainedText)
+                ? $"收了 {collected} 台机器：{gainedText}"
+                : $"收了 {collected} 台机器";
+            var notes = new List<string>();
+            int skipped = skippedUnreachable + skippedOther;
+            if (skipped > 0)
+                notes.Add(skippedUnreachable > 0 && skippedOther == 0
+                    ? $"跳过 {skippedUnreachable} 台（走不到）"
+                    : $"跳过 {skipped} 台");
+            if (stoppedFull)
+                notes.Add($"背包满了，还剩 {remainingFull} 台待收机器没收");
+            return notes.Count > 0 ? $"{head}（{string.Join("；", notes)}）" : head;
+        }
+
+        private static (string id, string name, int quality, int quantity)[] SnapshotPlayerItems() =>
+            InventoryDiff.Snapshot(Player.Items.Where(it => it != null)
+                .Select(it => (it.QualifiedItemId, it.DisplayName, it.Quality, it.Stack)));
+
+        private static int CountRemainingReadyMachines(GameLocation loc, List<Point> ordered, int fromIndex, string itemSpec)
+        {
+            int count = 0;
+            for (int j = fromIndex; j < ordered.Count; j++)
+            {
+                var pt = ordered[j];
+                if (loc.objects.TryGetValue(new Vector2(pt.X, pt.Y), out var obj)
+                    && GetFarmMachineData(obj) != null
+                    && GetMachineState(obj) == MachineState.Ready
+                    && MatchesMachineFilter(itemSpec, obj.DisplayName, obj.Name, obj.QualifiedItemId,
+                        obj.heldObject.Value?.DisplayName, obj.heldObject.Value?.Name, obj.heldObject.Value?.QualifiedItemId))
+                    count++;
+            }
+            return count;
+        }
+
+        /// <summary>批量收取当前地点（或指定地点）所有已经做好的机器产物（含农场山洞蘑菇箱等），不自动补料。</summary>
+        public IEnumerable<object> CollectMachines(string location, string itemSpec)
+        {
+            var o = new Outcome();
+            if (!string.IsNullOrWhiteSpace(location) && !Loc.NameOrUniqueName.Equals(location, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var s in TravelInner(location, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    yield return ActionResult.Fail(o.Message);
+                    yield break;
+                }
+            }
+
+            var loc = Loc;
+            var allMachines = EnumerateMachines(loc).ToList();
+            if (allMachines.Count == 0)
+            {
+                yield return ActionResult.Fail($"{loc.NameOrUniqueName} 没有已摆放的机器");
+                yield break;
+            }
+
+            var allReady = allMachines.Where(m => m.State == MachineState.Ready).ToList();
+            var matched = allReady.Where(m => MatchesMachineFilter(
+                itemSpec,
+                m.Object.DisplayName, m.Object.Name, m.Object.QualifiedItemId,
+                m.Object.heldObject.Value?.DisplayName, m.Object.heldObject.Value?.Name, m.Object.heldObject.Value?.QualifiedItemId)).ToList();
+
+            if (matched.Count == 0)
+            {
+                if (!string.IsNullOrWhiteSpace(itemSpec))
+                {
+                    string extra = allReady.Count > 0 ? $"（这里另有 {allReady.Count} 台其他机器待收）" : "";
+                    yield return ActionResult.Fail($"{loc.NameOrUniqueName} 没有匹配“{itemSpec.Trim()}”的待收机器{extra}");
+                }
+                else
+                {
+                    int working = allMachines.Count(m => m.State == MachineState.Working);
+                    int idle = allMachines.Count - working;
+                    yield return ActionResult.Fail($"{loc.NameOrUniqueName} 目前没有做好的机器产物（加工中 {working} 台，空闲 {idle} 台）");
+                }
+                yield break;
+            }
+
+            var ordered = Util.NearestOrder(Player.TilePoint, matched.Select(m => m.Tile));
+            int collected = 0, skippedUnreachable = 0, skippedOther = 0, remainingFull = 0;
+            bool stoppedFull = false;
+            var gains = new List<(string id, string name, int quality, int quantity)>();
+
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var tile = ordered[i];
+                var v = new Vector2(tile.X, tile.Y);
+                if (!loc.objects.TryGetValue(v, out var obj) || GetFarmMachineData(obj) == null || GetMachineState(obj) != MachineState.Ready)
+                {
+                    skippedOther++;
+                    continue;
+                }
+                if (!Player.couldInventoryAcceptThisItem(obj.heldObject.Value))
+                {
+                    stoppedFull = true;
+                    remainingFull = CountRemainingReadyMachines(loc, ordered, i, itemSpec);
+                    break;
+                }
+
+                foreach (var s in GoAdjacent(tile, o))
+                    yield return s;
+                if (!o.Ok)
+                {
+                    skippedUnreachable++;
+                    continue;
+                }
+
+                if (!loc.objects.TryGetValue(v, out obj) || GetFarmMachineData(obj) == null || GetMachineState(obj) != MachineState.Ready)
+                {
+                    skippedOther++;
+                    continue;
+                }
+
+                int safe = Util.FindTool<Tool>();
+                if (safe >= 0)
+                    Player.CurrentToolIndex = safe;
+
+                var before = SnapshotPlayerItems();
+                bool ok = obj.checkForAction(Player);
+                foreach (var s in WaitTicks(4))
+                    yield return s;
+                var after = SnapshotPlayerItems();
+
+                if (!ok && obj.readyForHarvest.Value && obj.heldObject.Value != null)
+                {
+                    stoppedFull = true;
+                    remainingFull = CountRemainingReadyMachines(loc, ordered, i, itemSpec);
+                    break;
+                }
+
+                var diff = InventoryDiff.Difference(before, after);
+                if (diff.Any(d => d.quantity > 0) || !obj.readyForHarvest.Value)
+                {
+                    collected++;
+                    gains.AddRange(diff);
+                }
+                else
+                {
+                    skippedOther++;
+                }
+            }
+
+            if (collected == 0)
+            {
+                if (stoppedFull)
+                    yield return ActionResult.Fail($"背包满了，还剩 {remainingFull} 台待收机器没收");
+                else if (skippedUnreachable > 0)
+                    yield return ActionResult.Fail($"有 {skippedUnreachable} 台待收机器走不到，未能收取");
+                else
+                    yield return ActionResult.Fail("没有收到任何机器产物");
+                yield break;
+            }
+
+            yield return ActionResult.Success(FormatCollectMachinesSummary(
+                collected, InventoryDiff.Sum(gains), skippedUnreachable, skippedOther, remainingFull, stoppedFull));
         }
 
         // 只支持普通投料规则。自定义产物方法可能在规则匹配后拒绝原料或执行额外逻辑。

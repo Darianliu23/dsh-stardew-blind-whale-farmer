@@ -12,22 +12,62 @@ namespace BlindWhaleFarmer
     /// <summary>送礼、博物馆捐赠、社区中心收集包。</summary>
     internal sealed partial class GameActions
     {
+        /// <summary>
+        /// 同名或同显示名村民的匹配优先级（越大越优先）：
+        /// 解决 SVE 中原版隐藏影子 NPC（如位于 (-49,-49) 且不可社交的 Marlon / Gunther）与 SVE 可社交 NPC（MarlonFay / GuntherSilvian）重名的问题。
+        /// </summary>
+        internal static int NpcMatchRank(bool exactInternalName, bool canSocialize, bool invisible, bool onMap, bool inWarpRoom)
+        {
+            int score = 0;
+            if (!invisible) score += 100;
+            if (onMap) score += 80;
+            if (!inWarpRoom) score += 60;
+            if (canSocialize) score += 40;
+            if (exactInternalName) score += 10;
+            return score;
+        }
+
+        internal static NPC PickBestNpcMatch(IEnumerable<NPC> candidates, string name)
+        {
+            if (candidates == null || string.IsNullOrWhiteSpace(name))
+                return null;
+            string q = name.Trim();
+            NPC best = null;
+            int bestRank = int.MinValue;
+            foreach (var n in candidates)
+            {
+                if (n == null)
+                    continue;
+                bool exactName = n.Name.Equals(q, StringComparison.OrdinalIgnoreCase);
+                bool exactDisplay = n.displayName != null && n.displayName.Equals(q, StringComparison.OrdinalIgnoreCase);
+                if (!exactName && !exactDisplay)
+                    continue;
+                var pt = n.TilePoint;
+                bool onMap = pt.X >= 0 && pt.Y >= 0;
+                bool inWarpRoom = ModSupport.IsWarpRoom(n.currentLocation?.NameOrUniqueName);
+                // SVE 的 GuntherSilvian 在解锁社交前 CanSocialize 也是 false，但有完整生日与送礼表；优先于无生日的原版后台影子 Gunther
+                bool hasProfile = !string.IsNullOrEmpty(n.Birthday_Season) && n.Birthday_Day > 0;
+                int rank = NpcMatchRank(exactName, n.CanSocialize, n.IsInvisible, onMap, inWarpRoom) + (hasProfile ? 20 : 0);
+                if (rank > bestRank)
+                {
+                    bestRank = rank;
+                    best = n;
+                }
+            }
+            return best;
+        }
+
         private static NPC FindVillager(string name)
         {
             if (string.IsNullOrWhiteSpace(name))
                 return null;
-            name = name.Trim();
-            NPC found = null;
+            var all = new List<NPC>();
             Utility.ForEachVillager(n =>
             {
-                if (n.Name.Equals(name, StringComparison.OrdinalIgnoreCase) || n.displayName.Equals(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    found = n;
-                    return false;
-                }
+                all.Add(n);
                 return true;
             });
-            return found;
+            return PickBestNpcMatch(all, name);
         }
 
         /// <summary>
@@ -70,9 +110,249 @@ namespace BlindWhaleFarmer
 
         // ───────────────────────── 送礼 ─────────────────────────
 
-        /// <summary>查询某个村民的喜好、生日、好感，以及背包里哪些东西适合送他。不移动、不花时间。</summary>
-        public IEnumerable<object> GiftInfo(string npcName)
+        internal const int ReverseGiftMaxItems = 12;
+        internal const int ReverseGiftMaxNpcsPerTaste = 5;
+
+        internal sealed record GiftCandidateNpc(
+            string InternalName,
+            string DisplayName,
+            string LocationName,
+            bool CanSocialize,
+            bool IsBirthday,
+            bool IsMarried,
+            bool IsDivorced,
+            bool IsMet,
+            int GiftsToday,
+            int GiftsThisWeek);
+
+        internal sealed record GiftCandidateItem(
+            string Key,
+            string DisplayName,
+            string Source,
+            bool IsFromChest,
+            bool IsReserved,
+            string ReservedReason = null);
+
+        /// <summary>这个村民今天还能不能送普通礼物（能社交、未离婚、今天没送过、本周未满 2 次或生日/配偶）。</summary>
+        internal static bool CanGiftToday(GiftCandidateNpc npc) =>
+            npc != null
+            && npc.CanSocialize
+            && !npc.IsDivorced
+            && npc.GiftsToday <= 0
+            && (npc.GiftsThisWeek < 2 || npc.IsBirthday || npc.IsMarried);
+
+        private static string FormatGiftNpcLabel(GiftCandidateNpc npc) =>
+            npc.DisplayName
+            + (npc.IsBirthday ? "（今天生日）" : "")
+            + (npc.IsMet ? "" : "(未认识)");
+
+        private static string FormatGiftNpcList(IReadOnlyList<GiftCandidateNpc> npcs, int maxCount)
         {
+            var shown = npcs.Take(maxCount).Select(FormatGiftNpcLabel);
+            string joined = string.Join("、", shown);
+            return npcs.Count > maxCount ? $"{joined} 等 {npcs.Count} 人" : joined;
+        }
+
+        /// <summary>从背包（可选含箱子）反查今天可送礼村民的最爱/喜欢匹配。</summary>
+        internal static string BuildReverseGiftSummary(
+            IReadOnlyList<GiftCandidateNpc> npcs,
+            IReadOnlyList<GiftCandidateItem> items,
+            Func<GiftCandidateNpc, GiftCandidateItem, int> getTaste,
+            bool includeChests = false,
+            int maxItemLines = ReverseGiftMaxItems,
+            int maxNpcsPerTaste = ReverseGiftMaxNpcsPerTaste)
+        {
+            var eligibleNpcs = (npcs ?? Array.Empty<GiftCandidateNpc>())
+                .Where(CanGiftToday)
+                .OrderByDescending(n => n.IsBirthday)
+                .ThenByDescending(n => n.IsMet)
+                .ThenBy(n => n.DisplayName, StringComparer.Ordinal)
+                .ToList();
+            if (eligibleNpcs.Count == 0)
+                return "今天没有还能送礼的村民了（今天都已送过或本周已送满 2 次）。";
+
+            var usableItems = new List<GiftCandidateItem>();
+            var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+            var skippedReservedKeys = new HashSet<string>(StringComparer.Ordinal);
+            var orderedInput = (items ?? Array.Empty<GiftCandidateItem>())
+                .Where(it => it != null && (includeChests || !it.IsFromChest))
+                .OrderBy(it => it.IsFromChest);
+            foreach (var item in orderedInput)
+            {
+                string key = string.IsNullOrEmpty(item.Key) ? item.DisplayName : item.Key;
+                if (item.IsReserved)
+                {
+                    skippedReservedKeys.Add(key);
+                    continue;
+                }
+                if (seenKeys.Add(key))
+                    usableItems.Add(item);
+            }
+
+            // 预计算每个物品对可送村民的最爱/喜欢列表（保留 eligibleNpcs 顺序：生日最前）
+            var matches = new List<(GiftCandidateItem item, List<GiftCandidateNpc> love, List<GiftCandidateNpc> like)>();
+            foreach (var item in usableItems)
+            {
+                var love = new List<GiftCandidateNpc>();
+                var like = new List<GiftCandidateNpc>();
+                foreach (var npc in eligibleNpcs)
+                {
+                    int taste = getTaste(npc, item);
+                    if (taste == NPC.gift_taste_love || taste == NPC.gift_taste_stardroptea)
+                        love.Add(npc);
+                    else if (taste == NPC.gift_taste_like)
+                        like.Add(npc);
+                }
+                if (love.Count > 0 || like.Count > 0)
+                    matches.Add((item, love, like));
+            }
+
+            string scope = includeChests ? "背包+箱子" : "背包";
+            int skippedReserved = skippedReservedKeys.Count(k => !seenKeys.Contains(k));
+            var lines = new List<string>
+            {
+                $"{scope}送礼反查（今天还能送 {eligibleNpcs.Count} 人，只列最爱/喜欢{(skippedReserved > 0 ? $"；已跳过 {skippedReserved} 件交任务/【留着】物品" : "")}）："
+            };
+
+            // 生日村民置顶汇总（不受本周 2 次限制，好感 x8）
+            foreach (var bday in eligibleNpcs.Where(n => n.IsBirthday))
+            {
+                var bLove = matches.Where(m => m.love.Contains(bday))
+                    .Select(m => includeChests ? $"{m.item.DisplayName}（{m.item.Source}）" : m.item.DisplayName)
+                    .Take(4).ToList();
+                var bLike = matches.Where(m => m.like.Contains(bday))
+                    .Select(m => includeChests ? $"{m.item.DisplayName}（{m.item.Source}）" : m.item.DisplayName)
+                    .Take(4).ToList();
+                string who = $"{bday.DisplayName}（今天生日{(bday.IsMet ? "" : "，未认识")}，在 {bday.LocationName}）";
+                var parts = new List<string>();
+                if (bLove.Count > 0) parts.Add("最爱 " + string.Join("、", bLove));
+                if (bLike.Count > 0) parts.Add("喜欢 " + string.Join("、", bLike));
+                lines.Add(parts.Count > 0
+                    ? $"★ {who}：{string.Join("；", parts)}"
+                    : $"★ {who}：{scope}里没有最爱/喜欢的，可传 npc=\"{bday.InternalName}\" 查喜好");
+            }
+
+            if (matches.Count == 0)
+            {
+                lines.Add($"{scope}里没有今天可送村民最爱或喜欢的礼物。"
+                    + (!includeChests ? "可传 chests=true 连箱子一起查，或传 npc 单独查。" : "可传 npc 单独查。"));
+                return string.Join("\n", lines);
+            }
+
+            var orderedMatches = matches
+                .OrderByDescending(m => m.love.Any(n => n.IsBirthday))
+                .ThenByDescending(m => m.like.Any(n => n.IsBirthday))
+                .ThenByDescending(m => m.love.Count > 0)
+                .ThenBy(m => m.item.IsFromChest)
+                .ThenByDescending(m => m.love.Count)
+                .ThenByDescending(m => m.like.Count)
+                .ThenBy(m => m.item.DisplayName, StringComparer.Ordinal)
+                .ToList();
+
+            int limit = Math.Max(1, maxItemLines);
+            int npcLimit = Math.Max(1, maxNpcsPerTaste);
+            foreach (var (item, love, like) in orderedMatches.Take(limit))
+            {
+                string itemLabel = includeChests ? $"{item.DisplayName}（{item.Source}）" : item.DisplayName;
+                var parts = new List<string>();
+                if (love.Count > 0) parts.Add("最爱 → " + FormatGiftNpcList(love, npcLimit));
+                if (like.Count > 0) parts.Add("喜欢 → " + FormatGiftNpcList(like, npcLimit));
+                lines.Add($"- {itemLabel}：{string.Join("；", parts)}");
+            }
+            if (orderedMatches.Count > limit)
+                lines.Add($"还有 {orderedMatches.Count - limit} 件没列，可传 npc 单独查");
+            else if (!includeChests)
+                lines.Add("（默认只查背包；传 chests=true 可连箱子一起查，传 npc 单独查某人）");
+
+            return string.Join("\n", lines);
+        }
+
+        private static bool IsReverseGiftCandidate(Item item) =>
+            Knowledge.IsGiftable(item) && item.QualifiedItemId is not ("(O)458" or "(O)460");
+
+        private IEnumerable<object> ReverseGiftInfo(bool includeChests)
+        {
+            var npcEntries = new List<(GiftCandidateNpc info, NPC raw)>();
+            var seenNpcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Utility.ForEachVillager(n =>
+            {
+                if (n == null || !n.CanSocialize || n.currentLocation == null || n.IsInvisible)
+                    return true;
+                var pt = n.TilePoint;
+                if (pt.X < 0 || pt.Y < 0 || ModSupport.IsWarpRoom(n.currentLocation.NameOrUniqueName))
+                    return true;
+                if (!seenNpcs.Add(n.Name))
+                    return true;
+                bool met = Game1.player.friendshipData.TryGetValue(n.Name, out var f);
+                var info = new GiftCandidateNpc(
+                    n.Name,
+                    string.IsNullOrWhiteSpace(n.displayName) ? n.Name : n.displayName,
+                    n.currentLocation.NameOrUniqueName,
+                    n.CanSocialize,
+                    n.isBirthday(),
+                    met && f.IsMarried(),
+                    met && f.IsDivorced(),
+                    met,
+                    met ? f.GiftsToday : 0,
+                    met ? f.GiftsThisWeek : 0);
+                npcEntries.Add((info, n));
+                return true;
+            });
+
+            var reserved = ReservedChecker();
+            var itemEntries = new List<(GiftCandidateItem info, Item raw)>();
+            foreach (var item in Player.Items)
+            {
+                if (!IsReverseGiftCandidate(item))
+                    continue;
+                string why = reserved(item);
+                itemEntries.Add((new GiftCandidateItem(item.QualifiedItemId, item.DisplayName, "背包", false, why != null, why), item));
+            }
+            if (includeChests)
+            {
+                foreach (var (loc, tile, chest) in AllChests())
+                {
+                    bool isFridge = loc is FarmHouse fh && chest == fh.fridge.Value;
+                    if (!isFridge && chest.SpecialChestType is not (StardewValley.Objects.Chest.SpecialChestTypes.None
+                        or StardewValley.Objects.Chest.SpecialChestTypes.BigChest
+                        or StardewValley.Objects.Chest.SpecialChestTypes.JunimoChest))
+                        continue;
+                    string source = isFridge
+                        ? (loc.NameOrUniqueName == "FarmHouse" ? "冰箱" : $"{loc.NameOrUniqueName}冰箱({tile.X},{tile.Y})")
+                        : $"{loc.NameOrUniqueName}({tile.X},{tile.Y})";
+                    foreach (var item in chest.GetItemsForPlayer())
+                    {
+                        if (!IsReverseGiftCandidate(item))
+                            continue;
+                        string why = reserved(item);
+                        itemEntries.Add((new GiftCandidateItem(item.QualifiedItemId, item.DisplayName, source, true, why != null, why), item));
+                    }
+                }
+            }
+
+            var npcMap = new Dictionary<GiftCandidateNpc, NPC>(ReferenceEqualityComparer.Instance);
+            foreach (var (info, raw) in npcEntries)
+                npcMap[info] = raw;
+            var itemMap = new Dictionary<GiftCandidateItem, Item>(ReferenceEqualityComparer.Instance);
+            foreach (var (info, raw) in itemEntries)
+                itemMap[info] = raw;
+            string summary = BuildReverseGiftSummary(
+                npcEntries.Select(e => e.info).ToList(),
+                itemEntries.Select(e => e.info).ToList(),
+                (n, it) => npcMap[n].getGiftTasteForThisItem(itemMap[it]),
+                includeChests);
+            yield return ActionResult.Success(summary);
+        }
+
+        /// <summary>查询某个村民的喜好、生日、好感，以及背包里哪些东西适合送他；不传 npc 时从背包（可选含箱子）反查今天可送谁。不移动、不花时间。</summary>
+        public IEnumerable<object> GiftInfo(string npcName = null, bool includeChests = false)
+        {
+            if (string.IsNullOrWhiteSpace(npcName))
+            {
+                foreach (var s in ReverseGiftInfo(includeChests))
+                    yield return s;
+                yield break;
+            }
             var npc = FindVillager(npcName);
             if (npc == null)
             {
@@ -139,7 +419,7 @@ namespace BlindWhaleFarmer
                 case StardewValley.Quests.SocializeQuest:
                     return "和任务里的村民挨个说话（interact npc=名字），说完自动完成";
                 case StardewValley.Quests.Quest when q.id.Value == "134":
-                    return "带 100 个硬木去煤矿森林北边找大树桩（Forest (56,6)），用 raccoon action=fix 修好";
+                    return "带 100 个硬木去煤矿森林（Forest）北边找大树桩，用 raccoon action=fix 会自动定位并修好";
             }
             return null;
         }
@@ -175,6 +455,11 @@ namespace BlindWhaleFarmer
             PutAwayHeldItem();
             var o = new Outcome();
             var npcLoc = npc.currentLocation;
+            if (npcLoc != null && ModSupport.IsWarpRoom(npcLoc.NameOrUniqueName))
+            {
+                yield return ActionResult.Fail($"{npc.displayName} 这会儿还没在镇上出场（在后台等待区 {npcLoc.NameOrUniqueName}，进不去）。{NpcScheduleHint(npc)}");
+                yield break;
+            }
             if (npcLoc != null && npcLoc != Loc)
             {
                 foreach (var s in TravelInner(npcLoc.NameOrUniqueName, o))
@@ -217,7 +502,19 @@ namespace BlindWhaleFarmer
             var npc = FindVillager(npcName);
             if (npc == null)
             {
-                yield return ActionResult.Fail($"不认识叫“{npcName}”的村民" + VillagerHint(npcName));
+                // 联机时 AI 常把给队友东西也叫成 give_gift：匹配到在线玩家就直接走到对方身边丢在脚边
+                if (StardewModdingAPI.Context.IsMultiplayer)
+                {
+                    var onlineOthers = Game1.getOnlineFarmers().Where(f => f != null && !f.IsLocalPlayer).ToList();
+                    if (MatchFarmer(onlineOthers, npcName) is Farmer otherPlayer)
+                    {
+                        foreach (var s in DropItem(itemSpec, 1, otherPlayer.Name, force))
+                            yield return s;
+                        yield break;
+                    }
+                }
+                yield return ActionResult.Fail($"不认识叫“{npcName}”的村民" + VillagerHint(npcName)
+                    + (StardewModdingAPI.Context.IsMultiplayer ? "（给其他玩家东西请用 drop_item to=玩家名）" : ""));
                 yield break;
             }
             // 任务物品（灵外质之类）不能当礼物送，但能交任务
@@ -329,6 +626,11 @@ namespace BlindWhaleFarmer
 
             var o = new Outcome();
             var npcLoc = npc.currentLocation;
+            if (npcLoc != null && ModSupport.IsWarpRoom(npcLoc.NameOrUniqueName))
+            {
+                yield return ActionResult.Fail($"{npc.displayName} 这会儿还没在镇上出场（在后台等待区 {npcLoc.NameOrUniqueName}，进不去）。{NpcScheduleHint(npc)}");
+                yield break;
+            }
             if (npcLoc != null && npcLoc != Loc)
             {
                 foreach (var s in TravelInner(npcLoc.NameOrUniqueName, o))
@@ -402,7 +704,7 @@ namespace BlindWhaleFarmer
                     ? $"{name} 已经 10 心了，手上有吊坠，先升级房子（upgrade_house）才能求婚"
                     : $"{name} 已经 10 心了，想求婚就用 give_gift 送美人鱼吊坠";
             return $"{name} 已经 10 心了，想求婚要先买美人鱼吊坠（5000g）："
-                + (Game1.isRaining && Game1.timeOfDay < 1900 ? "今天下雨，老水手在 Beach (80,5)" : "下雨天 19:00 前去 Beach (80,5) 找老水手")
+                + (Game1.isRaining && Game1.timeOfDay < 1900 ? "今天下雨，老水手在海滩东边潮池（Beach，原版在 (80,5)）" : "下雨天 19:00 前去海滩东边潮池找老水手（Beach，原版在 (80,5)）")
                 + (me.houseUpgradeLevel.Value < 1 ? "；还要升级房子（upgrade_house）" : "")
                 + "（详见 get_guide 结婚）";
         }
@@ -578,6 +880,16 @@ namespace BlindWhaleFarmer
                 lines.Add($"【{Knowledge.AreaDisplayName(group.Key)}】{(available ? "" : "（还没解锁）")}");
                 foreach (var b in group)
                 {
+                    int vaultCost = Knowledge.VaultCost(b);
+                    if (vaultCost > 0)
+                    {
+                        string canPay = Player.Money >= vaultCost
+                            ? "；钱够，可用 donate_bundles pay_vault=true 交钱"
+                            : $"；当前 {Player.Money}g，还差 {vaultCost - Player.Money}g";
+                        lines.Add($"  {b.DisplayName}：需要 {vaultCost}g{canPay}");
+                        shown++;
+                        continue;
+                    }
                     // 鱼带上季节、天气、时间、在哪钓，免得在错的季节、错的水域干钓
                     var missing = b.Ingredients.Where(i => !i.completed).Select(i =>
                     {
@@ -596,11 +908,31 @@ namespace BlindWhaleFarmer
             yield return ActionResult.Success(string.Join("\n", lines));
         }
 
+        /// <summary>按从便宜到贵、在余额和预算内挑选这一趟要交钱的金库收集包。</summary>
+        internal static List<(int Index, string Name, int Cost)> PlanVaultPayments(
+            IEnumerable<(int Index, string Name, int Cost)> candidates, int money, int? budget)
+        {
+            var plan = new List<(int Index, string Name, int Cost)>();
+            if (candidates == null)
+                return plan;
+            int remaining = Math.Max(0, money);
+            if (budget.HasValue)
+                remaining = Math.Min(remaining, Math.Max(0, budget.Value));
+            foreach (var item in candidates.Where(c => c.Cost > 0).OrderBy(c => c.Cost).ThenBy(c => c.Index))
+            {
+                if (item.Cost > remaining)
+                    break;
+                plan.Add(item);
+                remaining -= item.Cost;
+            }
+            return plan;
+        }
+
         /// <summary>
-        /// 去社区中心，把背包里能交的材料交进对应收集包，领取完成奖励。
-        /// 走的是祝尼魔便条界面（JunimoNoteMenu）自己的提交逻辑，完成动画、奖励、修复房间都和手动一样。
+        /// 去社区中心，把背包里能交的材料交进对应收集包，领取完成奖励；payVault=true 时也给已解锁的金库（Vault）收集包交钱。
+        /// 走的是祝尼魔便条界面（JunimoNoteMenu）自己的提交/购买逻辑，完成动画、奖励、修复房间都和手动一样。
         /// </summary>
-        public IEnumerable<object> DonateBundles()
+        public IEnumerable<object> DonateBundles(bool payVault = false, int? budget = null, bool confirm = false)
         {
             string why = Knowledge.CommunityCenterUnavailable();
             if (why != null)
@@ -608,15 +940,76 @@ namespace BlindWhaleFarmer
                 yield return ActionResult.Fail(why);
                 yield break;
             }
-            var targets = Knowledge.Bundles()
+            if (budget.HasValue && budget.Value < 0)
+            {
+                yield return ActionResult.Fail("budget 不能为负数");
+                yield break;
+            }
+            var allBundles = Knowledge.Bundles();
+            var targets = allBundles
                 .Where(b => !b.Complete && Knowledge.IsBundleAvailable(b) && Knowledge.InventoryMatches(b).Count > 0)
                 .Select(b => b.Area).Distinct().ToList();
+            var vaultAvailable = allBundles
+                .Where(b => !b.Complete && Knowledge.IsBundleAvailable(b) && Knowledge.VaultCost(b) > 0)
+                .Select(b => (b.Index, Name: b.DisplayName, Cost: Knowledge.VaultCost(b)))
+                .ToList();
+            var vaultPlanned = payVault ? PlanVaultPayments(vaultAvailable, Player.Money, budget) : new List<(int Index, string Name, int Cost)>();
+            var vaultAffordableHint = !payVault ? PlanVaultPayments(vaultAvailable, Player.Money, null) : new List<(int Index, string Name, int Cost)>();
             var cc = Game1.RequireLocation<CommunityCenter>("CommunityCenter");
             bool rewardsWaiting = cc.bundleRewards.Pairs.Any(p => p.Value);
-            if (targets.Count == 0 && !rewardsWaiting)
+
+            if (targets.Count == 0 && vaultPlanned.Count == 0 && !rewardsWaiting)
             {
+                if (payVault)
+                {
+                    if (vaultAvailable.Count == 0)
+                    {
+                        yield return ActionResult.Fail(cc.areasComplete[CommunityCenter.AREA_Vault]
+                            ? "金库（Vault）收集包已经全部完成，背包里也没有其他可交材料"
+                            : "金库（Vault）还没解锁（先完成任意 4 个其他收集包才会出现金库便条），背包里也没有其他可交材料");
+                    }
+                    else
+                    {
+                        int cheapest = vaultAvailable.Min(v => v.Cost);
+                        yield return ActionResult.Fail(budget.HasValue && budget.Value < cheapest
+                            ? $"budget={budget.Value}g 不够交最便宜的金库收集包（需要 {cheapest}g）"
+                            : $"当前 {Player.Money}g，不够交最便宜的金库收集包（需要 {cheapest}g，还差 {cheapest - Player.Money}g）");
+                    }
+                    yield break;
+                }
+                if (vaultAffordableHint.Count > 0)
+                {
+                    yield return ActionResult.Fail($"背包里没有能交给已解锁收集包的材料；金库（Vault）有钱够交的收集包（{string.Join("、", vaultAffordableHint.Select(v => $"{v.Name} {v.Cost}g"))}），要交钱请传 pay_vault=true");
+                    yield break;
+                }
                 yield return ActionResult.Fail("背包里没有能交给已解锁收集包的材料（用 bundle_info 看看缺什么）");
                 yield break;
+            }
+
+            string vaultSkippedNote = null;
+            if (vaultPlanned.Count > 0)
+            {
+                int totalCost = vaultPlanned.Sum(v => v.Cost);
+                string desc = $"社区中心金库收集包（{string.Join("、", vaultPlanned.Select(v => $"{v.Name} {v.Cost}g"))}）";
+                if (!CheckSharedMoneySpend(totalCost, desc, confirm, out string moneyMsg))
+                {
+                    vaultPlanned.Clear();
+                    if (targets.Count == 0 && !rewardsWaiting)
+                    {
+                        yield return ActionResult.Fail(moneyMsg);
+                        yield break;
+                    }
+                    vaultSkippedNote = moneyMsg;
+                }
+            }
+
+            // 如果之前手动点卷轴把收集包界面打开着，先关掉再走流程，避免寻路或 Blocked 被卡住
+            bool closedOpenNote = false;
+            if (Game1.activeClickableMenu is JunimoNoteMenu openNote && openNote.isReadyToCloseMenuOrBundle())
+            {
+                openNote.exitThisMenu();
+                closedOpenNote = true;
+                yield return null;
             }
 
             var o = new Outcome();
@@ -637,9 +1030,13 @@ namespace BlindWhaleFarmer
             var completed = new List<string>();
             var rewards = new List<string>();
             var rewardDrops = new List<string>();
+            if (vaultPlanned.Count > 0 && !targets.Contains(CommunityCenter.AREA_Vault))
+                targets.Add(CommunityCenter.AREA_Vault);
             // 有奖励待领的区域也要打开一次便条
-            var areas = targets.Concat(Knowledge.Bundles().Where(b => cc.bundleRewards.TryGetValue(b.Index, out bool r) && r).Select(b => b.Area))
+            var areas = targets.Concat(allBundles.Where(b => cc.bundleRewards.TryGetValue(b.Index, out bool r) && r).Select(b => b.Area))
                 .Where(a => a >= 0 && a <= 5).Distinct().ToList();
+            var plannedVaultIds = vaultPlanned.Select(v => v.Index).ToHashSet();
+            int vaultBudgetLeft = budget.HasValue ? Math.Max(0, budget.Value) : int.MaxValue;
 
             foreach (int area in areas)
             {
@@ -661,6 +1058,21 @@ namespace BlindWhaleFarmer
                 if (Blocked(out _))
                     break;
 
+                // 之前刚关掉收集包界面时，CommunityCenter.UpdateWhenCurrentLocation 先调 bundleMutex.Update 再 ReleaseLock，
+                // 导致释放锁那一帧 NetMutex.prevOwner 仍留在原持有者；必须等锁释放后再多等 2 帧让 prevOwner 同步为 -1，
+                // 否则立即 RequestLock 会因为 owner == prevOwner 而漏调 onLockAcquired 回调，界面打不开。
+                if (area >= 0 && area < cc.bundleMutexes.Count)
+                {
+                    bool wasLocked = cc.bundleMutexes[area].IsLocked();
+                    for (int t = 0; t < 60 && cc.bundleMutexes[area].IsLocked(); t++)
+                        yield return null;
+                    if (wasLocked || closedOpenNote)
+                    {
+                        foreach (var s in WaitTicks(2))
+                            yield return s;
+                        closedOpenNote = false;
+                    }
+                }
                 cc.checkBundle(area);
                 JunimoNoteMenu menu = null;
                 for (int t = 0; t < 120 && menu == null; t++)
@@ -671,57 +1083,100 @@ namespace BlindWhaleFarmer
                 if (menu == null)
                     continue;
 
-                foreach (var bundle in menu.bundles.ToList())
+                if (menu.whichArea == CommunityCenter.AREA_Vault)
                 {
-                    if (bundle.complete || !bundle.depositsAllowed || Game1.activeClickableMenu != menu)
-                        continue;
-                    // 先确认背包里有能交的，再打开这个收集包的页面
-                    bool any = Player.Items.Any(it => it != null && bundle.GetBundleIngredientDescriptionIndexForItem(it) >= 0
-                        && bundle.canAcceptThisItem(it, null, ignore_stack_count: false));
-                    if (!any)
-                        continue;
-                    reflection.GetMethod(menu, "setUpBundleSpecificPage").Invoke(bundle);
-                    yield return null;
-
-                    for (int i = 0; i < Player.Items.Count; i++)
+                    if (plannedVaultIds.Count > 0)
                     {
-                        var item = Player.Items[i];
-                        if (item == null)
-                            continue;
-                        foreach (var slot in menu.ingredientSlots)
+                        foreach (var bundle in menu.bundles
+                            .OrderBy(b => Knowledge.VaultCost(CommunityCenter.AREA_Vault, b.ingredients))
+                            .ThenBy(b => b.bundleIndex)
+                            .ToList())
                         {
-                            if (item == null || slot.item != null || !bundle.canAcceptThisItem(item, slot))
+                            if (bundle.complete || !bundle.depositsAllowed || Game1.activeClickableMenu != menu || !plannedVaultIds.Contains(bundle.bundleIndex))
                                 continue;
-                            // 任务、特别订单要交的先留够，只交多出来的
-                            var (reserve, reserveWhy) = questReserve(item);
-                            if (reserve > 0)
+                            int cost = Knowledge.VaultCost(CommunityCenter.AREA_Vault, bundle.ingredients);
+                            if (cost <= 0 || Player.Money < cost || cost > vaultBudgetLeft)
+                                continue;
+                            reflection.GetMethod(menu, "setUpBundleSpecificPage").Invoke(bundle);
+                            yield return null;
+                            if (Game1.activeClickableMenu != menu || menu.purchaseButton == null)
                             {
-                                int take = bundle.ingredients.Where(d => !d.completed && bundle.IsValidItemForThisIngredientDescription(item, d))
-                                    .Select(d => d.stack).DefaultIfEmpty(1).Max();
-                                if (reserve == int.MaxValue || item.Stack - take < reserve)
-                                {
-                                    keptForQuest.Add($"{item.DisplayName}（{reserveWhy}）");
-                                    break;
-                                }
+                                if (Game1.activeClickableMenu == menu && menu.specificBundlePage)
+                                    menu.takeDownBundleSpecificPage();
+                                continue;
                             }
-                            string name = item.DisplayName;
-                            item = bundle.tryToDepositThisItem(item, slot, "LooseSprites\\JunimoNote", menu);
-                            Player.Items[i] = item;
-                            deposited.Add($"{name}→{bundle.label}");
+                            // 走原版 JunimoNoteMenu.receiveLeftClick 点击 purchaseButton：扣钱、标完成、放奖励、全部完成时设修复过场
+                            menu.receiveLeftClick(menu.purchaseButton.bounds.Center.X, menu.purchaseButton.bounds.Center.Y);
+                            for (int t = 0; t < 120 && Game1.activeClickableMenu == menu && menu.specificBundlePage; t++)
+                                yield return null;
+                            // 原版金库付款只置 bundles[id][0]=true（数组长 3，其余两位保持 false），cc.isBundleComplete 会误判为 false；看 bundle.complete 或首槽位
+                            if (bundle.complete || (cc.bundles.TryGetValue(bundle.bundleIndex, out var vaultSlots) && vaultSlots.Length > 0 && vaultSlots[0]))
+                            {
+                                deposited.Add($"{cost}g→{bundle.label}");
+                                completed.Add(bundle.label);
+                                if (vaultBudgetLeft != int.MaxValue)
+                                    vaultBudgetLeft -= cost;
+                            }
+                            if (Game1.activeClickableMenu == menu && menu.specificBundlePage)
+                                menu.takeDownBundleSpecificPage();
+                            yield return null;
                         }
                     }
-                    reflection.GetMethod(menu, "checkIfBundleIsComplete").Invoke();
-                    bool done = cc.isBundleComplete(bundle.bundleIndex);
-                    if (done)
+                }
+                else
+                {
+                    foreach (var bundle in menu.bundles.ToList())
                     {
-                        completed.Add(bundle.label);
-                        // 完成时会播放动画，播完自己回到总览页
-                        for (int t = 0; t < 300 && Game1.activeClickableMenu == menu && menu.specificBundlePage; t++)
-                            yield return null;
+                        if (bundle.complete || !bundle.depositsAllowed || Game1.activeClickableMenu != menu)
+                            continue;
+                        // 先确认背包里有能交的，再打开这个收集包的页面
+                        bool any = Player.Items.Any(it => it != null && bundle.GetBundleIngredientDescriptionIndexForItem(it) >= 0
+                            && bundle.canAcceptThisItem(it, null, ignore_stack_count: false));
+                        if (!any)
+                            continue;
+                        reflection.GetMethod(menu, "setUpBundleSpecificPage").Invoke(bundle);
+                        yield return null;
+
+                        for (int i = 0; i < Player.Items.Count; i++)
+                        {
+                            var item = Player.Items[i];
+                            if (item == null)
+                                continue;
+                            foreach (var slot in menu.ingredientSlots)
+                            {
+                                if (item == null || slot.item != null || !bundle.canAcceptThisItem(item, slot))
+                                    continue;
+                                // 任务、特别订单要交的先留够，只交多出来的
+                                var (reserve, reserveWhy) = questReserve(item);
+                                if (reserve > 0)
+                                {
+                                    int take = bundle.ingredients.Where(d => !d.completed && bundle.IsValidItemForThisIngredientDescription(item, d))
+                                        .Select(d => d.stack).DefaultIfEmpty(1).Max();
+                                    if (reserve == int.MaxValue || item.Stack - take < reserve)
+                                    {
+                                        keptForQuest.Add($"{item.DisplayName}（{reserveWhy}）");
+                                        break;
+                                    }
+                                }
+                                string name = item.DisplayName;
+                                item = bundle.tryToDepositThisItem(item, slot, "LooseSprites\\JunimoNote", menu);
+                                Player.Items[i] = item;
+                                deposited.Add($"{name}→{bundle.label}");
+                            }
+                        }
+                        reflection.GetMethod(menu, "checkIfBundleIsComplete").Invoke();
+                        bool done = cc.isBundleComplete(bundle.bundleIndex);
+                        if (done)
+                        {
+                            completed.Add(bundle.label);
+                            // 完成时会播放动画，播完自己回到总览页
+                            for (int t = 0; t < 300 && Game1.activeClickableMenu == menu && menu.specificBundlePage; t++)
+                                yield return null;
+                        }
+                        if (Game1.activeClickableMenu == menu && menu.specificBundlePage)
+                            menu.takeDownBundleSpecificPage();
+                        yield return null;
                     }
-                    if (Game1.activeClickableMenu == menu && menu.specificBundlePage)
-                        menu.takeDownBundleSpecificPage();
-                    yield return null;
                 }
 
                 // 领奖励（礼物按钮），走游戏自己的奖励界面，领取回调会标记已领
@@ -752,9 +1207,13 @@ namespace BlindWhaleFarmer
             }
 
             var msg = new List<string>();
-            msg.Add(deposited.Count > 0 ? $"交了 {deposited.Count} 样：{string.Join("、", deposited)}" : "没有交上材料");
+            msg.Add(deposited.Count > 0 ? $"交了 {deposited.Count} 项：{string.Join("、", deposited)}" : "没有交上材料或资金");
             if (keptForQuest.Count > 0)
                 msg.Add("这些收集包也要、但先留给任务没交：" + string.Join("、", keptForQuest.Distinct()) + "。交完任务、或者再弄到更多，再 donate_bundles");
+            if (vaultSkippedNote != null)
+                msg.Add("金库未交钱：" + vaultSkippedNote);
+            else if (!payVault && vaultAffordableHint.Count > 0)
+                msg.Add($"金库还有钱够交的收集包（{string.Join("、", vaultAffordableHint.Select(v => $"{v.Name} {v.Cost}g"))}），要交钱请传 pay_vault=true");
             if (completed.Count > 0)
                 msg.Add("完成收集包：" + string.Join("、", completed.Distinct()));
             if (rewards.Count > 0)

@@ -64,4 +64,49 @@ partial class Program
         Check(Show(true, 1, false) == "【限时 剩1天】【一次性】", "限时的一次性任务显示两个标签");
         Check(Show(true, -1, null) == "【限时 剩0天】【未知】", "期限不会显示负天数，重复性可标未知");
     }
+
+    static void TestVaultBundles(Assembly asm, Type actions, JsonArray schema)
+    {
+        var parameters = schema.FirstOrDefault(t => t["function"]["name"].GetValue<string>() == "donate_bundles")?["function"]["parameters"];
+        var props = parameters?["properties"];
+        Check(parameters?["required"] is JsonArray { Count: 0 }
+            && props?["pay_vault"]?["type"]?.GetValue<string>() == "boolean"
+            && props?["budget"]?["type"]?.GetValue<string>() == "integer"
+            && props?["confirm"]?["type"]?.GetValue<string>() == "boolean",
+            "donate_bundles 的 schema 包含 pay_vault / budget / confirm 可选参数");
+
+        var knowledge = asm.GetType("BlindWhaleFarmer.Knowledge");
+        var ingType = typeof(StardewValley.Menus.BundleIngredientDescription);
+        var goldIng = new StardewValley.Menus.BundleIngredientDescription("-1", 2500, 2500, false);
+        var itemIng = new StardewValley.Menus.BundleIngredientDescription("24", 1, 0, false);
+
+        var vaultCost = knowledge.GetMethod("VaultCost", BindingFlags.Static | BindingFlags.Public,
+            null, new[] { typeof(int), typeof(IReadOnlyList<StardewValley.Menus.BundleIngredientDescription>) }, null);
+        Check((int)vaultCost.Invoke(null, new object[] { 4, new[] { goldIng } }) == 2500, "金库（area=4）的 -1 材料识别为 2500g");
+        Check((int)vaultCost.Invoke(null, new object[] { 0, new[] { goldIng } }) == 0, "非金库区域不按交钱收集包算");
+        Check((int)vaultCost.Invoke(null, new object[] { 4, new[] { itemIng } }) == 0, "非金币材料不按交钱收集包算");
+
+        var ingName = knowledge.GetMethod("IngredientName", BindingFlags.Static | BindingFlags.Public);
+        Check((string)ingName.Invoke(null, new object[] { goldIng }) == "2500g", "金库收集包材料名显示为 2500g");
+
+        var plan = actions.GetMethod("PlanVaultPayments", BindingFlags.Static | BindingFlags.NonPublic);
+        var candidates = new (int Index, string Name, int Cost)[]
+        {
+            (26, "25,000", 25000),
+            (24, "5,000", 5000),
+            (23, "2,500", 2500),
+            (25, "10,000", 10000),
+        };
+        List<(int Index, string Name, int Cost)> Run(int money, int? budget) =>
+            (List<(int Index, string Name, int Cost)>)plan.Invoke(null, new object[] { candidates, money, budget });
+
+        var p1 = Run(8000, null);
+        Check(p1.Select(x => x.Cost).SequenceEqual(new[] { 2500, 5000 }), "金库交钱按从便宜到贵挑选（8000g 选 2500+5000）");
+        var p2 = Run(50000, 6000);
+        Check(p2.Select(x => x.Cost).SequenceEqual(new[] { 2500 }), "金库交钱受 budget 上限限制（6000g 只选 2500）");
+        var p3 = Run(1000, null);
+        Check(p3.Count == 0, "钱不够最便宜的金库收集包时一个都不选");
+        var p4 = Run(42500, null);
+        Check(p4.Select(x => x.Cost).SequenceEqual(new[] { 2500, 5000, 10000, 25000 }), "42500g 一次按顺序选齐全部 4 个金库收集包");
+    }
 }

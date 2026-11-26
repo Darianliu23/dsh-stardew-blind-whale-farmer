@@ -130,13 +130,23 @@ namespace BlindWhaleFarmer
                         break;
                     }
                 case Beach beach:
-                    // 海边东边去潮池的木桥：对着断桥交互、交 300 木材修好（Beach.fixBridge 修的是 58~61,13~14）
-                    list.Add(new MapEntry
                     {
-                        Section = "bridges", Name = "去潮池的木桥", Tile = new Point(58, 13), TileEnd = new Point(61, 14), Target = "潮池（Beach 东边）",
-                        Note = beach.bridgeFixed.Value ? "（修好了，能走）" : "（还断着：对着 (58,13) interact，交 300 木材修好）"
-                    });
-                    break;
+                        // 海边东边去潮池的木桥：优先按地图上的 BrokenBeachBridge 属性动态定位，兼容修改沙滩布局的模组
+                        Point start = new Point(58, 13);
+                        Point end = new Point(61, 14);
+                        var broken = FindActionTiles(beach, "BrokenBeachBridge");
+                        if (broken.Count > 0)
+                        {
+                            start = new Point(broken.Min(p => p.X), broken.Min(p => p.Y));
+                            end = new Point(Math.Max(broken.Max(p => p.X), start.X + 3), Math.Max(broken.Max(p => p.Y), start.Y + 1));
+                        }
+                        list.Add(new MapEntry
+                        {
+                            Section = "bridges", Name = "去潮池的木桥", Tile = start, TileEnd = end, Target = "潮池（Beach 东边）",
+                            Note = beach.bridgeFixed.Value ? "（修好了，能走）" : $"（还断着：对着 ({start.X},{start.Y}) interact，交 300 木材修好）"
+                        });
+                        break;
+                    }
                 case IslandNorth north:
                     list.Add(new MapEntry
                     {
@@ -158,6 +168,24 @@ namespace BlindWhaleFarmer
                     break;
             }
             return list;
+        }
+
+        private static List<Point> FindActionTiles(GameLocation loc, string actionVerb)
+        {
+            var found = new List<Point>();
+            var layer = loc?.Map?.GetLayer("Buildings");
+            if (layer == null)
+                return found;
+            for (int x = 0; x < layer.LayerWidth; x++)
+                for (int y = 0; y < layer.LayerHeight; y++)
+                {
+                    string action = loc.doesTileHaveProperty(x, y, "Action", "Buildings");
+                    if (!string.IsNullOrWhiteSpace(action)
+                        && action.TrimStart().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0]
+                            .Equals(actionVerb, StringComparison.OrdinalIgnoreCase))
+                        found.Add(new Point(x, y));
+                }
+            return found;
         }
 
         private static void AddSuspensionBridges(List<MapEntry> list, IEnumerable<StardewValley.BellsAndWhistles.SuspensionBridge> bridges)
