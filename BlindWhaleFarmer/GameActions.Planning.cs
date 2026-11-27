@@ -557,7 +557,9 @@ namespace BlindWhaleFarmer
         /// </summary>
         internal static List<Field> Fields(GameLocation loc)
         {
-            var dirt = new HashSet<Point>(loc.terrainFeatures.Pairs.Where(p => p.Value is HoeDirt).Select(p => new Point((int)p.Key.X, (int)p.Key.Y)));
+            var dirt = new HashSet<Point>(loc.terrainFeatures.Pairs
+                .Where(p => p.Value is HoeDirt && (loc is not StardewValley.Locations.IslandWest || loc.CanPlantSeedsHere("472", (int)p.Key.X, (int)p.Key.Y, false, out _)))
+                .Select(p => new Point((int)p.Key.X, (int)p.Key.Y)));
             var seen = new HashSet<Point>();
             var fields = new List<Field>();
             foreach (var start in dirt)
@@ -661,6 +663,48 @@ namespace BlindWhaleFarmer
         }
 
         /// <summary>农场有洒水器且覆盖范围里有杂草/小杂物/草占着格子时，提示 AI 用 till_area 顺手清掉。</summary>
+        internal static string FormatUncoveredBySprinklerHint(int uncoveredCrops, int uncoveredEmptyDirt, bool isRaining)
+        {
+            if (isRaining || (uncoveredCrops <= 0 && uncoveredEmptyDirt <= 0))
+                return null;
+            if (uncoveredCrops > 0 && uncoveredEmptyDirt > 0)
+                return $"（洒水器范围外：有 {uncoveredCrops} 株待浇水作物、{uncoveredEmptyDirt} 格空耕地，需手动浇水）";
+            if (uncoveredCrops > 0)
+                return $"（洒水器范围外：有 {uncoveredCrops} 株待浇水作物，需手动浇水）";
+            return $"（洒水器范围外：有 {uncoveredEmptyDirt} 格空耕地，种下后需手动浇水）";
+        }
+
+        /// <summary>当前地点有洒水器时，提示洒水器范围外仍需手动浇水的作物或空耕地（下雨或已浇水不提示）。</summary>
+        internal static string UncoveredBySprinklerHint(GameLocation loc)
+        {
+            if (loc == null || !loc.objects.Values.Any(o => o.IsSprinkler()))
+                return null;
+            bool raining = loc.IsOutdoors && !loc.IsGreenhouse && loc.IsRainingHere();
+            if (raining)
+                return null;
+            var covered = SprinklerCovered(loc);
+            int crops = 0, empty = 0;
+            foreach (var kv in loc.terrainFeatures.Pairs)
+            {
+                if (kv.Value is not HoeDirt hd)
+                    continue;
+                if (loc is StardewValley.Locations.IslandWest && !loc.CanPlantSeedsHere("472", (int)kv.Key.X, (int)kv.Key.Y, false, out _))
+                    continue;
+                if (covered.Contains(kv.Key))
+                    continue;
+                if (hd.crop != null)
+                {
+                    if (Observer.NeedsWater(hd))
+                        crops++;
+                }
+                else if (!loc.Objects.ContainsKey(kv.Key) && !hd.isWatered())
+                {
+                    empty++;
+                }
+            }
+            return FormatUncoveredBySprinklerHint(crops, empty, raining);
+        }
+
         internal static string SprinklerClutterHint(GameLocation loc)
         {
             if (loc == null)
@@ -709,10 +753,11 @@ namespace BlindWhaleFarmer
             return "走不过去的空地";
         }
 
-        /// <summary>和 till_area 一样的“能直接开垦”判断。</summary>
+        /// <summary>和 till_area 一样的“能直接开垦”判断。姜岛西农场仅含可种植泥土（untitled tile sheet2），不含海滩沙地。</summary>
         private static bool Tillable(GameLocation loc, Point p) =>
             loc.isTileOnMap(p.X, p.Y)
             && loc.doesTileHaveProperty(p.X, p.Y, "Diggable", "Back") != null
+            && (loc is not StardewValley.Locations.IslandWest || loc.CanPlantSeedsHere("472", p.X, p.Y, false, out _))
             && !loc.Objects.ContainsKey(new Vector2(p.X, p.Y))
             && !loc.terrainFeatures.ContainsKey(new Vector2(p.X, p.Y))
             && Pathfinder.IsPassable(loc, p.X, p.Y);

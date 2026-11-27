@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Microsoft.Xna.Framework;
 using StardewValley;
+using StardewValley.Locations;
 
 namespace BlindWhaleFarmer
 {
@@ -14,6 +16,64 @@ namespace BlindWhaleFarmer
         public static int MapWidth(GameLocation loc) => loc.Map.Layers[0].LayerWidth;
         public static int MapHeight(GameLocation loc) => loc.Map.Layers[0].LayerHeight;
 
+        private static readonly Rectangle IslandSouthTurtle1 = new(1088, 0, 192, 192);
+        private static readonly Rectangle IslandSouthTurtle2 = new(0, 640, 256, 256);
+        private static readonly Rectangle IslandNorthBoulder = new(1344, 3008, 128, 64);
+        private static readonly Rectangle MountainLandslide = new(3200, 256, 192, 320);
+        private static readonly Rectangle MountainRailroadBlock = new(512, 0, 256, 320);
+        private static readonly Rectangle DesertMerchantBounds = new(2112, 1280, 836, 280);
+        private static readonly FieldInfo BeachOldMarinerField = typeof(Beach).GetField("oldMariner", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo MountainLandslideField = typeof(Mountain).GetField("landslide", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo MountainRailroadBlockedField = typeof(Mountain).GetField("railroadAreaBlocked", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        internal static bool IsMountainLandslide(Mountain m) =>
+            (MountainLandslideField?.GetValue(m) as Netcode.NetBool)?.Value ?? false;
+
+        internal static bool IsMountainRailroadBlocked(Mountain m) =>
+            (MountainRailroadBlockedField?.GetValue(m) as Netcode.NetBool)?.Value ?? false;
+
+        /// <summary>纯逻辑判定：姜岛南边乌龟是否挡住给定碰撞矩形（对照 IslandSouth.cs:274,276,519-529）。</summary>
+        internal static bool IsBlockedByIslandSouthTurtles(Rectangle rect, bool exitsBlocked, bool westernTurtleMoved) =>
+            (exitsBlocked && rect.Intersects(IslandSouthTurtle1))
+            || (!westernTurtleMoved && rect.Intersects(IslandSouthTurtle2));
+
+        /// <summary>
+        /// 6 个地图子类重写的是 6 参数 isCollidingPosition，不会被带 pathfinding 参数的重载调用。
+        /// 对照源码逐一检查其专有阻挡矩形（无推 NPC/晃草副作用）：
+        /// IslandSouth（乌龟）、IslandNorth（洞口巨石）、Mountain（山体滑坡/铁路路障）、Desert（沙漠商人）、Railroad（行驶列车）、Beach（老水手）。
+        /// </summary>
+        internal static bool IsBlockedByLocationSpecial(GameLocation loc, Rectangle rect)
+        {
+            switch (loc)
+            {
+                case IslandSouth isouth:
+                {
+                    bool exitsBlocked = !(Game1.MasterPlayer?.hasOrWillReceiveMail("Island_FirstParrot") ?? false);
+                    return IsBlockedByIslandSouthTurtles(rect, exitsBlocked, isouth.westernTurtleMoved.Value);
+                }
+                case IslandNorth inorth:
+                    return !inorth.caveOpened.Value && rect.Intersects(IslandNorthBoulder);
+                case Mountain mountain:
+                    return (IsMountainLandslide(mountain) && rect.Intersects(MountainLandslide))
+                        || (IsMountainRailroadBlocked(mountain) && rect.Intersects(MountainRailroadBlock));
+                case Desert:
+                    return rect.Intersects(DesertMerchantBounds);
+                case Railroad railroad:
+                    return !Game1.eventUp && railroad.train.Value != null && railroad.train.Value.getBoundingBox().Intersects(rect);
+                case Beach beach:
+                    return BeachOldMarinerField?.GetValue(beach) is NPC mariner && rect.Intersects(mariner.GetBoundingBox());
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>农夫站在这格时的碰撞箱（和 Farmer.GetBoundingBox 一样）。</summary>
+        internal static Rectangle FarmerTileBox(int x, int y)
+        {
+            int top = Game1.player?.Sprite != null ? Game1.player.Sprite.getHeight() - 32 : 0;
+            return new Rectangle(x * 64 + 8, y * 64 + top, 48, 32);
+        }
+
         /// <summary>农夫能否站在这一格。用的是农夫站在这格时的碰撞箱（和 Farmer.GetBoundingBox 一样）。</summary>
         public static bool IsPassable(GameLocation loc, int x, int y)
         {
@@ -22,8 +82,9 @@ namespace BlindWhaleFarmer
             // Farmer.GetBoundingBox = (X+8, Y+精灵高-32, 48, 32)，站在格子上时 Position = 格子左上角，碰撞箱是这格的上半截。
             // 以前写成 y*64+32，下边缘正好压到下一行（Bottom/64 = y+1），等于每格都顺带检查下面一格，
             // 海滩木栈道这种下面一排是栏杆的地方就会被误判成走不通。
-            int top = Game1.player?.Sprite != null ? Game1.player.Sprite.getHeight() - 32 : 0;
-            var rect = new Rectangle(x * 64 + 8, y * 64 + top, 48, 32);
+            var rect = FarmerTileBox(x, y);
+            if (IsBlockedByLocationSpecial(loc, rect))
+                return false;
             // pathfinding + skipCollisionEffects：只做检测，不触发推开 NPC、草晃动等副作用；NPC 不算障碍（会走开）
             return !loc.isCollidingPosition(rect, Game1.viewport, true, 0, false, Game1.player,
                 pathfinding: true, projectile: false, ignoreCharacterRequirement: false, skipCollisionEffects: true);

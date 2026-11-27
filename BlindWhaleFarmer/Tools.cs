@@ -95,20 +95,19 @@ namespace BlindWhaleFarmer
                 P("force", "boolean", "不符合摆放规则也照样放（一般不要用）", false),
                 P("near", "string", "只放箱子用，写当前地图的箱子坐标或锚点 x,y，自动在它旁边放（始终检查空位和通路）", false));
 
-            Add("till_area", "用锄头开垦矩形区域里所有能开垦的空地（单次最多80格，返回“开了 N 格，还差 M 格”）；不给坐标只给 count 时优先贴合已有洒水器覆盖范围，否则挨着最大的田自动扩。只能在农场、温室这类种得了庄稼的地方用。区域里的杂草、石头、树枝、树桩、小树苗会先清掉再锄；树和大树桩大石头不动，没开出来的会列出原因与下一步。"
-                + "不同作物可分开开几块田（状态“农田”行有每块田位置、作物和扩田建议）。", 300,
+            Add("till_area", "批量用锄头开垦。有洒水器时默认只在洒水器覆盖范围内开（含压力喷嘴，范围外不乱开）；背包有当季种子时按种子数控制开地格数避免多开空地；force=true 才突破限制。不给坐标只给 count 时优先开洒水器范围内，没洒水器则挨着最大的田扩（姜岛无田时在农舍前农田开）。会自动先清杂草、石头、树枝、树桩、小树苗。", 300,
                 j => () =>
                 {
                     var (x1, y1, x2, y2) = TillRect(j);
                     return a.TillArea(x1, y1, x2, y2, OptInt(j, "count"), OptBool(j, "force") ?? false, OptBool(j, "shared") ?? false);
                 },
                 P("x1", "integer", "左上 x", false), P("y1", "integer", "左上 y", false), P("x2", "integer", "右下 x", false), P("y2", "integer", "右下 y", false),
-                P("count", "integer", "不给坐标时用：挨着最大的田自动往空地最多的一边扩大约这么多格（默认 20，最多 80）", false),
+                P("count", "integer", "不给坐标时用：优先开洒水器覆盖范围内，没洒水器则挨着最大的田扩（默认 20，最多 80）", false),
                 P("width", "integer", "不想算右下角时用：区域宽几格（1~40）。和 x1,y1 一起给就从 (x1,y1) 往右展开；坐标都不给就以 near 为中心展开。只给 width 或 height 时是正方形", false),
                 P("height", "integer", "区域高几格（1~40），用法同 width；width、height 都不给但给了 near 时是 5x5", false),
                 P("near", "string", "以哪一格为中心展开 width x height 的区域，写 \"x,y\"（比如 \"60,15\"）；写 me 或者不写坐标就是你现在站的格子", false),
                 P("shared", "boolean", "联机时你是农场工人：不给坐标默认挨着自己小屋门口 10 格内的田扩（门口没田就在门口开第一块），不碰主机的田；传 true 才扩全农场最大的田", false),
-                P("force", "boolean", "在种不了庄稼的地方（农场、温室以外）也照样锄（一般不要用）", false));
+                P("force", "boolean", "强制开垦（允许在洒水器范围外、超过种子数或非农田开垦，一般不要用）", false));
 
             Add("prepare_field", "按同一份图清障、从中心向外锄地、安放设备、播种。先 preview 看覆盖和走道，再用同样参数 execute；中断或补齐物资后按 get_state 的编号 resume。选 none 手浇，选等级即使缺洒水器也留位；稻草人也可预留。棚架自动留路，普通作物可要求行间走道。例子见 get_guide topic=种田。", 600,
                 j => () => a.PrepareField(OptStr(j,"mode") ?? "preview",OptInt(j,"plan_id"),
@@ -124,7 +123,7 @@ namespace BlindWhaleFarmer
                 P("scarecrow","boolean","是否为现有稻草人保护不到的作物补位置",false),
                 P("path","string","auto 棚架自动留路，rows 普通作物也隔行留路",false,new[] { "auto","rows" },"auto"));
 
-            Add("plant_seeds", "在空耕地上批量播种（或施肥）。seed 是种子物品名或背包序号。不给区域按同作物主田→空田→混种田→零散耕地的优先顺序顺延种（只排序不硬截断）；想指定哪块就传 x1,y1,x2,y2。返回剩余种子数、剩余空耕地和下次可用范围。", 300,
+            Add("plant_seeds", "在空耕地上批量播种（或施肥）。seed 是种子物品名或背包序号。有洒水器时优先只在洒水器覆盖范围内播种（含压力喷嘴），不往范围外乱种；无洒水器且不给区域时按同作物主田→空田→混种田→零散耕地顺延。想指定某块就传 x1,y1,x2,y2。", 300,
                 j => () => a.PlantSeeds(Str(j, "seed"), OptInt(j, "x1"), OptInt(j, "y1"), OptInt(j, "x2"), OptInt(j, "y2"), OptInt(j, "max") ?? 200, OptBool(j, "shared") ?? false),
                 P("seed", "string", "种子名称或背包序号"),
                 P("x1", "integer", "区域左上 x", false), P("y1", "integer", "区域左上 y", false),

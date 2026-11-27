@@ -43,6 +43,59 @@ namespace BlindWhaleFarmer
                     yield return new FarmMachine(location, new Point((int)tile.X, (int)tile.Y), obj, data);
         }
 
+        /// <summary>
+        /// 判断地图名是不是原版农舍/联机小屋对应的地窖（Cellar、Cellar2、Cellar3…）。
+        /// 原版地窖从第 1 天起就存在于 Game1.locations 并预摆 33 个木桶，但房子升到 3 级前没有楼梯传送点、进不去。
+        /// </summary>
+        internal static bool IsVanillaCellarName(string locationName)
+        {
+            if (string.IsNullOrEmpty(locationName) || !locationName.StartsWith("Cellar", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (locationName.Length == 6)
+                return true;
+            for (int i = 6; i < locationName.Length; i++)
+                if (!char.IsDigit(locationName[i]))
+                    return false;
+            return true;
+        }
+
+        /// <summary>原版地窖是否已有对应的 3 级农舍或联机小屋开通。</summary>
+        internal static bool IsVanillaCellarUnlocked(string cellarName)
+        {
+            if (string.IsNullOrWhiteSpace(cellarName))
+                return false;
+            bool unlocked = false;
+            Utility.ForEachLocation(loc =>
+            {
+                if (loc is FarmHouse house && house.upgradeLevel >= 3
+                    && string.Equals(house.GetCellarName(), cellarName, StringComparison.OrdinalIgnoreCase))
+                {
+                    unlocked = true;
+                    return false;
+                }
+                return true;
+            }, includeInteriors: true, includeGenerated: false);
+            return unlocked;
+        }
+
+        /// <summary>
+        /// 扫描 Game1.locations 寻找机器时，是否直接把这张图加入候选队列。
+        /// 原版地窖（Cellar/Cellar2…）不能因预摆了木桶就直接入队，必须只从 upgradeLevel >= 3 的农舍/小屋按 GetCellarName() 引入。
+        /// </summary>
+        internal static bool ShouldScanLocationDirectlyForMachines(
+            bool isTemporary,
+            bool isWarpRoom,
+            bool isVanillaCellar,
+            bool isFarm,
+            bool isGreenhouse,
+            int buildingCount,
+            bool hasFarmMachine)
+        {
+            if (isTemporary || isWarpRoom || isVanillaCellar)
+                return false;
+            return isFarm || isGreenhouse || buildingCount > 0 || hasFarmMachine;
+        }
+
         private static IEnumerable<GameLocation> FarmMachineLocations()
         {
             var pending = new Queue<GameLocation>();
@@ -53,14 +106,23 @@ namespace BlindWhaleFarmer
                     pending.Enqueue(loc);
             }
             Enqueue(Game1.getFarm());
+            Enqueue(Game1.getLocationFromName("FarmHouse"));
             // 农场洞穴不在 buildings 里；农舍的地下室也由游戏单独关联。
             Enqueue(Game1.getLocationFromName("FarmCave"));
             // 兼容 SVE 等模组的额外农场/温室/小屋/酒窖（如爷爷小屋、极光葡萄园、Grampleton Fields）以及温室/姜岛
             foreach (var loc in Game1.locations)
             {
-                if (loc == null || loc.IsTemporary || ModSupport.IsWarpRoom(loc.NameOrUniqueName))
+                if (loc == null)
                     continue;
-                if (loc.IsFarm || loc.IsGreenhouse || loc.buildings.Count > 0 || loc.objects.Values.Any(o => GetFarmMachineData(o) != null))
+                bool isVanillaCellar = loc is Cellar && IsVanillaCellarName(loc.NameOrUniqueName);
+                if (ShouldScanLocationDirectlyForMachines(
+                    loc.IsTemporary,
+                    ModSupport.IsWarpRoom(loc.NameOrUniqueName),
+                    isVanillaCellar,
+                    loc.IsFarm,
+                    loc.IsGreenhouse,
+                    loc.buildings.Count,
+                    !isVanillaCellar && loc.objects.Values.Any(o => GetFarmMachineData(o) != null)))
                     Enqueue(loc);
             }
             while (pending.Count > 0)

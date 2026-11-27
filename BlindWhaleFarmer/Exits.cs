@@ -88,6 +88,22 @@ namespace BlindWhaleFarmer
                 // 没炸开时传送点仍然在，但人走不进去，只能当它不存在，免得寻路往石头里钻
                 if (target == "IslandNorthCave1" && loc is StardewValley.Locations.IslandNorth { caveOpened.Value: false })
                     continue;
+                // 姜岛南边乌龟挡路：未喂第一只鹦鹉前去岛北被 turtle1 挡住；未喂西乌龟（westernTurtleMoved）前去岛西被 turtle2 挡住
+                if (loc is StardewValley.Locations.IslandSouth isouth)
+                {
+                    if (target == "IslandWest" && !isouth.westernTurtleMoved.Value)
+                        continue;
+                    if (target == "IslandNorth" && !(Game1.MasterPlayer?.hasOrWillReceiveMail("Island_FirstParrot") ?? false))
+                        continue;
+                }
+                // 山区滑坡/铁路路障未解开前不能通过对应出口
+                if (loc is StardewValley.Locations.Mountain mountain)
+                {
+                    if (target == "Railroad" && Pathfinder.IsMountainRailroadBlocked(mountain))
+                        continue;
+                    if (target == "Mine" && Pathfinder.IsMountainLandslide(mountain))
+                        continue;
+                }
                 if (w.npcOnly.Value || ModSupport.IsWarpRoom(target)
                     || (!StardewValley.Locations.VolcanoDungeon.IsGeneratedLevel(target) && Game1.getLocationFromName(target) == null))
                     continue;

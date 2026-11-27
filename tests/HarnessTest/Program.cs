@@ -120,6 +120,7 @@ partial class Program
         Check(ArgsAccepted(rAutoPlace) && !rAutoPlace.Contains("要一起给"), "place_item 不给 x,y 时参数被接受（进游戏后自动找位置）：" + Shorten(rAutoPlace));
         TestCoopCartGiftDrop(asm, tActions, schema, Run);
         TestMachinesBooksGiftNaming(asm, tActions, schema, readOnly, Run);
+        TestEventRescueAndSprinkler(tActions);
         string rUnknown = await Run("craft", "{\"recipe\":\"Chest\",\"colour\":\"red\"}");
         Check(rUnknown.Contains("不认识参数 colour"), "真不认识的参数照样拒绝：" + Shorten(rUnknown));
         string rOtherTool = await Run("move_to", "{\"x\":1,\"y\":2,\"width\":3}");

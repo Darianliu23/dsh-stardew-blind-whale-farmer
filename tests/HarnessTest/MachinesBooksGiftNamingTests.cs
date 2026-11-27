@@ -160,5 +160,25 @@ partial class Program
             "新生动物起名提示鼓励 AI 自己起食物名：" + animalPrompt);
         Check(childPrompt.Contains("孩子") && !childPrompt.Contains("饭团"),
             "孩子起名提示保持现状：" + childPrompt);
+
+        // ── 5. 未开通地窖不误扫预摆木桶 ──
+        var isVanillaCellar = tActions.GetMethod("IsVanillaCellarName", Any);
+        bool IsCellarName(string s) => (bool)isVanillaCellar.Invoke(null, new object[] { s });
+        Check(IsCellarName("Cellar"), "IsVanillaCellarName 识别原版主地窖 Cellar");
+        Check(IsCellarName("Cellar2") && IsCellarName("cellar12"), "IsVanillaCellarName 识别联机地窖 Cellar2/Cellar12");
+        Check(!IsCellarName("Custom_Cellar") && !IsCellarName("CellarDoor") && !IsCellarName("FarmHouse") && !IsCellarName(""),
+            "IsVanillaCellarName 不误伤自定义地图名或非地窖地图");
+
+        var shouldScan = tActions.GetMethod("ShouldScanLocationDirectlyForMachines", Any);
+        bool ScanDirect(bool temp, bool warp, bool cellar, bool farm, bool gh, int bld, bool hasM) =>
+            (bool)shouldScan.Invoke(null, new object[] { temp, warp, cellar, farm, gh, bld, hasM });
+        Check(!ScanDirect(false, false, true, false, false, 0, true),
+            "原版地窖即使预摆了 33 个木桶也不从 Game1.locations 直接入队（只能由 3 级农舍/小屋引入）");
+        Check(ScanDirect(false, false, false, false, false, 0, true),
+            "SVE 等扩展模组的自定义酒窖/房间有机器时仍允许直接入队");
+        Check(ScanDirect(false, false, false, true, false, 0, false) && ScanDirect(false, false, false, false, true, 0, false),
+            "农场和温室即使暂时没机器也照常扫描");
+        Check(!ScanDirect(true, false, false, true, false, 1, true) && !ScanDirect(false, true, false, true, false, 1, true),
+            "临时地图和后台 WarpRoom 不参与机器扫描");
     }
 }

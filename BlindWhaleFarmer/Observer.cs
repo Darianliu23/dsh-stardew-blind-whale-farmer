@@ -413,6 +413,8 @@ namespace BlindWhaleFarmer
                     sb.AppendLine(clutter);
                 if (loc is Farm && GameActions.SprinklerClutterHint(loc) is string sprClutter)
                     sb.AppendLine(sprClutter);
+                if (GameActions.UncoveredBySprinklerHint(loc) is string uncoveredSpr)
+                    sb.AppendLine(uncoveredSpr);
                 if (loc is not Farm)
                 {
                     CountCrops(Game1.getFarm(), out int needWater, out int ready, out int total);
