@@ -4,6 +4,7 @@ using System.Linq;
 using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Buildings;
+using StardewValley.Locations;
 
 namespace BlindWhaleFarmer
 {
@@ -63,7 +64,7 @@ namespace BlindWhaleFarmer
     internal static class Exits
     {
         private static readonly Dictionary<string, List<Exit>> TileExitCache = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly Dictionary<string, (int[,] Grid, long DoorMask)> AreaCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, (xTile.Map Map, int[,] Grid, long DoorMask, int GateCount)> AreaCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, List<string[]>> DoorActionCache = new(StringComparer.OrdinalIgnoreCase);
 
         public static void ClearCache()
@@ -401,6 +402,11 @@ namespace BlindWhaleFarmer
             {
                 // 离线测试没有 Game1.locations
             }
+            return Area(loc, tile);
+        }
+
+        private static int Area(GameLocation loc, Point tile)
+        {
             if (loc?.Map == null)
                 return 0;
             var grid = GetAreaGrid(loc);
@@ -413,13 +419,20 @@ namespace BlindWhaleFarmer
         {
             string key = loc.NameOrUniqueName;
             long doorMask = ComputeDoorMask(loc, key);
-            if (AreaCache.TryGetValue(key, out var cached) && cached.DoorMask == doorMask)
+            var volcano = loc as VolcanoDungeon;
+            int gateCount = volcano?.dwarfGates.Count ?? 0;
+            if (AreaCache.TryGetValue(key, out var cached) && cached.Map == loc.Map
+                && cached.DoorMask == doorMask && cached.GateCount == gateCount)
                 return cached.Grid;
             int w = Pathfinder.MapWidth(loc), h = Pathfinder.MapHeight(loc);
             if (w <= 0 || h <= 0)
                 return null;
-            var grid = ComputeComponents(w, h, (x, y) => StaticTerrainPassable(loc, x, y));
-            AreaCache[key] = (grid, doorMask);
+            // 机关门能踩开，岩浆能浇冷。区域规划允许经过它们，实际通行由 TakeExit 寻路处理。
+            var gateTiles = volcano?.dwarfGates.Select(g => g.tilePosition.Value + new Point(0, 1)).ToHashSet();
+            var grid = ComputeComponents(w, h, (x, y) => gateTiles?.Contains(new Point(x, y)) == true
+                || (volcano is { level.Value: not 5, waterTiles: not null } && volcano.waterTiles[x, y])
+                || StaticTerrainPassable(loc, x, y));
+            AreaCache[key] = (loc.Map, grid, doorMask, gateCount);
             return grid;
         }
 
@@ -547,6 +560,22 @@ namespace BlindWhaleFarmer
             return 0;
         }
 
+        /// <summary>火山跨层传送的落点按 VolcanoDungeon.resetLocalState 换算。执行传送时仍使用地图原坐标。</summary>
+        internal static Point RouteArrivalTile(string fromName, GameLocation destination, Point warpTile)
+        {
+            if (destination is not VolcanoDungeon volcano)
+                return warpTile;
+            if (fromName == "Caldera" && volcano.level.Value == 0)
+                return new Point(44, 50);
+            return warpTile.Y switch
+            {
+                0 => volcano.endPosition ?? Point.Zero,
+                1 => volcano.startPosition ?? Point.Zero,
+                -1 when fromName == "Caldera" => volcano.endPosition ?? Point.Zero,
+                _ => warpTile
+            };
+        }
+
         /// <param name="avoid">这次走不通的出口（ExitKey），规划时绕开。</param>
         /// <param name="avoidLocation">路过不了的地图（比如在布置节日的小镇），除非它就是目的地。</param>
         public static List<Exit> PlanRoute(GameLocation from, string targetName, ISet<string> avoid = null, string avoidLocation = null)
@@ -572,7 +601,7 @@ namespace BlindWhaleFarmer
             string Key(string n, int area) => n + "#" + area;
             var prev = new Dictionary<string, (string, Exit)>(StringComparer.OrdinalIgnoreCase);
             var queue = new Queue<(string name, int area, int depth)>();
-            int startArea = from == Game1.currentLocation && Game1.player != null ? Area(from.NameOrUniqueName, Game1.player.TilePoint) : 0;
+            int startArea = from == Game1.currentLocation && Game1.player != null ? Area(from, Game1.player.TilePoint) : 0;
             queue.Enqueue((from.NameOrUniqueName, startArea, 0));
             prev[Key(from.NameOrUniqueName, startArea)] = (null, null);
 
@@ -588,17 +617,26 @@ namespace BlindWhaleFarmer
                 // 去同一个地方有正门也有侧门（比如玛鲁房间的侧门也通科学之家）时先走正门：要好感的门排在后面
                 foreach (var e in Get(loc).Where(e => e.FriendshipOk(loc)).OrderBy(e => e.FriendNpc != null))
                 {
-                    int exitArea = Area(name, e.Tile);
+                    int exitArea = Area(loc, e.Tile);
                     if (area != 0 && exitArea != 0 && exitArea != area)
                         continue;
                     if (avoid != null && avoid.Contains(ExitKey(name, e)))
                         continue;
-                    int nextArea = e.Kind == ExitKind.BuildingDoor || e.TargetTile == Point.Zero ? 0 : Area(e.Target, e.TargetTile);
-                    string next = Key(e.Target, nextArea);
-                    if (prev.ContainsKey(next) || !VolcanoOk(e.Target))
+                    if (!VolcanoOk(e.Target))
                         continue;
                     if (avoidLocation != null && e.Target.Equals(avoidLocation, StringComparison.OrdinalIgnoreCase)
                         && !e.Target.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    int nextArea = 0;
+                    if (e.Kind != ExitKind.BuildingDoor && (e.TargetTile != Point.Zero || VolcanoDungeon.IsGeneratedLevel(e.Target)))
+                    {
+                        var destination = Game1.getLocationFromName(e.Target);
+                        var arrival = RouteArrivalTile(loc.Name, destination, e.TargetTile);
+                        if (arrival != Point.Zero)
+                            nextArea = Area(destination, arrival);
+                    }
+                    string next = Key(e.Target, nextArea);
+                    if (prev.ContainsKey(next))
                         continue;
                     prev[next] = (Key(name, area), e);
                     if (e.Target.Equals(targetName, StringComparison.OrdinalIgnoreCase))

@@ -63,6 +63,7 @@ partial class Program
         TestHayAndStorage(tActions, schema, readOnly);
         TestGiftInfoReverse(tActions, schema, readOnly);
         TestSveCompat(asm);
+        TestVolcanoTravel(asm);
 
         var exec = tTools.GetMethod("Execute");
         string r1 = await (Task<string>)exec.Invoke(tools, new object[] { "update_notes", "{\"notes\":\"种防风草\"}" });

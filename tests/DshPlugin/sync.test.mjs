@@ -1112,3 +1112,26 @@ test('显示 AI 想法：关掉开关不转发（支持活引用动态切换）'
     server.close()
   }
 })
+
+test('日志：兼容真实 DSH 的对象式 ctx.logger（info / warn 方法）', async () => {
+  const { server, port } = await fakeGame()
+  const logs = []
+  const cleanups = []
+  const ctx = {
+    logger: {
+      info: (msg) => logs.push(`info ${msg}`),
+      warn: (msg) => logs.push(`warn ${msg}`),
+    },
+    effect: (fn) => { cleanups.push(fn()) },
+    get: () => undefined,
+    on: () => () => {},
+  }
+  try {
+    plugin.apply(ctx, { port, sessionDays: 2, sessionMinutes: 30 })
+    await wait(300)
+    assert.ok(logs.some((l) => l.startsWith('info [dsh-stardew-blind-whale-farmer] ')), `应通过 ctx.logger.info 记录日志，实际：${JSON.stringify(logs)}`)
+  } finally {
+    cleanups.forEach((c) => c?.())
+    server.close()
+  }
+})

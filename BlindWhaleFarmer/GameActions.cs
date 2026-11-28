@@ -1438,7 +1438,7 @@ namespace BlindWhaleFarmer
                     }
                     foreach (var s in GoToAny(goals, o, $"去 {e.Target} 的出口"))
                         yield return s;
-                    if (!o.Ok && clearIfBlocked && o.Message.StartsWith("找不到通往") && Loc == from)
+                    if (!o.Ok && (clearIfBlocked || from is VolcanoDungeon) && o.Message.StartsWith("找不到通往") && Loc == from)
                     {
                         string why = o.Message;
                         var cleared = new Outcome();
@@ -1448,7 +1448,9 @@ namespace BlindWhaleFarmer
                             o.Succeed();
                         else
                             // 保留“找不到通往”开头，TravelCore 照旧按被挡处理（列出挡路的东西、让 AI 选）
-                            o.Fail($"{why}；这是唯一的路，试过边走边清石头、树枝、杂草也过不去（{cleared.Message}），挡路的可能是树或大石头，要用斧头/镐子 clear_area 清掉");
+                            o.Fail(from is VolcanoDungeon
+                                ? $"{why}；试过清路也过不去（{cleared.Message}）"
+                                : $"{why}；这是唯一的路，试过边走边清石头、树枝、杂草也过不去（{cleared.Message}），挡路的可能是树或大石头，要用斧头/镐子 clear_area 清掉");
                     }
                     if (!o.Ok && (Game1.currentLocation != from || Game1.isWarping || Game1.locationRequest != null))
                     {
